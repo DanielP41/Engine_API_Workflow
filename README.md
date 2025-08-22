@@ -6,11 +6,11 @@ Una solución robusta y escalable que permite a empresas configurar y automatiza
 
 ## Características Principales
 
-- ✅ **Flujos Configurables**: Crea workflows personalizados por empresa
-- ✅ **Procesamiento Asíncrono**: Manejo eficiente con Redis y goroutines
-- ✅ **Integraciones**: Slack, webhooks, APIs externas
-- ✅ **Autenticación JWT**: Seguridad empresarial con RBAC
-- ✅ **Monitoreo**: Logs detallados y métricas de rendimiento
+- **Flujos Configurables**: Crea workflows personalizados por empresa
+- **Procesamiento Asíncrono**: Manejo eficiente con Redis y goroutines
+- **Integraciones**: Slack, webhooks, APIs externas
+- **Autenticación JWT**: Seguridad empresarial con RBAC
+- **Monitoreo**: Logs detallados y métricas de rendimiento
 
 ## Stack Tecnológico
 
@@ -33,7 +33,7 @@ Una solución robusta y escalable que permite a empresas configurar y automatiza
 - [ ] Testing y documentación
 - [ ] Deployment y monitoreo
 
-## 🏃‍♂️ Quick Start
+## Quick Start
 
 ```bash
 # Clonar repositorio
