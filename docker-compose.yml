@@ -1,6 +1,5 @@
-version: '3.8'
-
 services:
+  # Run Service
   mongodb:
     image: mongo:7.0
     container_name: workflow_mongodb
@@ -10,12 +9,13 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: admin
       MONGO_INITDB_ROOT_PASSWORD: password123
-      MONGO_INITDB_DATABASE: workflow_engine
+      MONGO_INITDB_DATABASE: engine_workflow
     volumes:
       - mongodb_data:/data/db
     networks:
       - workflow_network
 
+  # Run Service
   redis:
     image: redis:7.2-alpine
     container_name: workflow_redis
@@ -27,22 +27,20 @@ services:
     networks:
       - workflow_network
 
+  # Run Service
   api:
     build: .
     container_name: workflow_api
     restart: unless-stopped
     ports:
-      - "3000:3000"
-    environment:
-      - ENV=development
-      - MONGODB_URI=mongodb://admin:password123@mongodb:27017/workflow_engine?authSource=admin
-      - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=your-super-secret-jwt-key
+      - "8081:8081"
     depends_on:
       - mongodb
       - redis
     networks:
       - workflow_network
+    env_file:
+      - .env
 
 volumes:
   mongodb_data:
