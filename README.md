@@ -27,8 +27,8 @@ Una solución robusta y escalable que permite a empresas configurar y automatiza
 - [x] Planificación y arquitectura
 - [x] Setup inicial y configuración
 - [x] Core API y autenticación
-- [ ] Sistema de workflows
-- [ ] Procesamiento asíncrono
+- [x] Sistema de workflows
+- [ ] 🔄Procesamiento asíncrono
 - [ ] Integraciones externas
 - [ ] Testing y documentación
 - [ ] Deployment y monitoreo
