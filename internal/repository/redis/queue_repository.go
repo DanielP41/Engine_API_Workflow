@@ -1,13 +1,17 @@
+// internal/repository/redis/queue_repository.go
 package redis
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 
+	"Engine_API_Workflow/internal/models"
 	"Engine_API_Workflow/internal/repository"
 )
 
@@ -15,287 +19,605 @@ type queueRepository struct {
 	client *redis.Client
 }
 
-// NewQueueRepository crea una nueva instancia del repositorio de cola
+// NewQueueRepository creates a new queue repository
 func NewQueueRepository(client *redis.Client) repository.QueueRepository {
 	return &queueRepository{
 		client: client,
 	}
 }
 
-// Push añade un mensaje a la cola
-func (r *queueRepository) Push(ctx context.Context, queueName string, message interface{}) error {
-	if queueName == "" {
-		return fmt.Errorf("queue name cannot be empty")
-	}
-	if message == nil {
-		return fmt.Errorf("message cannot be nil")
-	}
+// Queue names
+const (
+	WorkflowQueue = "workflow:queue"
+	RetryQueue    = "workflow:retry"
+	DelayedQueue  = "workflow:delayed"
+	ProcessingSet = "workflow:processing"
+	CompletedSet  = "workflow:completed"
+	FailedSet     = "workflow:failed"
+	StatsKey      = "workflow:stats"
+)
 
-	// Serializar el mensaje a JSON
-	messageJSON, err := json.Marshal(message)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	// Añadir el mensaje al final de la lista (cola FIFO)
-	err = r.client.LPush(ctx, queueName, messageJSON).Err()
-	if err != nil {
-		return fmt.Errorf("failed to push message to queue %s: %w", queueName, err)
-	}
-
-	return nil
+// QueueItem represents an item in the queue
+type QueueItem struct {
+	ID          string                 `json:"id"`
+	WorkflowID  primitive.ObjectID     `json:"workflow_id"`
+	ExecutionID string                 `json:"execution_id"`
+	UserID      primitive.ObjectID     `json:"user_id"`
+	Payload     map[string]interface{} `json:"payload"`
+	Priority    int                    `json:"priority"`
+	MaxRetries  int                    `json:"max_retries"`
+	RetryCount  int                    `json:"retry_count"`
+	CreatedAt   time.Time              `json:"created_at"`
+	ProcessedAt *time.Time             `json:"processed_at,omitempty"`
+	CompletedAt *time.Time             `json:"completed_at,omitempty"`
+	FailedAt    *time.Time             `json:"failed_at,omitempty"`
+	Error       string                 `json:"error,omitempty"`
+	Status      string                 `json:"status"`
+	DelayUntil  *time.Time             `json:"delay_until,omitempty"`
 }
 
-// Pop obtiene y elimina un mensaje de la cola (blocking)
-func (r *queueRepository) Pop(ctx context.Context, queueName string, timeout time.Duration) ([]byte, error) {
-	if queueName == "" {
-		return nil, fmt.Errorf("queue name cannot be empty")
+func (r *queueRepository) Enqueue(ctx context.Context, workflowID primitive.ObjectID, executionID string, userID primitive.ObjectID, payload map[string]interface{}, priority int) error {
+	item := QueueItem{
+		ID:          primitive.NewObjectID().Hex(),
+		WorkflowID:  workflowID,
+		ExecutionID: executionID,
+		UserID:      userID,
+		Payload:     payload,
+		Priority:    priority,
+		MaxRetries:  3, // Default max retries
+		RetryCount:  0,
+		CreatedAt:   time.Now(),
+		Status:      "queued",
 	}
 
-	// BRPOP es blocking right pop - espera hasta timeout si la cola está vacía
-	result, err := r.client.BRPop(ctx, timeout, queueName).Result()
+	data, err := json.Marshal(item)
 	if err != nil {
-		if err == redis.Nil {
-			return nil, nil // Timeout, no hay mensajes
+		return fmt.Errorf("failed to marshal queue item: %w", err)
+	}
+
+	// Use sorted set for priority queue (higher priority = lower score for Redis)
+	score := float64(-priority) // Negative for higher priority first
+
+	pipe := r.client.Pipeline()
+	pipe.ZAdd(ctx, WorkflowQueue, redis.Z{
+		Score:  score,
+		Member: string(data),
+	})
+
+	// Update stats
+	pipe.HIncrBy(ctx, StatsKey, "queued", 1)
+	pipe.HIncrBy(ctx, StatsKey, "total", 1)
+
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+func (r *queueRepository) EnqueueDelayed(ctx context.Context, workflowID primitive.ObjectID, executionID string, userID primitive.ObjectID, payload map[string]interface{}, priority int, delay time.Duration) error {
+	item := QueueItem{
+		ID:          primitive.NewObjectID().Hex(),
+		WorkflowID:  workflowID,
+		ExecutionID: executionID,
+		UserID:      userID,
+		Payload:     payload,
+		Priority:    priority,
+		MaxRetries:  3,
+		RetryCount:  0,
+		CreatedAt:   time.Now(),
+		Status:      "delayed",
+		DelayUntil:  timePtr(time.Now().Add(delay)),
+	}
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		return fmt.Errorf("failed to marshal delayed queue item: %w", err)
+	}
+
+	// Use sorted set with timestamp as score for delayed processing
+	score := float64(time.Now().Add(delay).Unix())
+
+	pipe := r.client.Pipeline()
+	pipe.ZAdd(ctx, DelayedQueue, redis.Z{
+		Score:  score,
+		Member: string(data),
+	})
+
+	// Update stats
+	pipe.HIncrBy(ctx, StatsKey, "delayed", 1)
+	pipe.HIncrBy(ctx, StatsKey, "total", 1)
+
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+func (r *queueRepository) Dequeue(ctx context.Context) (*models.QueueTask, error) {
+	// First, move any ready delayed items to main queue
+	if err := r.moveDelayedToQueue(ctx); err != nil {
+		// Log error but don't fail the dequeue
+		fmt.Printf("Warning: failed to move delayed items: %v\n", err)
+	}
+
+	// Get highest priority item from main queue
+	result := r.client.ZPopMin(ctx, WorkflowQueue, 1)
+	if result.Err() != nil {
+		if result.Err() == redis.Nil {
+			return nil, repository.ErrQueueEmpty
 		}
-		return nil, fmt.Errorf("failed to pop message from queue %s: %w", queueName, err)
+		return nil, result.Err()
 	}
 
-	if len(result) < 2 {
-		return nil, fmt.Errorf("invalid BRPOP result")
+	items := result.Val()
+	if len(items) == 0 {
+		return nil, repository.ErrQueueEmpty
 	}
 
-	// result[0] es el nombre de la cola, result[1] es el mensaje
-	return []byte(result[1]), nil
+	var item QueueItem
+	if err := json.Unmarshal([]byte(items[0].Member.(string)), &item); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal queue item: %w", err)
+	}
+
+	// Move to processing set
+	item.Status = "processing"
+	item.ProcessedAt = timePtr(time.Now())
+
+	processedData, err := json.Marshal(item)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal processing item: %w", err)
+	}
+
+	pipe := r.client.Pipeline()
+	pipe.SAdd(ctx, ProcessingSet, string(processedData))
+	pipe.HIncrBy(ctx, StatsKey, "queued", -1)
+	pipe.HIncrBy(ctx, StatsKey, "processing", 1)
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, fmt.Errorf("failed to move item to processing: %w", err)
+	}
+
+	// Convert to QueueTask
+	task := &models.QueueTask{
+		ID:          item.ID,
+		WorkflowID:  item.WorkflowID,
+		ExecutionID: item.ExecutionID,
+		UserID:      item.UserID,
+		Payload:     item.Payload,
+		Priority:    item.Priority,
+		RetryCount:  item.RetryCount,
+		MaxRetries:  item.MaxRetries,
+		CreatedAt:   item.CreatedAt,
+		ProcessedAt: item.ProcessedAt,
+	}
+
+	return task, nil
 }
 
-// PopNoBlock obtiene y elimina un mensaje sin bloquear
-func (r *queueRepository) PopNoBlock(ctx context.Context, queueName string) ([]byte, error) {
-	if queueName == "" {
-		return nil, fmt.Errorf("queue name cannot be empty")
-	}
-
-	result, err := r.client.RPop(ctx, queueName).Result()
-	if err != nil {
-		if err == redis.Nil {
-			return nil, nil // Cola vacía
-		}
-		return nil, fmt.Errorf("failed to pop message from queue %s: %w", queueName, err)
-	}
-
-	return []byte(result), nil
-}
-
-// Peek obtiene un mensaje sin eliminarlo de la cola
-func (r *queueRepository) Peek(ctx context.Context, queueName string) ([]byte, error) {
-	if queueName == "" {
-		return nil, fmt.Errorf("queue name cannot be empty")
-	}
-
-	// Obtener el último elemento (el siguiente a ser procesado) sin eliminarlo
-	result, err := r.client.LIndex(ctx, queueName, -1).Result()
-	if err != nil {
-		if err == redis.Nil {
-			return nil, nil // Cola vacía
-		}
-		return nil, fmt.Errorf("failed to peek message from queue %s: %w", queueName, err)
-	}
-
-	return []byte(result), nil
-}
-
-// Length obtiene el número de mensajes en la cola
-func (r *queueRepository) Length(ctx context.Context, queueName string) (int64, error) {
-	if queueName == "" {
-		return 0, fmt.Errorf("queue name cannot be empty")
-	}
-
-	length, err := r.client.LLen(ctx, queueName).Result()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get queue length for %s: %w", queueName, err)
-	}
-
-	return length, nil
-}
-
-// Clear elimina todos los mensajes de la cola
-func (r *queueRepository) Clear(ctx context.Context, queueName string) error {
-	if queueName == "" {
-		return fmt.Errorf("queue name cannot be empty")
-	}
-
-	err := r.client.Del(ctx, queueName).Err()
-	if err != nil {
-		return fmt.Errorf("failed to clear queue %s: %w", queueName, err)
-	}
-
-	return nil
-}
-
-// Exists verifica si una cola existe y tiene mensajes
-func (r *queueRepository) Exists(ctx context.Context, queueName string) (bool, error) {
-	if queueName == "" {
-		return false, fmt.Errorf("queue name cannot be empty")
-	}
-
-	exists, err := r.client.Exists(ctx, queueName).Result()
-	if err != nil {
-		return false, fmt.Errorf("failed to check if queue %s exists: %w", queueName, err)
-	}
-
-	return exists > 0, nil
-}
-
-// PushWithDelay añade un mensaje que será procesado después de un delay
-func (r *queueRepository) PushWithDelay(ctx context.Context, queueName string, message interface{}, delay time.Duration) error {
-	if queueName == "" {
-		return fmt.Errorf("queue name cannot be empty")
-	}
-	if message == nil {
-		return fmt.Errorf("message cannot be nil")
-	}
-
-	// Serializar el mensaje
-	messageJSON, err := json.Marshal(message)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	// Usar sorted set para manejar delay - score es el timestamp cuando debe procesarse
-	processAt := time.Now().Add(delay).Unix()
-	delayedQueueName := fmt.Sprintf("%s:delayed", queueName)
-
-	err = r.client.ZAdd(ctx, delayedQueueName, &redis.Z{
-		Score:  float64(processAt),
-		Member: messageJSON,
-	}).Err()
-	if err != nil {
-		return fmt.Errorf("failed to push delayed message to queue %s: %w", queueName, err)
-	}
-
-	return nil
-}
-
-// ProcessDelayedMessages mueve mensajes listos desde la cola con delay a la cola principal
-func (r *queueRepository) ProcessDelayedMessages(ctx context.Context, queueName string) (int, error) {
-	if queueName == "" {
-		return 0, fmt.Errorf("queue name cannot be empty")
-	}
-
-	delayedQueueName := fmt.Sprintf("%s:delayed", queueName)
+func (r *queueRepository) moveDelayedToQueue(ctx context.Context) error {
 	now := time.Now().Unix()
 
-	// Obtener mensajes que ya deben procesarse (score <= now)
-	messages, err := r.client.ZRangeByScoreWithScores(ctx, delayedQueueName, &redis.ZRangeBy{
-		Min: "-inf",
+	// Get items that are ready to be processed
+	items := r.client.ZRangeByScore(ctx, DelayedQueue, &redis.ZRangeBy{
+		Min: "0",
 		Max: fmt.Sprintf("%d", now),
-	}).Result()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get delayed messages: %w", err)
+	})
+
+	if items.Err() != nil || len(items.Val()) == 0 {
+		return items.Err()
 	}
 
-	processed := 0
-	for _, msg := range messages {
-		// Mover mensaje a la cola principal
-		err = r.client.LPush(ctx, queueName, msg.Member).Err()
-		if err != nil {
-			continue // Log error pero continúa con otros mensajes
-		}
-
-		// Eliminar de la cola con delay
-		err = r.client.ZRem(ctx, delayedQueueName, msg.Member).Err()
-		if err != nil {
-			continue // Log error pero continúa
-		}
-
-		processed++
-	}
-
-	return processed, nil
-}
-
-// GetQueueStats obtiene estadísticas de la cola
-func (r *queueRepository) GetQueueStats(ctx context.Context, queueName string) (map[string]interface{}, error) {
-	if queueName == "" {
-		return nil, fmt.Errorf("queue name cannot be empty")
-	}
-
-	stats := make(map[string]interface{})
-
-	// Longitud de la cola principal
-	length, err := r.Length(ctx, queueName)
-	if err != nil {
-		return nil, err
-	}
-	stats["queue_length"] = length
-
-	// Longitud de la cola con delay
-	delayedQueueName := fmt.Sprintf("%s:delayed", queueName)
-	delayedLength, err := r.client.ZCard(ctx, delayedQueueName).Result()
-	if err != nil && err != redis.Nil {
-		return nil, fmt.Errorf("failed to get delayed queue length: %w", err)
-	}
-	stats["delayed_queue_length"] = delayedLength
-
-	// Información adicional
-	stats["queue_name"] = queueName
-	stats["timestamp"] = time.Now().Unix()
-
-	return stats, nil
-}
-
-// ListQueues obtiene una lista de todas las colas disponibles
-func (r *queueRepository) ListQueues(ctx context.Context, pattern string) ([]string, error) {
-	if pattern == "" {
-		pattern = "*"
-	}
-
-	keys, err := r.client.Keys(ctx, pattern).Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list queues: %w", err)
-	}
-
-	return keys, nil
-}
-
-// BatchPush añade múltiples mensajes a la cola de forma atómica
-func (r *queueRepository) BatchPush(ctx context.Context, queueName string, messages []interface{}) error {
-	if queueName == "" {
-		return fmt.Errorf("queue name cannot be empty")
-	}
-	if len(messages) == 0 {
-		return nil // No hay nada que hacer
-	}
-
-	// Usar pipeline para operación atómica
 	pipe := r.client.Pipeline()
 
-	for _, message := range messages {
-		if message == nil {
+	for _, member := range items.Val() {
+		var item QueueItem
+		if err := json.Unmarshal([]byte(member), &item); err != nil {
+			continue // Skip malformed items
+		}
+
+		// Remove from delayed queue
+		pipe.ZRem(ctx, DelayedQueue, member)
+
+		// Update status and add to main queue
+		item.Status = "queued"
+		item.DelayUntil = nil
+
+		updatedData, err := json.Marshal(item)
+		if err != nil {
 			continue
 		}
 
-		messageJSON, err := json.Marshal(message)
-		if err != nil {
-			return fmt.Errorf("failed to marshal message: %w", err)
-		}
+		// Add to main queue with original priority
+		score := float64(-item.Priority)
+		pipe.ZAdd(ctx, WorkflowQueue, redis.Z{
+			Score:  score,
+			Member: string(updatedData),
+		})
 
-		pipe.LPush(ctx, queueName, messageJSON)
+		// Update stats
+		pipe.HIncrBy(ctx, StatsKey, "delayed", -1)
+		pipe.HIncrBy(ctx, StatsKey, "queued", 1)
 	}
 
 	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (r *queueRepository) MarkCompleted(ctx context.Context, taskID string) error {
+	return r.moveFromProcessing(ctx, taskID, CompletedSet, "completed")
+}
+
+func (r *queueRepository) MarkFailed(ctx context.Context, taskID string, err error) error {
+	// First get the item from processing
+	members := r.client.SMembers(ctx, ProcessingSet)
+	if members.Err() != nil {
+		return members.Err()
+	}
+
+	var targetItem *QueueItem
+	var targetData string
+
+	for _, member := range members.Val() {
+		var item QueueItem
+		if jsonErr := json.Unmarshal([]byte(member), &item); jsonErr != nil {
+			continue
+		}
+
+		if item.ID == taskID {
+			targetItem = &item
+			targetData = member
+			break
+		}
+	}
+
+	if targetItem == nil {
+		return repository.ErrTaskNotFound
+	}
+
+	// Check if we should retry
+	if targetItem.RetryCount < targetItem.MaxRetries {
+		return r.requeueForRetry(ctx, targetItem, targetData, err.Error())
+	}
+
+	// Mark as permanently failed
+	targetItem.Status = "failed"
+	targetItem.FailedAt = timePtr(time.Now())
+	targetItem.Error = err.Error()
+
+	failedData, marshalErr := json.Marshal(targetItem)
+	if marshalErr != nil {
+		return fmt.Errorf("failed to marshal failed item: %w", marshalErr)
+	}
+
+	pipe := r.client.Pipeline()
+	pipe.SRem(ctx, ProcessingSet, targetData)
+	pipe.SAdd(ctx, FailedSet, string(failedData))
+	pipe.HIncrBy(ctx, StatsKey, "processing", -1)
+	pipe.HIncrBy(ctx, StatsKey, "failed", 1)
+
+	_, execErr := pipe.Exec(ctx)
+	return execErr
+}
+
+func (r *queueRepository) requeueForRetry(ctx context.Context, item *QueueItem, originalData string, errorMsg string) error {
+	item.RetryCount++
+	item.Status = "queued"
+	item.Error = errorMsg
+	item.ProcessedAt = nil
+
+	retryData, err := json.Marshal(item)
 	if err != nil {
-		return fmt.Errorf("failed to batch push messages: %w", err)
+		return fmt.Errorf("failed to marshal retry item: %w", err)
+	}
+
+	// Calculate delay for retry (exponential backoff)
+	retryDelay := time.Duration(item.RetryCount*item.RetryCount) * time.Second
+
+	pipe := r.client.Pipeline()
+	pipe.SRem(ctx, ProcessingSet, originalData)
+
+	if retryDelay > 0 {
+		// Add to delayed queue with retry delay
+		score := float64(time.Now().Add(retryDelay).Unix())
+		pipe.ZAdd(ctx, DelayedQueue, redis.Z{
+			Score:  score,
+			Member: string(retryData),
+		})
+		pipe.HIncrBy(ctx, StatsKey, "delayed", 1)
+	} else {
+		// Add back to main queue
+		score := float64(-item.Priority)
+		pipe.ZAdd(ctx, WorkflowQueue, redis.Z{
+			Score:  score,
+			Member: string(retryData),
+		})
+		pipe.HIncrBy(ctx, StatsKey, "queued", 1)
+	}
+
+	pipe.HIncrBy(ctx, StatsKey, "processing", -1)
+	pipe.HIncrBy(ctx, StatsKey, "retries", 1)
+
+	_, execErr := pipe.Exec(ctx)
+	return execErr
+}
+
+func (r *queueRepository) moveFromProcessing(ctx context.Context, taskID string, targetSet string, status string) error {
+	// Get all processing items
+	members := r.client.SMembers(ctx, ProcessingSet)
+	if members.Err() != nil {
+		return members.Err()
+	}
+
+	for _, member := range members.Val() {
+		var item QueueItem
+		if err := json.Unmarshal([]byte(member), &item); err != nil {
+			continue
+		}
+
+		if item.ID == taskID {
+			// Update item status
+			item.Status = status
+			if status == "completed" {
+				item.CompletedAt = timePtr(time.Now())
+			} else if status == "failed" {
+				item.FailedAt = timePtr(time.Now())
+			}
+
+			updatedData, err := json.Marshal(item)
+			if err != nil {
+				return fmt.Errorf("failed to marshal updated item: %w", err)
+			}
+
+			pipe := r.client.Pipeline()
+			pipe.SRem(ctx, ProcessingSet, member)
+			pipe.SAdd(ctx, targetSet, string(updatedData))
+			pipe.HIncrBy(ctx, StatsKey, "processing", -1)
+			pipe.HIncrBy(ctx, StatsKey, status, 1)
+
+			_, execErr := pipe.Exec(ctx)
+			return execErr
+		}
+	}
+
+	return repository.ErrTaskNotFound
+}
+
+func (r *queueRepository) GetProcessingTasks(ctx context.Context) ([]*models.QueueTask, error) {
+	members := r.client.SMembers(ctx, ProcessingSet)
+	if members.Err() != nil {
+		return nil, members.Err()
+	}
+
+	var tasks []*models.QueueTask
+
+	for _, member := range members.Val() {
+		var item QueueItem
+		if err := json.Unmarshal([]byte(member), &item); err != nil {
+			continue
+		}
+
+		task := &models.QueueTask{
+			ID:          item.ID,
+			WorkflowID:  item.WorkflowID,
+			ExecutionID: item.ExecutionID,
+			UserID:      item.UserID,
+			Payload:     item.Payload,
+			Priority:    item.Priority,
+			RetryCount:  item.RetryCount,
+			MaxRetries:  item.MaxRetries,
+			CreatedAt:   item.CreatedAt,
+			ProcessedAt: item.ProcessedAt,
+			CompletedAt: item.CompletedAt,
+			FailedAt:    item.FailedAt,
+			Error:       item.Error,
+		}
+
+		tasks = append(tasks, task)
+	}
+
+	return tasks, nil
+}
+
+func (r *queueRepository) CleanupStaleProcessing(ctx context.Context, timeout time.Duration) error {
+	members := r.client.SMembers(ctx, ProcessingSet)
+	if members.Err() != nil {
+		return members.Err()
+	}
+
+	staleThreshold := time.Now().Add(-timeout)
+	pipe := r.client.Pipeline()
+	staleCount := 0
+
+	for _, member := range members.Val() {
+		var item QueueItem
+		if err := json.Unmarshal([]byte(member), &item); err != nil {
+			continue
+		}
+
+		// Check if processing started too long ago
+		if item.ProcessedAt != nil && item.ProcessedAt.Before(staleThreshold) {
+			// Move back to queue for retry
+			item.Status = "queued"
+			item.ProcessedAt = nil
+			item.RetryCount++
+
+			requeueData, err := json.Marshal(item)
+			if err != nil {
+				continue
+			}
+
+			pipe.SRem(ctx, ProcessingSet, member)
+
+			if item.RetryCount < item.MaxRetries {
+				// Add back to queue
+				score := float64(-item.Priority)
+				pipe.ZAdd(ctx, WorkflowQueue, redis.Z{
+					Score:  score,
+					Member: string(requeueData),
+				})
+				pipe.HIncrBy(ctx, StatsKey, "queued", 1)
+			} else {
+				// Mark as failed
+				item.Status = "failed"
+				item.FailedAt = timePtr(time.Now())
+				item.Error = "Processing timeout - maximum retries exceeded"
+
+				failedData, err := json.Marshal(item)
+				if err != nil {
+					continue
+				}
+
+				pipe.SAdd(ctx, FailedSet, string(failedData))
+				pipe.HIncrBy(ctx, StatsKey, "failed", 1)
+			}
+
+			pipe.HIncrBy(ctx, StatsKey, "processing", -1)
+			staleCount++
+		}
+	}
+
+	if staleCount > 0 {
+		_, err := pipe.Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to cleanup %d stale tasks: %w", staleCount, err)
+		}
 	}
 
 	return nil
 }
 
-// Health verifica la salud de la conexión Redis
-func (r *queueRepository) Health(ctx context.Context) error {
-	_, err := r.client.Ping(ctx).Result()
-	if err != nil {
-		return fmt.Errorf("redis health check failed: %w", err)
+func (r *queueRepository) GetQueueStats(ctx context.Context) (map[string]int64, error) {
+	stats := r.client.HGetAll(ctx, StatsKey)
+	if stats.Err() != nil {
+		return nil, stats.Err()
 	}
-	return nil
+
+	result := make(map[string]int64)
+	for key, value := range stats.Val() {
+		if val, err := strconv.ParseInt(value, 10, 64); err == nil {
+			result[key] = val
+		}
+	}
+
+	// Add current queue lengths
+	queueLen := r.client.ZCard(ctx, WorkflowQueue)
+	if queueLen.Err() == nil {
+		result["current_queue_length"] = queueLen.Val()
+	}
+
+	delayedLen := r.client.ZCard(ctx, DelayedQueue)
+	if delayedLen.Err() == nil {
+		result["current_delayed_length"] = delayedLen.Val()
+	}
+
+	processingLen := r.client.SCard(ctx, ProcessingSet)
+	if processingLen.Err() == nil {
+		result["current_processing_length"] = processingLen.Val()
+	}
+
+	return result, nil
+}
+
+func (r *queueRepository) ClearQueue(ctx context.Context) error {
+	pipe := r.client.Pipeline()
+	pipe.Del(ctx, WorkflowQueue)
+	pipe.Del(ctx, RetryQueue)
+	pipe.Del(ctx, DelayedQueue)
+	pipe.Del(ctx, ProcessingSet)
+	pipe.Del(ctx, CompletedSet)
+	pipe.Del(ctx, FailedSet)
+	pipe.Del(ctx, StatsKey)
+
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (r *queueRepository) GetFailedTasks(ctx context.Context, limit int64) ([]*models.QueueTask, error) {
+	members := r.client.SMembers(ctx, FailedSet)
+	if members.Err() != nil {
+		return nil, members.Err()
+	}
+
+	var tasks []*models.QueueTask
+	count := int64(0)
+
+	for _, member := range members.Val() {
+		if limit > 0 && count >= limit {
+			break
+		}
+
+		var item QueueItem
+		if err := json.Unmarshal([]byte(member), &item); err != nil {
+			continue
+		}
+
+		task := &models.QueueTask{
+			ID:          item.ID,
+			WorkflowID:  item.WorkflowID,
+			ExecutionID: item.ExecutionID,
+			UserID:      item.UserID,
+			Payload:     item.Payload,
+			Priority:    item.Priority,
+			RetryCount:  item.RetryCount,
+			MaxRetries:  item.MaxRetries,
+			CreatedAt:   item.CreatedAt,
+			ProcessedAt: item.ProcessedAt,
+			CompletedAt: item.CompletedAt,
+			FailedAt:    item.FailedAt,
+			Error:       item.Error,
+		}
+
+		tasks = append(tasks, task)
+		count++
+	}
+
+	return tasks, nil
+}
+
+func (r *queueRepository) RequeueFailedTask(ctx context.Context, taskID string) error {
+	// Find the failed task
+	members := r.client.SMembers(ctx, FailedSet)
+	if members.Err() != nil {
+		return members.Err()
+	}
+
+	for _, member := range members.Val() {
+		var item QueueItem
+		if err := json.Unmarshal([]byte(member), &item); err != nil {
+			continue
+		}
+
+		if item.ID == taskID {
+			// Reset retry count and error
+			item.RetryCount = 0
+			item.Error = ""
+			item.Status = "queued"
+			item.ProcessedAt = nil
+			item.FailedAt = nil
+
+			requeueData, err := json.Marshal(item)
+			if err != nil {
+				return fmt.Errorf("failed to marshal requeue item: %w", err)
+			}
+
+			pipe := r.client.Pipeline()
+			pipe.SRem(ctx, FailedSet, member)
+
+			// Add back to main queue
+			score := float64(-item.Priority)
+			pipe.ZAdd(ctx, WorkflowQueue, redis.Z{
+				Score:  score,
+				Member: string(requeueData),
+			})
+
+			pipe.HIncrBy(ctx, StatsKey, "failed", -1)
+			pipe.HIncrBy(ctx, StatsKey, "queued", 1)
+
+			_, execErr := pipe.Exec(ctx)
+			return execErr
+		}
+	}
+
+	return repository.ErrTaskNotFound
+}
+
+// Helper functions
+func timePtr(t time.Time) *time.Time {
+	return &t
 }

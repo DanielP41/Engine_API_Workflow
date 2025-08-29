@@ -6,7 +6,7 @@ DOCKER_COMPOSE=docker-compose
 
 # Development commands
 run:
-	go run cmd/api/main.go
+	@powershell -Command "& { . .\.env; go run cmd/api/main.go }"
 
 build:
 	go build -o bin/$(APP_NAME) cmd/api/main.go

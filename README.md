@@ -24,9 +24,9 @@ Una solución robusta y escalable que permite a empresas configurar y automatiza
 
 🔄 **En desarrollo activo** - Siguiendo metodología por fases
 
-- [x] ~~Planificación y arquitectura~~
-- [ ] 🔄 Setup inicial y configuración
-- [ ] Core API y autenticación
+- [x] Planificación y arquitectura
+- [x] Setup inicial y configuración
+- [x] Core API y autenticación
 - [ ] Sistema de workflows
 - [ ] Procesamiento asíncrono
 - [ ] Integraciones externas

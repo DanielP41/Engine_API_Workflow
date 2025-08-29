@@ -1,297 +1,190 @@
 package jwt
 
 import (
-	"fmt"
+	"errors"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/golang-jwt/jwt/v4"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// JWTManager maneja la generación y validación de tokens JWT
-type JWTManager struct {
-	secretKey            string
-	tokenDuration        time.Duration
-	refreshTokenDuration time.Duration
+// JWTService interfaz para el servicio JWT
+type JWTService interface {
+	GenerateTokens(userID primitive.ObjectID, email, role string) (*TokenPair, error)
+	ValidateToken(tokenString string) (*Claims, error)
+	RefreshToken(refreshToken string) (*TokenPair, error)
+	RevokeToken(tokenString string) error
 }
 
-// Claims estructura personalizada para los claims del JWT
+// jwtService implementación del servicio JWT
+type jwtService struct {
+	secretKey       []byte
+	accessTokenTTL  time.Duration
+	refreshTokenTTL time.Duration
+	issuer          string
+}
+
+// TokenPair par de tokens (access y refresh)
+type TokenPair struct {
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	TokenType    string    `json:"token_type"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+// Claims estructura de claims JWT personalizada
 type Claims struct {
 	UserID string `json:"user_id"`
 	Email  string `json:"email"`
 	Role   string `json:"role"`
+	Type   string `json:"type"` // "access" o "refresh"
 	jwt.RegisteredClaims
 }
 
-// RefreshClaims estructura para refresh tokens (más simples)
-type RefreshClaims struct {
-	UserID string `json:"user_id"`
-	Email  string `json:"email"`
-	jwt.RegisteredClaims
+// Config configuración para JWT Service
+type Config struct {
+	SecretKey       string
+	AccessTokenTTL  time.Duration
+	RefreshTokenTTL time.Duration
+	Issuer          string
 }
 
-// NewJWTManager crea una nueva instancia del JWTManager
-func NewJWTManager(secretKey string, tokenDuration time.Duration, refreshTokenDuration time.Duration) *JWTManager {
-	return &JWTManager{
-		secretKey:            secretKey,
-		tokenDuration:        tokenDuration,
-		refreshTokenDuration: refreshTokenDuration,
+// NewJWTService crea una nueva instancia del servicio JWT
+func NewJWTService(config Config) JWTService {
+	return &jwtService{
+		secretKey:       []byte(config.SecretKey),
+		accessTokenTTL:  config.AccessTokenTTL,
+		refreshTokenTTL: config.RefreshTokenTTL,
+		issuer:          config.Issuer,
 	}
 }
 
-// GenerateToken genera un access token JWT
-func (manager *JWTManager) GenerateToken(userID, email, role string) (string, error) {
-	if userID == "" || email == "" || role == "" {
-		return "", fmt.Errorf("userID, email and role are required")
-	}
-
+// GenerateTokens genera un par de tokens (access y refresh)
+func (s *jwtService) GenerateTokens(userID primitive.ObjectID, email, role string) (*TokenPair, error) {
 	now := time.Now()
-	expirationTime := now.Add(manager.tokenDuration)
 
-	claims := &Claims{
-		UserID: userID,
+	// Access Token
+	accessClaims := Claims{
+		UserID: userID.Hex(),
 		Email:  email,
 		Role:   role,
+		Type:   "access",
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   userID,
+			ExpiresAt: jwt.NewNumericDate(now.Add(s.accessTokenTTL)),
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(expirationTime),
 			NotBefore: jwt.NewNumericDate(now),
-			Issuer:    "engine-api-workflow",
-			Audience:  []string{"engine-api-workflow"},
+			Issuer:    s.issuer,
+			Subject:   userID.Hex(),
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(manager.secretKey))
-}
-
-// GenerateRefreshToken genera un refresh token JWT
-func (manager *JWTManager) GenerateRefreshToken(userID, email string) (string, error) {
-	if userID == "" || email == "" {
-		return "", fmt.Errorf("userID and email are required")
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
+	accessTokenString, err := accessToken.SignedString(s.secretKey)
+	if err != nil {
+		return nil, err
 	}
 
-	now := time.Now()
-	expirationTime := now.Add(manager.refreshTokenDuration)
-
-	claims := &RefreshClaims{
-		UserID: userID,
+	// Refresh Token
+	refreshClaims := Claims{
+		UserID: userID.Hex(),
 		Email:  email,
+		Role:   role,
+		Type:   "refresh",
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   userID,
+			ExpiresAt: jwt.NewNumericDate(now.Add(s.refreshTokenTTL)),
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(expirationTime),
 			NotBefore: jwt.NewNumericDate(now),
-			Issuer:    "engine-api-workflow",
-			Audience:  []string{"engine-api-workflow-refresh"},
+			Issuer:    s.issuer,
+			Subject:   userID.Hex(),
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(manager.secretKey))
+	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
+	refreshTokenString, err := refreshToken.SignedString(s.secretKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &TokenPair{
+		AccessToken:  accessTokenString,
+		RefreshToken: refreshTokenString,
+		TokenType:    "Bearer",
+		ExpiresAt:    now.Add(s.accessTokenTTL),
+	}, nil
 }
 
-// ValidateToken valida y parsea un access token
-func (manager *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
-	if tokenString == "" {
-		return nil, fmt.Errorf("token string is required")
-	}
-
-	token, err := jwt.ParseWithClaims(
-		tokenString,
-		&Claims{},
-		func(token *jwt.Token) (interface{}, error) {
-			// Verificar que el método de firma sea el esperado
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return []byte(manager.secretKey), nil
-		},
-	)
+// ValidateToken valida un token JWT
+func (s *jwtService) ValidateToken(tokenString string) (*Claims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("método de firma inválido")
+		}
+		return s.secretKey, nil
+	})
 
 	if err != nil {
-		return nil, fmt.Errorf("invalid token: %w", err)
+		return nil, err
+	}
+
+	if !token.Valid {
+		return nil, errors.New("token inválido")
 	}
 
 	claims, ok := token.Claims.(*Claims)
 	if !ok {
-		return nil, fmt.Errorf("invalid token claims")
-	}
-
-	// Verificar que el token no haya expirado
-	if time.Now().After(claims.ExpiresAt.Time) {
-		return nil, fmt.Errorf("token has expired")
-	}
-
-	// Verificar que el token ya sea válido (NotBefore)
-	if time.Now().Before(claims.NotBefore.Time) {
-		return nil, fmt.Errorf("token not valid yet")
+		return nil, errors.New("claims inválidos")
 	}
 
 	return claims, nil
 }
 
-// ValidateRefreshToken valida y parsea un refresh token
-func (manager *JWTManager) ValidateRefreshToken(tokenString string) (*RefreshClaims, error) {
-	if tokenString == "" {
-		return nil, fmt.Errorf("token string is required")
-	}
-
-	token, err := jwt.ParseWithClaims(
-		tokenString,
-		&RefreshClaims{},
-		func(token *jwt.Token) (interface{}, error) {
-			// Verificar que el método de firma sea el esperado
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return []byte(manager.secretKey)
-		},
-	)
-
+// RefreshToken genera un nuevo par de tokens usando el refresh token
+func (s *jwtService) RefreshToken(refreshTokenString string) (*TokenPair, error) {
+	claims, err := s.ValidateToken(refreshTokenString)
 	if err != nil {
-		return nil, fmt.Errorf("invalid refresh token: %w", err)
+		return nil, err
 	}
 
-	claims, ok := token.Claims.(*RefreshClaims)
-	if !ok {
-		return nil, fmt.Errorf("invalid refresh token claims")
+	if claims.Type != "refresh" {
+		return nil, errors.New("token no es de tipo refresh")
 	}
 
-	// Verificar que el token no haya expirado
-	if time.Now().After(claims.ExpiresAt.Time) {
-		return nil, fmt.Errorf("refresh token has expired")
+	userID, err := primitive.ObjectIDFromHex(claims.UserID)
+	if err != nil {
+		return nil, errors.New("ID de usuario inválido")
 	}
 
-	// Verificar que el token ya sea válido (NotBefore)
-	if time.Now().Before(claims.NotBefore.Time) {
-		return nil, fmt.Errorf("refresh token not valid yet")
-	}
+	return s.GenerateTokens(userID, claims.Email, claims.Role)
+}
 
-	return claims, nil
+// RevokeToken revoca un token (implementación básica - en producción usar blacklist)
+func (s *jwtService) RevokeToken(tokenString string) error {
+	// En una implementación real, agregarías el token a una blacklist en Redis
+	// Por ahora, solo validamos que el token sea válido
+	_, err := s.ValidateToken(tokenString)
+	return err
 }
 
 // ExtractTokenFromHeader extrae el token del header Authorization
-func (manager *JWTManager) ExtractTokenFromHeader(authHeader string) (string, error) {
+func ExtractTokenFromHeader(authHeader string) (string, error) {
 	if authHeader == "" {
-		return "", fmt.Errorf("authorization header is required")
+		return "", errors.New("header de autorización vacío")
 	}
 
 	const bearerPrefix = "Bearer "
 	if len(authHeader) < len(bearerPrefix) || authHeader[:len(bearerPrefix)] != bearerPrefix {
-		return "", fmt.Errorf("invalid authorization header format")
+		return "", errors.New("formato de token inválido")
 	}
 
-	token := authHeader[len(bearerPrefix):]
-	if token == "" {
-		return "", fmt.Errorf("token is required")
-	}
-
-	return token, nil
+	return authHeader[len(bearerPrefix):], nil
 }
 
-// GetTokenDuration devuelve la duración del access token
-func (manager *JWTManager) GetTokenDuration() time.Duration {
-	return manager.tokenDuration
-}
-
-// GetRefreshTokenDuration devuelve la duración del refresh token
-func (manager *JWTManager) GetRefreshTokenDuration() time.Duration {
-	return manager.refreshTokenDuration
-}
-
-// IsTokenExpired verifica si un token ha expirado sin validar la firma
-func (manager *JWTManager) IsTokenExpired(tokenString string) bool {
-	token, _ := jwt.ParseWithClaims(
-		tokenString,
-		&Claims{},
-		func(token *jwt.Token) (interface{}, error) {
-			return []byte(manager.secretKey), nil
-		},
-	)
-
-	if token == nil {
-		return true
-	}
-
-	claims, ok := token.Claims.(*Claims)
-	if !ok {
-		return true
-	}
-
-	return time.Now().After(claims.ExpiresAt.Time)
-}
-
-// GetClaims obtiene los claims de un token sin validar la firma
-// Útil para debugging o logs
-func (manager *JWTManager) GetClaims(tokenString string) (*Claims, error) {
-	token, _ := jwt.ParseWithClaims(
-		tokenString,
-		&Claims{},
-		func(token *jwt.Token) (interface{}, error) {
-			return []byte(manager.secretKey), nil
-		},
-	)
-
-	if token == nil {
-		return nil, fmt.Errorf("invalid token format")
-	}
-
-	claims, ok := token.Claims.(*Claims)
-	if !ok {
-		return nil, fmt.Errorf("invalid token claims")
-	}
-
-	return claims, nil
-}
-
-// RevokeToken añade un token a una lista negra (implementación básica)
-// En un entorno de producción, esto se haría con Redis o una base de datos
-type TokenBlacklist interface {
-	Add(tokenString string, expiration time.Time) error
-	IsBlacklisted(tokenString string) bool
-}
-
-// SimpleInMemoryBlacklist implementación simple en memoria para desarrollo
-type SimpleInMemoryBlacklist struct {
-	tokens map[string]time.Time
-}
-
-// NewSimpleInMemoryBlacklist crea una nueva instancia de blacklist en memoria
-func NewSimpleInMemoryBlacklist() *SimpleInMemoryBlacklist {
-	return &SimpleInMemoryBlacklist{
-		tokens: make(map[string]time.Time),
-	}
-}
-
-// Add añade un token a la blacklist
-func (bl *SimpleInMemoryBlacklist) Add(tokenString string, expiration time.Time) error {
-	bl.tokens[tokenString] = expiration
-	return nil
-}
-
-// IsBlacklisted verifica si un token está en la blacklist
-func (bl *SimpleInMemoryBlacklist) IsBlacklisted(tokenString string) bool {
-	expiration, exists := bl.tokens[tokenString]
-	if !exists {
-		return false
-	}
-
-	// Si el token ya expiró naturalmente, lo removemos de la blacklist
-	if time.Now().After(expiration) {
-		delete(bl.tokens, tokenString)
-		return false
-	}
-
-	return true
-}
-
-// Cleanup limpia tokens expirados de la blacklist
-func (bl *SimpleInMemoryBlacklist) Cleanup() {
-	now := time.Now()
-	for token, expiration := range bl.tokens {
-		if now.After(expiration) {
-			delete(bl.tokens, token)
-		}
+// GetDefaultConfig retorna configuración por defecto para desarrollo
+func GetDefaultConfig(secretKey string) Config {
+	return Config{
+		SecretKey:       secretKey,
+		AccessTokenTTL:  15 * time.Minute,
+		RefreshTokenTTL: 7 * 24 * time.Hour, // 7 días
+		Issuer:          "Engine_API_Workflow",
 	}
 }

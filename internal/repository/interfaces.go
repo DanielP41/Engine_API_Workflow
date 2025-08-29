@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"Engine_API_Workflow/internal/models"
+
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -205,3 +207,16 @@ type CacheRepository interface {
 	// Health check
 	Ping(ctx context.Context) error
 }
+
+// Agregar al archivo: internal/repository/interfaces.go
+// (Al final del archivo, después de los errores existentes)
+var (
+	// Queue specific errors
+	ErrQueueEmpty   = errors.New("queue is empty")
+	ErrTaskNotFound = errors.New("task not found")
+	ErrTaskTimeout  = errors.New("task processing timeout")
+
+	// Log specific errors
+	ErrLogNotFound   = errors.New("log not found")
+	ErrInvalidFilter = errors.New("invalid search filter")
+)
