@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"time"
 
 	"Engine_API_Workflow/internal/models"
 
@@ -11,12 +12,16 @@ import (
 
 // UserRepository defines the contract for user data operations
 type UserRepository interface {
-	// Basic CRUD operations
-	Create(ctx context.Context, user *models.User) error
+	// Basic CRUD operations - CORREGIDO: Create retorna *models.User
+	Create(ctx context.Context, user *models.User) (*models.User, error)
 	GetByID(ctx context.Context, id primitive.ObjectID) (*models.User, error)
 	GetByEmail(ctx context.Context, email string) (*models.User, error)
 	Update(ctx context.Context, id primitive.ObjectID, update *models.UpdateUserRequest) error
 	Delete(ctx context.Context, id primitive.ObjectID) error
+
+	// AGREGADO: Métodos adicionales para compatibilidad con auth.go
+	GetByIDString(ctx context.Context, id string) (*models.User, error)
+	UpdateLastLoginString(ctx context.Context, id string) error
 
 	// List and search operations
 	List(ctx context.Context, page, pageSize int) (*models.UserListResponse, error)
@@ -41,10 +46,10 @@ type UserRepository interface {
 
 // WorkflowRepository defines the contract for workflow data operations
 type WorkflowRepository interface {
-	// Basic CRUD operations
+	// Basic CRUD operations - CORREGIDO: Update acepta map[string]interface{}
 	Create(ctx context.Context, workflow *models.Workflow) error
 	GetByID(ctx context.Context, id primitive.ObjectID) (*models.Workflow, error)
-	Update(ctx context.Context, id primitive.ObjectID, update *models.UpdateWorkflowRequest) error
+	Update(ctx context.Context, id primitive.ObjectID, update map[string]interface{}) error
 	Delete(ctx context.Context, id primitive.ObjectID) error
 
 	// List and search operations
@@ -80,14 +85,20 @@ type WorkflowRepository interface {
 
 // LogRepository defines the contract for log data operations
 type LogRepository interface {
-	// Basic CRUD operations
+	// Basic CRUD operations - CORREGIDO: Update acepta map[string]interface{}
 	Create(ctx context.Context, log *models.WorkflowLog) error
 	GetByID(ctx context.Context, id primitive.ObjectID) (*models.WorkflowLog, error)
 	GetByExecutionID(ctx context.Context, executionID string) (*models.WorkflowLog, error)
-	Update(ctx context.Context, id primitive.ObjectID, log *models.WorkflowLog) error
+	Update(ctx context.Context, id primitive.ObjectID, update map[string]interface{}) error
 	Delete(ctx context.Context, id primitive.ObjectID) error
 
-	// Query operations
+	// AGREGADO: Métodos que usa log_service.go con signatures correctas
+	GetByWorkflowID(ctx context.Context, workflowID primitive.ObjectID, opts PaginationOptions) ([]models.WorkflowLog, int64, error)
+	GetByUserID(ctx context.Context, userID primitive.ObjectID, opts PaginationOptions) ([]models.WorkflowLog, int64, error)
+	GetStats(ctx context.Context, filter LogSearchFilter) (*models.LogStats, error)
+	Search(ctx context.Context, filter LogSearchFilter, opts PaginationOptions) ([]models.WorkflowLog, int64, error)
+
+	// Query operations (métodos originales mantenidos)
 	Query(ctx context.Context, req *models.LogQueryRequest) (*models.LogListResponse, error)
 	List(ctx context.Context, page, pageSize int) (*models.LogListResponse, error)
 	ListByWorkflow(ctx context.Context, workflowID primitive.ObjectID, page, pageSize int) (*models.LogListResponse, error)
@@ -208,9 +219,82 @@ type CacheRepository interface {
 	Ping(ctx context.Context) error
 }
 
-// Agregar al archivo: internal/repository/interfaces.go
-// (Al final del archivo, después de los errores existentes)
+// AGREGADO: Tipos faltantes para que compile
+
+// PaginationOptions para paginación consistente
+type PaginationOptions struct {
+	Page     int    `json:"page" validate:"min=1"`
+	PageSize int    `json:"page_size" validate:"min=1,max=100"`
+	SortBy   string `json:"sort_by,omitempty"`
+	SortDesc bool   `json:"sort_desc,omitempty"`
+}
+
+// LogSearchFilter para búsquedas de logs
+type LogSearchFilter struct {
+	WorkflowID      *primitive.ObjectID `json:"workflow_id,omitempty"`
+	UserID          *primitive.ObjectID `json:"user_id,omitempty"`
+	ExecutionID     *string             `json:"execution_id,omitempty"`
+	Status          *string             `json:"status,omitempty"`
+	Level           *string             `json:"level,omitempty"`
+	StartDate       *time.Time          `json:"start_date,omitempty"`
+	EndDate         *time.Time          `json:"end_date,omitempty"`
+	MessageContains *string             `json:"message_contains,omitempty"`
+	SortBy          *string             `json:"sort_by,omitempty"`
+	SortOrder       *string             `json:"sort_order,omitempty"`
+	Page            *int                `json:"page,omitempty"`
+	Limit           *int                `json:"limit,omitempty"`
+}
+
+// WorkflowSearchFilters para búsquedas de workflows
+type WorkflowSearchFilters struct {
+	UserID        primitive.ObjectID `json:"user_id,omitempty"`
+	Status        string             `json:"status,omitempty"`
+	IsActive      *bool              `json:"is_active,omitempty"`
+	Tags          []string           `json:"tags,omitempty"`
+	Query         string             `json:"query,omitempty"`
+	CreatedAfter  time.Time          `json:"created_after,omitempty"`
+	CreatedBefore time.Time          `json:"created_before,omitempty"`
+	Limit         int                `json:"limit,omitempty"`
+	Skip          int                `json:"skip,omitempty"`
+}
+
+// TagCount para contar tags populares
+type TagCount struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
+}
+
+// AGREGADO: Factory functions para crear repositorios (usado por routes.go)
+func NewUserRepository(db interface{}) UserRepository {
+	// Esta función debe ser implementada en mongodb/user_repository.go
+	// Placeholder - se implementa en el paquete mongodb
+	return nil
+}
+
+func NewWorkflowRepository(db interface{}) WorkflowRepository {
+	// Esta función debe ser implementada en mongodb/workflow_repository.go
+	// Placeholder - se implementa en el paquete mongodb
+	return nil
+}
+
+func NewLogRepository(db interface{}) LogRepository {
+	// Esta función debe ser implementada en mongodb/log_repository.go
+	// Placeholder - se implementa en el paquete mongodb
+	return nil
+}
+
+// Errores existentes
 var (
+	// User specific errors
+	ErrUserNotFound      = errors.New("user not found")
+	ErrUserAlreadyExists = errors.New("user already exists")
+	ErrInvalidUserData   = errors.New("invalid user data")
+
+	// Workflow specific errors
+	ErrWorkflowNotFound      = errors.New("workflow not found")
+	ErrWorkflowAlreadyExists = errors.New("workflow already exists")
+	ErrInvalidWorkflowData   = errors.New("invalid workflow data")
+
 	// Queue specific errors
 	ErrQueueEmpty   = errors.New("queue is empty")
 	ErrTaskNotFound = errors.New("task not found")

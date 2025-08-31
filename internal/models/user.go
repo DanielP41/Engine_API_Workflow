@@ -19,6 +19,7 @@ type User struct {
 	ID          primitive.ObjectID `json:"id" bson:"_id,omitempty"`
 	Email       string             `json:"email" bson:"email"`
 	Password    string             `json:"-" bson:"password"` // Hidden in JSON responses
+	Name        string             `json:"name" bson:"name"`  // AGREGADO: Campo requerido por auth.go
 	FirstName   string             `json:"first_name" bson:"first_name"`
 	LastName    string             `json:"last_name" bson:"last_name"`
 	Role        Role               `json:"role" bson:"role"`
@@ -33,6 +34,7 @@ type User struct {
 type CreateUserRequest struct {
 	Email     string `json:"email" validate:"required,email"`
 	Password  string `json:"password" validate:"required,min=8"`
+	Name      string `json:"name" validate:"required,min=2,max=100"` // AGREGADO: Campo requerido por auth.go
 	FirstName string `json:"first_name" validate:"required,min=2,max=50"`
 	LastName  string `json:"last_name" validate:"required,min=2,max=50"`
 	Role      Role   `json:"role" validate:"required,oneof=admin user"`
@@ -40,6 +42,7 @@ type CreateUserRequest struct {
 
 // UpdateUserRequest represents the request to update user information
 type UpdateUserRequest struct {
+	Name        string   `json:"name,omitempty" validate:"omitempty,min=2,max=100"` // AGREGADO
 	FirstName   string   `json:"first_name,omitempty" validate:"omitempty,min=2,max=50"`
 	LastName    string   `json:"last_name,omitempty" validate:"omitempty,min=2,max=50"`
 	Role        Role     `json:"role,omitempty" validate:"omitempty,oneof=admin user"`
@@ -64,6 +67,7 @@ type LoginResponse struct {
 type UserInfo struct {
 	ID          string     `json:"id"`
 	Email       string     `json:"email"`
+	Name        string     `json:"name"` // AGREGADO
 	FirstName   string     `json:"first_name"`
 	LastName    string     `json:"last_name"`
 	Role        Role       `json:"role"`
@@ -71,6 +75,15 @@ type UserInfo struct {
 	IsActive    bool       `json:"is_active"`
 	CreatedAt   time.Time  `json:"created_at"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+}
+
+// UserListResponse para respuestas de lista de usuarios
+type UserListResponse struct {
+	Users      []User `json:"users"`
+	Total      int64  `json:"total"`
+	Page       int    `json:"page"`
+	PageSize   int    `json:"page_size"`
+	TotalPages int    `json:"total_pages"`
 }
 
 // ChangePasswordRequest represents the change password request
@@ -84,6 +97,7 @@ func (u *User) ToUserInfo() UserInfo {
 	return UserInfo{
 		ID:          u.ID.Hex(),
 		Email:       u.Email,
+		Name:        u.Name, // AGREGADO
 		FirstName:   u.FirstName,
 		LastName:    u.LastName,
 		Role:        u.Role,
@@ -109,9 +123,19 @@ func (u *User) HasPermission(permission string) bool {
 	return false
 }
 
-// GetFullName returns the full name of the user
+// GetFullName returns the full name of the user - CORREGIDO
 func (u *User) GetFullName() string {
+	if u.Name != "" {
+		return u.Name
+	}
 	return u.FirstName + " " + u.LastName
+}
+
+// SyncName sincroniza el campo Name con FirstName + LastName - AGREGADO
+func (u *User) SyncName() {
+	if u.Name == "" && u.FirstName != "" && u.LastName != "" {
+		u.Name = u.FirstName + " " + u.LastName
+	}
 }
 
 // BeforeCreate sets timestamps and default values before creating
@@ -120,6 +144,9 @@ func (u *User) BeforeCreate() {
 	u.CreatedAt = now
 	u.UpdatedAt = now
 	u.IsActive = true
+
+	// AGREGADO: Sincronizar Name si está vacío
+	u.SyncName()
 
 	// Set default permissions based on role
 	if u.Role == RoleAdmin {
@@ -146,6 +173,7 @@ func (u *User) BeforeCreate() {
 // BeforeUpdate sets updated timestamp before updating
 func (u *User) BeforeUpdate() {
 	u.UpdatedAt = time.Now()
+	u.SyncName() // AGREGADO: Sincronizar Name en actualizaciones
 }
 
 // Validate validates user data

@@ -16,8 +16,8 @@ type Response struct {
 	Timestamp time.Time    `json:"timestamp"`
 }
 
-// ErrorResponse estructura específica para errores
-type ErrorResponse struct {
+// ErrorResponseStruct estructura específica para errores
+type ErrorResponseStruct struct {
 	Success   bool         `json:"success"`
 	Message   string       `json:"message"`
 	Error     *ErrorDetail `json:"error"`
@@ -40,8 +40,37 @@ type MetaInfo struct {
 	Pagination    interface{} `json:"pagination,omitempty"`
 }
 
-// SuccessResponse crea una respuesta exitosa
-func SuccessResponse(c *fiber.Ctx, message string, data interface{}) error {
+// SuccessResponse crea una respuesta exitosa con status code (compatible con auth.go)
+func SuccessResponse(c *fiber.Ctx, statusCode int, message string, data interface{}) error {
+	response := Response{
+		Success:   true,
+		Message:   message,
+		Data:      data,
+		Timestamp: time.Now(),
+	}
+	return c.Status(statusCode).JSON(response)
+}
+
+// ErrorResponse crea una respuesta de error (compatible con auth.go)
+func ErrorResponse(c *fiber.Ctx, statusCode int, message string, details string) error {
+	errorDetail := &ErrorDetail{
+		Code:    GetErrorCode(statusCode),
+		Message: message,
+		Details: details,
+	}
+
+	response := ErrorResponseStruct{
+		Success:   false,
+		Message:   message,
+		Error:     errorDetail,
+		Timestamp: time.Now(),
+	}
+
+	return c.Status(statusCode).JSON(response)
+}
+
+// SuccessResponseSimple crea una respuesta exitosa sin status code
+func SuccessResponseSimple(c *fiber.Ctx, message string, data interface{}) error {
 	response := Response{
 		Success:   true,
 		Message:   message,
@@ -62,7 +91,7 @@ func ErrorResponseWithCode(c *fiber.Ctx, statusCode int, message string, err err
 		errorDetail.Details = err.Error()
 	}
 
-	response := ErrorResponse{
+	response := ErrorResponseStruct{
 		Success:   false,
 		Message:   message,
 		Error:     errorDetail,
@@ -105,7 +134,7 @@ func ValidationErrorResponse(c *fiber.Ctx, message string, validationErrors inte
 		Details: validationErrors,
 	}
 
-	response := ErrorResponse{
+	response := ErrorResponseStruct{
 		Success:   false,
 		Message:   message,
 		Error:     errorDetail,
@@ -155,8 +184,8 @@ func GetErrorCode(statusCode int) string {
 }
 
 // NewErrorResponse crea un ErrorResponse (constructor correcto)
-func NewErrorResponse(message string, code string) ErrorResponse {
-	return ErrorResponse{
+func NewErrorResponse(message string, code string) ErrorResponseStruct {
+	return ErrorResponseStruct{
 		Success: false,
 		Message: message,
 		Error: &ErrorDetail{
@@ -168,7 +197,7 @@ func NewErrorResponse(message string, code string) ErrorResponse {
 }
 
 // WithDetails agrega detalles adicionales al ErrorResponse
-func (e ErrorResponse) WithDetails(details interface{}) ErrorResponse {
+func (e ErrorResponseStruct) WithDetails(details interface{}) ErrorResponseStruct {
 	if e.Error != nil {
 		e.Error.Details = details
 	}
@@ -176,7 +205,7 @@ func (e ErrorResponse) WithDetails(details interface{}) ErrorResponse {
 }
 
 // WithField agrega campo específico al ErrorResponse
-func (e ErrorResponse) WithField(field string) ErrorResponse {
+func (e ErrorResponseStruct) WithField(field string) ErrorResponseStruct {
 	if e.Error != nil {
 		e.Error.Field = field
 	}

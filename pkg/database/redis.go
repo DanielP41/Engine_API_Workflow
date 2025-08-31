@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -39,6 +40,19 @@ func ConnectRedis(redisURL string) (*redis.Client, error) {
 	RedisClient = client
 
 	return client, nil
+}
+
+// NewRedisConnection compatible con main.go - AGREGADO
+func NewRedisConnection(host, port, password string, db int) (*redis.Client, error) {
+	// Construir URL de Redis
+	var redisURL string
+	if password != "" {
+		redisURL = fmt.Sprintf("redis://:%s@%s:%s/%d", password, host, port, db)
+	} else {
+		redisURL = fmt.Sprintf("redis://%s:%s/%d", host, port, db)
+	}
+
+	return ConnectRedis(redisURL)
 }
 
 // GetRedisClient retorna el cliente Redis global

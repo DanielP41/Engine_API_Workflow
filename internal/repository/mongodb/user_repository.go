@@ -8,6 +8,7 @@ import (
 
 	"Engine_API_Workflow/internal/models"
 	"Engine_API_Workflow/internal/repository"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -67,17 +68,17 @@ func NewUserRepository(db *mongo.Database) repository.UserRepository {
 	}
 }
 
-// Create creates a new user
-func (r *userRepository) Create(ctx context.Context, user *models.User) error {
+// Create creates a new user - CORREGIDO: retorna (*models.User, error)
+func (r *userRepository) Create(ctx context.Context, user *models.User) (*models.User, error) {
 	if user == nil {
-		return errors.New("user cannot be nil")
+		return nil, errors.New("user cannot be nil")
 	}
 
 	// Hash password before saving
 	if user.Password != "" {
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
 		if err != nil {
-			return fmt.Errorf("failed to hash password: %w", err)
+			return nil, fmt.Errorf("failed to hash password: %w", err)
 		}
 		user.Password = string(hashedPassword)
 	}
@@ -88,13 +89,13 @@ func (r *userRepository) Create(ctx context.Context, user *models.User) error {
 	result, err := r.collection.InsertOne(ctx, user)
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
-			return errors.New("user with this email already exists")
+			return nil, errors.New("user with this email already exists")
 		}
-		return fmt.Errorf("failed to create user: %w", err)
+		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
 	user.ID = result.InsertedID.(primitive.ObjectID)
-	return nil
+	return user, nil // CAMBIO: retornar el usuario creado
 }
 
 // GetByID retrieves a user by ID
@@ -470,4 +471,24 @@ func (r *userRepository) EmailExistsExcludeID(ctx context.Context, email string,
 		return false, fmt.Errorf("failed to check email existence: %w", err)
 	}
 	return count > 0, nil
+}
+
+// AGREGADO: Métodos de compatibilidad para auth.go
+
+// GetByIDString método de compatibilidad
+func (r *userRepository) GetByIDString(ctx context.Context, id string) (*models.User, error) {
+	objectID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, errors.New("invalid user ID format")
+	}
+	return r.GetByID(ctx, objectID)
+}
+
+// UpdateLastLoginString método de compatibilidad
+func (r *userRepository) UpdateLastLoginString(ctx context.Context, id string) error {
+	objectID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return errors.New("invalid user ID format")
+	}
+	return r.UpdateLastLogin(ctx, objectID)
 }

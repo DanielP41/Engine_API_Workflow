@@ -57,15 +57,19 @@ type WorkflowWebhook struct {
 	Description string             `json:"description,omitempty" bson:"description,omitempty"`
 }
 
-// WorkflowStats representa estadísticas de ejecución
+// WorkflowStats representa estadísticas de ejecución - CORREGIDO para coincidir con workflow_repository.go
 type WorkflowStats struct {
-	TotalExecutions    int64      `json:"total_executions" bson:"total_executions" default:"0"`
-	SuccessfulRuns     int64      `json:"successful_runs" bson:"successful_runs" default:"0"`
-	FailedRuns         int64      `json:"failed_runs" bson:"failed_runs" default:"0"`
-	AvgExecutionTimeMs float64    `json:"avg_execution_time_ms" bson:"avg_execution_time_ms" default:"0"`
-	LastExecutedAt     *time.Time `json:"last_executed_at,omitempty" bson:"last_executed_at,omitempty"`
-	LastSuccess        *time.Time `json:"last_success,omitempty" bson:"last_success,omitempty"`
-	LastFailure        *time.Time `json:"last_failure,omitempty" bson:"last_failure,omitempty"`
+	TotalExecutions      int64      `json:"total_executions" bson:"total_executions" default:"0"`
+	SuccessfulRuns       int64      `json:"successful_runs" bson:"successful_runs" default:"0"`
+	FailedRuns           int64      `json:"failed_runs" bson:"failed_runs" default:"0"`
+	SuccessfulExecutions int64      `json:"successful_executions" bson:"successful_executions" default:"0"`   // AGREGADO
+	FailedExecutions     int64      `json:"failed_executions" bson:"failed_executions" default:"0"`           // AGREGADO
+	AverageExecutionTime float64    `json:"average_execution_time" bson:"average_execution_time" default:"0"` // AGREGADO
+	AvgExecutionTimeMs   float64    `json:"avg_execution_time_ms" bson:"avg_execution_time_ms" default:"0"`
+	LastExecutedAt       *time.Time `json:"last_executed_at,omitempty" bson:"last_executed_at,omitempty"`
+	LastExecutionAt      *time.Time `json:"last_execution_at,omitempty" bson:"last_execution_at,omitempty"` // AGREGADO alias
+	LastSuccess          *time.Time `json:"last_success,omitempty" bson:"last_success,omitempty"`
+	LastFailure          *time.Time `json:"last_failure,omitempty" bson:"last_failure,omitempty"`
 }
 
 // Workflow representa la estructura principal de un flujo de trabajo
@@ -85,8 +89,12 @@ type Workflow struct {
 	Priority int               `json:"priority" bson:"priority" validate:"min=1,max=5" default:"3"`
 
 	// Versionado
-	Version     int    `json:"version" bson:"version" default:"1"`
-	VersionName string `json:"version_name,omitempty" bson:"version_name,omitempty"`
+	Version          int                 `json:"version" bson:"version" default:"1"`
+	VersionName      string              `json:"version_name,omitempty" bson:"version_name,omitempty"`
+	ParentWorkflowID *primitive.ObjectID `json:"parent_workflow_id,omitempty" bson:"parent_workflow_id,omitempty"` // AGREGADO
+
+	// Estado - CORREGIDO: cambiar a pointer para permitir asignación
+	Active *bool `json:"is_active,omitempty" bson:"is_active,omitempty"`
 
 	// Webhooks
 	Webhooks []WorkflowWebhook `json:"webhooks,omitempty" bson:"webhooks,omitempty"`
@@ -99,8 +107,8 @@ type Workflow struct {
 	Environment    string                 `json:"environment,omitempty" bson:"environment,omitempty" validate:"oneof=development staging production"`
 	Configuration  map[string]interface{} `json:"configuration,omitempty" bson:"configuration,omitempty"`
 
-	// Estadísticas y monitoreo
-	Stats WorkflowStats `json:"stats" bson:"stats"`
+	// Estadísticas y monitoreo - CORREGIDO: cambiar a pointer
+	Stats *WorkflowStats `json:"stats,omitempty" bson:"stats,omitempty"`
 
 	// Metadatos temporales
 	CreatedAt time.Time  `json:"created_at" bson:"created_at"`
@@ -172,9 +180,9 @@ type WorkflowResponse struct {
 	UpdatedAt      time.Time              `json:"updated_at"`
 }
 
-// IsActive verifica si el workflow está activo
+// IsActive verifica si el workflow está activo - CORREGIDO
 func (w *Workflow) IsActive() bool {
-	return w.Status == WorkflowStatusActive && w.DeletedAt == nil
+	return w.Status == WorkflowStatusActive && w.DeletedAt == nil && (w.Active == nil || *w.Active)
 }
 
 // CanBeExecuted verifica si el workflow puede ser ejecutado
@@ -233,7 +241,7 @@ func (w *Workflow) IncrementVersion() {
 	w.UpdatedAt = time.Now()
 }
 
-// SetDefaults establece valores por defecto
+// SetDefaults establece valores por defecto - CORREGIDO
 func (w *Workflow) SetDefaults() {
 	if w.Status == "" {
 		w.Status = WorkflowStatusDraft
@@ -262,4 +270,24 @@ func (w *Workflow) SetDefaults() {
 		w.CreatedAt = now
 	}
 	w.UpdatedAt = now
+
+	// CORREGIDO: Inicializar Active como pointer
+	if w.Active == nil {
+		active := true
+		w.Active = &active
+	}
+
+	// CORREGIDO: Inicializar Stats como pointer
+	if w.Stats == nil {
+		w.Stats = &WorkflowStats{
+			TotalExecutions:      0,
+			SuccessfulRuns:       0,
+			FailedRuns:           0,
+			SuccessfulExecutions: 0,
+			FailedExecutions:     0,
+			AverageExecutionTime: 0,
+			AvgExecutionTimeMs:   0,
+			LastExecutionAt:      nil,
+		}
+	}
 }

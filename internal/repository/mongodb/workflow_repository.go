@@ -120,7 +120,7 @@ func (r *workflowRepository) Create(ctx context.Context, workflow *models.Workfl
 	}
 	if workflow.IsActive == nil {
 		active := true
-		workflow.IsActive = &active
+		workflow.Active = &active
 	}
 
 	// Inicializar estadísticas si no existen

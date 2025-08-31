@@ -92,3 +92,89 @@ type ErrorStats struct {
 	Error string `json:"error"`
 	Count int64  `json:"count"`
 }
+
+// AGREGADO: Tipos adicionales faltantes para compatibilidad completa
+
+// Log alias para WorkflowLog (compatibilidad con log_repository.go)
+type Log = WorkflowLog
+
+// ExecutionStatus representa el estado de ejecución (alias para WorkflowStatus)
+type ExecutionStatus = WorkflowStatus
+
+// LogStatistics para estadísticas del sistema completo
+type LogStatistics struct {
+	TotalExecutions      int64                 `json:"total_executions"`
+	SuccessfulRuns       int64                 `json:"successful_runs"`
+	FailedRuns           int64                 `json:"failed_runs"`
+	ExecutionsToday      int64                 `json:"executions_today"`
+	ExecutionsThisWeek   int64                 `json:"executions_this_week"`
+	ExecutionsThisMonth  int64                 `json:"executions_this_month"`
+	AverageExecutionTime float64               `json:"average_execution_time"`
+	SuccessRate          float64               `json:"success_rate"`
+	FailureRate          float64               `json:"failure_rate"`
+	TriggerDistribution  []TriggerDistribution `json:"trigger_distribution"`
+	ErrorDistribution    []ErrorDistribution   `json:"error_distribution"`
+	HourlyDistribution   []HourlyStats         `json:"hourly_distribution"`
+	LastUpdated          time.Time             `json:"last_updated"`
+	DataPeriod           string                `json:"data_period"`
+}
+
+// TriggerDistribution para distribución de triggers
+type TriggerDistribution struct {
+	TriggerType TriggerType `json:"trigger_type"`
+	Count       int64       `json:"count"`
+	Percentage  float64     `json:"percentage"`
+}
+
+// ErrorDistribution para distribución de errores
+type ErrorDistribution struct {
+	ErrorType    string    `json:"error_type"`
+	ErrorMessage string    `json:"error_message"`
+	Count        int64     `json:"count"`
+	Percentage   float64   `json:"percentage"`
+	LastOccurred time.Time `json:"last_occurred"`
+}
+
+// HourlyStats para estadísticas por hora
+type HourlyStats struct {
+	Hour           int     `json:"hour"`
+	ExecutionCount int64   `json:"execution_count"`
+	SuccessCount   int64   `json:"success_count"`
+	FailureCount   int64   `json:"failure_count"`
+	AverageTime    float64 `json:"average_time"`
+}
+
+// LogQueryRequest para consultas de logs
+type LogQueryRequest struct {
+	WorkflowID  *primitive.ObjectID `json:"workflow_id,omitempty"`
+	UserID      *primitive.ObjectID `json:"user_id,omitempty"`
+	Status      *WorkflowStatus     `json:"status,omitempty"`
+	TriggerType *TriggerType        `json:"trigger_type,omitempty"`
+	StartDate   *time.Time          `json:"start_date,omitempty"`
+	EndDate     *time.Time          `json:"end_date,omitempty"`
+	Page        int                 `json:"page" validate:"min=1"`
+	PageSize    int                 `json:"page_size" validate:"min=1,max=100"`
+	SortBy      string              `json:"sort_by,omitempty"`
+	SortOrder   string              `json:"sort_order,omitempty" validate:"omitempty,oneof=asc desc"`
+}
+
+// LogListResponse para respuestas de lista de logs
+type LogListResponse struct {
+	Logs       []*WorkflowLog `json:"logs"`
+	Total      int64          `json:"total"`
+	Page       int            `json:"page"`
+	PageSize   int            `json:"page_size"`
+	TotalPages int            `json:"total_pages"`
+}
+
+// WorkflowListResponse para respuestas de lista de workflows
+type WorkflowListResponse struct {
+	Workflows  []*Workflow `json:"workflows"`
+	Total      int64       `json:"total"`
+	Page       int         `json:"page"`
+	PageSize   int         `json:"page_size"`
+	TotalPages int         `json:"total_pages"`
+}
+
+// ExecutedWorkflowStep para respuestas (alias de WorkflowStep)
+type ExecutedWorkflowStep = WorkflowStep
