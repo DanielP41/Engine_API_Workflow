@@ -1,6 +1,114 @@
-import "fmt"
+package mongodb
 
-func (r *logRepository) Update(ctx context.Context, logID primitive.ObjectID, updates map[string]interface{}) error {
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+
+	"Engine_API_Workflow/internal/models"
+	"Engine_API_Workflow/internal/repository"
+)
+
+type logRepository struct {
+	collection *mongo.Collection
+}
+
+// NewLogRepository creates a new log repository
+func NewLogRepository(db *mongo.Database) repository.LogRepository {
+	collection := db.Collection("logs")
+
+	// Create indexes
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	indexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: "workflow_id", Value: 1},
+				{Key: "created_at", Value: -1},
+			},
+			Options: options.Index().SetName("workflow_created_idx"),
+		},
+		{
+			Keys: bson.D{
+				{Key: "execution_id", Value: 1},
+			},
+			Options: options.Index().SetName("execution_id_idx"),
+		},
+		{
+			Keys: bson.D{
+				{Key: "status", Value: 1},
+				{Key: "created_at", Value: -1},
+			},
+			Options: options.Index().SetName("status_created_idx"),
+		},
+		{
+			Keys: bson.D{
+				{Key: "user_id", Value: 1},
+				{Key: "created_at", Value: -1},
+			},
+			Options: options.Index().SetName("user_created_idx"),
+		},
+	}
+
+	collection.Indexes().CreateMany(ctx, indexes)
+
+	return &logRepository{
+		collection: collection,
+	}
+}
+
+func (r *logRepository) Create(ctx context.Context, log *models.WorkflowLog) error {
+	if log.ID.IsZero() {
+		log.ID = primitive.NewObjectID()
+	}
+	if log.CreatedAt.IsZero() {
+		log.CreatedAt = time.Now()
+	}
+	log.UpdatedAt = time.Now()
+
+	_, err := r.collection.InsertOne(ctx, log)
+	if err != nil {
+		return fmt.Errorf("failed to create log: %w", err)
+	}
+
+	return nil
+}
+
+func (r *logRepository) GetByID(ctx context.Context, id primitive.ObjectID) (*models.WorkflowLog, error) {
+	var log models.WorkflowLog
+
+	err := r.collection.FindOne(ctx, bson.M{"_id": id}).Decode(&log)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, repository.ErrLogNotFound
+		}
+		return nil, fmt.Errorf("failed to get log by ID: %w", err)
+	}
+
+	return &log, nil
+}
+
+func (r *logRepository) GetByExecutionID(ctx context.Context, executionID string) (*models.WorkflowLog, error) {
+	var log models.WorkflowLog
+
+	err := r.collection.FindOne(ctx, bson.M{"execution_id": executionID}).Decode(&log)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, repository.ErrLogNotFound
+		}
+		return nil, fmt.Errorf("failed to get log by execution ID: %w", err)
+	}
+
+	return &log, nil
+}
+
+func (r *logRepository) Update(ctx context.Context, id primitive.ObjectID, updates map[string]interface{}) error {
 	if len(updates) == 0 {
 		return fmt.Errorf("no updates provided")
 	}
@@ -9,7 +117,7 @@ func (r *logRepository) Update(ctx context.Context, logID primitive.ObjectID, up
 
 	result, err := r.collection.UpdateOne(
 		ctx,
-		bson.M{"_id": logID},
+		bson.M{"_id": id},
 		bson.M{"$set": updates},
 	)
 	if err != nil {
@@ -23,23 +131,8 @@ func (r *logRepository) Update(ctx context.Context, logID primitive.ObjectID, up
 	return nil
 }
 
-func (r *logRepository) Update(ctx context.Context, log *models.Log) error {
-	updates := map[string]interface{}{
-		"status":       log.Status,
-		"error":        log.Error,
-		"result":       log.Result,
-		"started_at":   log.StartedAt,
-		"completed_at": log.CompletedAt,
-		"trigger_data": log.TriggerData,
-		"metadata":     log.Metadata,
-		"updated_at":   time.Now(),
-	}
-
-	return r.Update(ctx, log.ID, updates)
-}
-
-func (r *logRepository) Delete(ctx context.Context, logID primitive.ObjectID) error {
-	result, err := r.collection.DeleteOne(ctx, bson.M{"_id": logID})
+func (r *logRepository) Delete(ctx context.Context, id primitive.ObjectID) error {
+	result, err := r.collection.DeleteOne(ctx, bson.M{"_id": id})
 	if err != nil {
 		return fmt.Errorf("failed to delete log: %w", err)
 	}
@@ -50,6 +143,260 @@ func (r *logRepository) Delete(ctx context.Context, logID primitive.ObjectID) er
 
 	return nil
 }
+
+// GetByWorkflowID obtiene logs por workflow ID con paginación
+func (r *logRepository) GetByWorkflowID(ctx context.Context, workflowID primitive.ObjectID, opts repository.PaginationOptions) ([]models.WorkflowLog, int64, error) {
+	filter := bson.M{"workflow_id": workflowID}
+
+	// Count total
+	total, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count logs: %w", err)
+	}
+
+	// Build find options
+	findOpts := options.Find()
+	if opts.Page > 0 && opts.PageSize > 0 {
+		skip := (opts.Page - 1) * opts.PageSize
+		findOpts.SetSkip(int64(skip)).SetLimit(int64(opts.PageSize))
+	}
+
+	// Sorting
+	sortField := "created_at"
+	sortOrder := -1
+	if opts.SortBy != "" {
+		sortField = opts.SortBy
+	}
+	if !opts.SortDesc {
+		sortOrder = 1
+	}
+	findOpts.SetSort(bson.D{{Key: sortField, Value: sortOrder}})
+
+	// Execute query
+	cursor, err := r.collection.Find(ctx, filter, findOpts)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to find logs: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var logs []models.WorkflowLog
+	if err := cursor.All(ctx, &logs); err != nil {
+		return nil, 0, fmt.Errorf("failed to decode logs: %w", err)
+	}
+
+	return logs, total, nil
+}
+
+// GetByUserID obtiene logs por user ID con paginación
+func (r *logRepository) GetByUserID(ctx context.Context, userID primitive.ObjectID, opts repository.PaginationOptions) ([]models.WorkflowLog, int64, error) {
+	filter := bson.M{"user_id": userID}
+
+	// Count total
+	total, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count logs: %w", err)
+	}
+
+	// Build find options
+	findOpts := options.Find()
+	if opts.Page > 0 && opts.PageSize > 0 {
+		skip := (opts.Page - 1) * opts.PageSize
+		findOpts.SetSkip(int64(skip)).SetLimit(int64(opts.PageSize))
+	}
+
+	// Sorting
+	sortField := "created_at"
+	sortOrder := -1
+	if opts.SortBy != "" {
+		sortField = opts.SortBy
+	}
+	if !opts.SortDesc {
+		sortOrder = 1
+	}
+	findOpts.SetSort(bson.D{{Key: sortField, Value: sortOrder}})
+
+	// Execute query
+	cursor, err := r.collection.Find(ctx, filter, findOpts)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to find logs: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var logs []models.WorkflowLog
+	if err := cursor.All(ctx, &logs); err != nil {
+		return nil, 0, fmt.Errorf("failed to decode logs: %w", err)
+	}
+
+	return logs, total, nil
+}
+
+// GetStats obtiene estadísticas de logs
+func (r *logRepository) GetStats(ctx context.Context, filter repository.LogSearchFilter) (*models.LogStats, error) {
+	// Convert LogSearchFilter to MongoDB filter
+	mongoFilter := bson.M{}
+
+	if filter.WorkflowID != nil {
+		mongoFilter["workflow_id"] = *filter.WorkflowID
+	}
+	if filter.UserID != nil {
+		mongoFilter["user_id"] = *filter.UserID
+	}
+	if filter.Status != nil {
+		mongoFilter["status"] = *filter.Status
+	}
+	if filter.StartDate != nil || filter.EndDate != nil {
+		dateFilter := bson.M{}
+		if filter.StartDate != nil {
+			dateFilter["$gte"] = *filter.StartDate
+		}
+		if filter.EndDate != nil {
+			dateFilter["$lte"] = *filter.EndDate
+		}
+		mongoFilter["created_at"] = dateFilter
+	}
+
+	// Count totals
+	totalExecutions, _ := r.collection.CountDocuments(ctx, mongoFilter)
+
+	successFilter := bson.M{}
+	for k, v := range mongoFilter {
+		successFilter[k] = v
+	}
+	successFilter["status"] = "completed"
+	successfulRuns, _ := r.collection.CountDocuments(ctx, successFilter)
+
+	failedFilter := bson.M{}
+	for k, v := range mongoFilter {
+		failedFilter[k] = v
+	}
+	failedFilter["status"] = "failed"
+	failedRuns, _ := r.collection.CountDocuments(ctx, failedFilter)
+
+	// Calculate average execution time
+	pipeline := []bson.M{
+		{"$match": mongoFilter},
+		{"$match": bson.M{"duration": bson.M{"$ne": nil}}},
+		{"$group": bson.M{
+			"_id":            nil,
+			"avg_duration":   bson.M{"$avg": "$duration"},
+			"total_duration": bson.M{"$sum": "$duration"},
+		}},
+	}
+
+	cursor, err := r.collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate stats: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var avgDuration float64
+	var totalDuration int64
+	if cursor.Next(ctx) {
+		var result struct {
+			AvgDuration   float64 `bson:"avg_duration"`
+			TotalDuration int64   `bson:"total_duration"`
+		}
+		if err := cursor.Decode(&result); err == nil {
+			avgDuration = result.AvgDuration
+			totalDuration = result.TotalDuration
+		}
+	}
+
+	// Calculate success rate
+	var successRate float64
+	if totalExecutions > 0 {
+		successRate = float64(successfulRuns) / float64(totalExecutions) * 100
+	}
+
+	return &models.LogStats{
+		TotalExecutions:      totalExecutions,
+		SuccessfulRuns:       successfulRuns,
+		FailedRuns:           failedRuns,
+		AverageExecutionTime: avgDuration,
+		TotalExecutionTime:   totalDuration,
+		SuccessRate:          successRate,
+		MostUsedTriggers:     []models.TriggerStats{},
+		ErrorDistribution:    []models.ErrorStats{},
+	}, nil
+}
+
+// Search busca logs con filtros
+func (r *logRepository) Search(ctx context.Context, filter repository.LogSearchFilter, opts repository.PaginationOptions) ([]models.WorkflowLog, int64, error) {
+	// Convert LogSearchFilter to MongoDB filter
+	mongoFilter := bson.M{}
+
+	if filter.WorkflowID != nil {
+		mongoFilter["workflow_id"] = *filter.WorkflowID
+	}
+	if filter.UserID != nil {
+		mongoFilter["user_id"] = *filter.UserID
+	}
+	if filter.ExecutionID != nil {
+		mongoFilter["execution_id"] = *filter.ExecutionID
+	}
+	if filter.Status != nil {
+		mongoFilter["status"] = *filter.Status
+	}
+	if filter.Level != nil {
+		mongoFilter["level"] = *filter.Level
+	}
+	if filter.StartDate != nil || filter.EndDate != nil {
+		dateFilter := bson.M{}
+		if filter.StartDate != nil {
+			dateFilter["$gte"] = *filter.StartDate
+		}
+		if filter.EndDate != nil {
+			dateFilter["$lte"] = *filter.EndDate
+		}
+		mongoFilter["created_at"] = dateFilter
+	}
+	if filter.MessageContains != nil && *filter.MessageContains != "" {
+		mongoFilter["$or"] = []bson.M{
+			{"workflow_name": bson.M{"$regex": *filter.MessageContains, "$options": "i"}},
+			{"error_message": bson.M{"$regex": *filter.MessageContains, "$options": "i"}},
+		}
+	}
+
+	// Count total
+	total, err := r.collection.CountDocuments(ctx, mongoFilter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count logs: %w", err)
+	}
+
+	// Build find options
+	findOpts := options.Find()
+	if opts.Page > 0 && opts.PageSize > 0 {
+		skip := (opts.Page - 1) * opts.PageSize
+		findOpts.SetSkip(int64(skip)).SetLimit(int64(opts.PageSize))
+	}
+
+	// Sorting
+	sortField := "created_at"
+	sortOrder := -1
+	if opts.SortBy != "" {
+		sortField = opts.SortBy
+	}
+	if !opts.SortDesc {
+		sortOrder = 1
+	}
+	findOpts.SetSort(bson.D{{Key: sortField, Value: sortOrder}})
+
+	// Execute query
+	cursor, err := r.collection.Find(ctx, mongoFilter, findOpts)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to find logs: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var logs []models.WorkflowLog
+	if err := cursor.All(ctx, &logs); err != nil {
+		return nil, 0, fmt.Errorf("failed to decode logs: %w", err)
+	}
+
+	return logs, total, nil
+}
+
+// Métodos adicionales requeridos por la interfaz LogRepository
 
 func (r *logRepository) Query(ctx context.Context, req *models.LogQueryRequest) (*models.LogListResponse, error) {
 	filter := bson.M{}
@@ -401,7 +748,15 @@ func (r *logRepository) GetExecutionHistory(ctx context.Context, workflowID prim
 
 func (r *logRepository) DeleteOldLogs(ctx context.Context, daysOld int) (int64, error) {
 	cutoff := time.Now().AddDate(0, 0, -daysOld)
-	return r.DeleteOldLogs(ctx, cutoff)
+	result, err := r.collection.DeleteMany(
+		ctx,
+		bson.M{"created_at": bson.M{"$lt": cutoff}},
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete old logs: %w", err)
+	}
+
+	return result.DeletedCount, nil
 }
 
 func (r *logRepository) DeleteLogsByWorkflow(ctx context.Context, workflowID primitive.ObjectID) (int64, error) {
@@ -609,322 +964,3 @@ func (r *logRepository) listWithFilter(ctx context.Context, filter bson.M, page,
 		TotalPages: totalPages,
 	}, nil
 }
-
-// MÉTODOS ESPECÍFICOS PARA COMPATIBILIDAD CON log_service.go
-
-func (r *logRepository) GetByWorkflowID(ctx context.Context, workflowID primitive.ObjectID, opts repository.PaginationOptions) ([]models.WorkflowLog, int64, error) {
-	filter := bson.M{"workflow_id": workflowID}
-
-	// Count total
-	total, err := r.collection.CountDocuments(ctx, filter)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count logs: %w", err)
-	}
-
-	// Build find options
-	findOpts := options.Find()
-	if opts.Page > 0 && opts.PageSize > 0 {
-		skip := (opts.Page - 1) * opts.PageSize
-		findOpts.SetSkip(int64(skip)).SetLimit(int64(opts.PageSize))
-	}
-
-	// Sorting
-	sortField := "created_at"
-	sortOrder := -1
-	if opts.SortBy != "" {
-		sortField = opts.SortBy
-	}
-	if opts.SortDesc {
-		sortOrder = -1
-	} else {
-		sortOrder = 1
-	}
-	findOpts.SetSort(bson.D{{Key: sortField, Value: sortOrder}})
-
-	// Execute query
-	cursor, err := r.collection.Find(ctx, filter, findOpts)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to find logs: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var logs []models.WorkflowLog
-	if err := cursor.All(ctx, &logs); err != nil {
-		return nil, 0, fmt.Errorf("failed to decode logs: %w", err)
-	}
-
-	return logs, total, nil
-}
-
-func (r *logRepository) GetByUserID(ctx context.Context, userID primitive.ObjectID, opts repository.PaginationOptions) ([]models.WorkflowLog, int64, error) {
-	filter := bson.M{"user_id": userID}
-
-	// Count total
-	total, err := r.collection.CountDocuments(ctx, filter)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count logs: %w", err)
-	}
-
-	// Build find options
-	findOpts := options.Find()
-	if opts.Page > 0 && opts.PageSize > 0 {
-		skip := (opts.Page - 1) * opts.PageSize
-		findOpts.SetSkip(int64(skip)).SetLimit(int64(opts.PageSize))
-	}
-
-	// Sorting
-	sortField := "created_at"
-	sortOrder := -1
-	if opts.SortBy != "" {
-		sortField = opts.SortBy
-	}
-	if opts.SortDesc {
-		sortOrder = -1
-	} else {
-		sortOrder = 1
-	}
-	findOpts.SetSort(bson.D{{Key: sortField, Value: sortOrder}})
-
-	// Execute query
-	cursor, err := r.collection.Find(ctx, filter, findOpts)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to find logs: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var logs []models.WorkflowLog
-	if err := cursor.All(ctx, &logs); err != nil {
-		return nil, 0, fmt.Errorf("failed to decode logs: %w", err)
-	}
-
-	return logs, total, nil
-}
-
-func (r *logRepository) GetStats(ctx context.Context, filter repository.LogSearchFilter) (*models.LogStats, error) {
-	// Convert LogSearchFilter to MongoDB filter
-	mongoFilter := bson.M{}
-
-	if filter.WorkflowID != nil {
-		mongoFilter["workflow_id"] = *filter.WorkflowID
-	}
-	if filter.UserID != nil {
-		mongoFilter["user_id"] = *filter.UserID
-	}
-	if filter.Status != nil {
-		mongoFilter["status"] = *filter.Status
-	}
-	if filter.StartDate != nil || filter.EndDate != nil {
-		dateFilter := bson.M{}
-		if filter.StartDate != nil {
-			dateFilter["$gte"] = *filter.StartDate
-		}
-		if filter.EndDate != nil {
-			dateFilter["$lte"] = *filter.EndDate
-		}
-		mongoFilter["created_at"] = dateFilter
-	}
-
-	// Count totals
-	totalExecutions, _ := r.collection.CountDocuments(ctx, mongoFilter)
-
-	successFilter := bson.M{}
-	for k, v := range mongoFilter {
-		successFilter[k] = v
-	}
-	successFilter["status"] = "completed"
-	successfulRuns, _ := r.collection.CountDocuments(ctx, successFilter)
-
-	failedFilter := bson.M{}
-	for k, v := range mongoFilter {
-		failedFilter[k] = v
-	}
-	failedFilter["status"] = "failed"
-	failedRuns, _ := r.collection.CountDocuments(ctx, failedFilter)
-
-	// Calculate average execution time
-	pipeline := []bson.M{
-		{"$match": mongoFilter},
-		{"$match": bson.M{"duration": bson.M{"$ne": nil}}},
-		{"$group": bson.M{
-			"_id":            nil,
-			"avg_duration":   bson.M{"$avg": "$duration"},
-			"total_duration": bson.M{"$sum": "$duration"},
-		}},
-	}
-
-	cursor, err := r.collection.Aggregate(ctx, pipeline)
-	if err != nil {
-		return nil, fmt.Errorf("failed to aggregate stats: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var avgDuration float64
-	var totalDuration int64
-	if cursor.Next(ctx) {
-		var result struct {
-			AvgDuration   float64 `bson:"avg_duration"`
-			TotalDuration int64   `bson:"total_duration"`
-		}
-		if err := cursor.Decode(&result); err == nil {
-			avgDuration = result.AvgDuration
-			totalDuration = result.TotalDuration
-		}
-	}
-
-	// Get trigger stats
-	triggerPipeline := []bson.M{
-		{"$match": mongoFilter},
-		{"$group": bson.M{
-			"_id":   "$trigger_type",
-			"count": bson.M{"$sum": 1},
-		}},
-		{"$sort": bson.M{"count": -1}},
-	}
-
-	triggerCursor, err := r.collection.Aggregate(ctx, triggerPipeline)
-	if err != nil {
-		return nil, fmt.Errorf("failed to aggregate trigger stats: %w", err)
-	}
-	defer triggerCursor.Close(ctx)
-
-	var triggerStats []models.TriggerStats
-	for triggerCursor.Next(ctx) {
-		var result struct {
-			ID    string `bson:"_id"`
-			Count int64  `bson:"count"`
-		}
-		if err := triggerCursor.Decode(&result); err == nil {
-			triggerStats = append(triggerStats, models.TriggerStats{
-				Type:  models.TriggerType(result.ID),
-				Count: result.Count,
-			})
-		}
-	}
-
-	// Get error stats
-	errorPipeline := []bson.M{
-		{"$match": mongoFilter},
-		{"$match": bson.M{"error_message": bson.M{"$ne": ""}}},
-		{"$group": bson.M{
-			"_id":   "$error_message",
-			"count": bson.M{"$sum": 1},
-		}},
-		{"$sort": bson.M{"count": -1}},
-		{"$limit": 10},
-	}
-
-	errorCursor, err := r.collection.Aggregate(ctx, errorPipeline)
-	if err != nil {
-		return nil, fmt.Errorf("failed to aggregate error stats: %w", err)
-	}
-	defer errorCursor.Close(ctx)
-
-	var errorStats []models.ErrorStats
-	for errorCursor.Next(ctx) {
-		var result struct {
-			ID    string `bson:"_id"`
-			Count int64  `bson:"count"`
-		}
-		if err := errorCursor.Decode(&result); err == nil {
-			errorStats = append(errorStats, models.ErrorStats{
-				Error: result.ID,
-				Count: result.Count,
-			})
-		}
-	}
-
-	// Calculate success rate
-	var successRate float64
-	if totalExecutions > 0 {
-		successRate = float64(successfulRuns) / float64(totalExecutions) * 100
-	}
-
-	return &models.LogStats{
-		TotalExecutions:      totalExecutions,
-		SuccessfulRuns:       successfulRuns,
-		FailedRuns:           failedRuns,
-		AverageExecutionTime: avgDuration,
-		TotalExecutionTime:   totalDuration,
-		SuccessRate:          successRate,
-		MostUsedTriggers:     triggerStats,
-		ErrorDistribution:    errorStats,
-	}, nil
-}
-
-func (r *logRepository) Search(ctx context.Context, filter repository.LogSearchFilter, opts repository.PaginationOptions) ([]models.WorkflowLog, int64, error) {
-	// Convert LogSearchFilter to MongoDB filter
-	mongoFilter := bson.M{}
-
-	if filter.WorkflowID != nil {
-		mongoFilter["workflow_id"] = *filter.WorkflowID
-	}
-	if filter.UserID != nil {
-		mongoFilter["user_id"] = *filter.UserID
-	}
-	if filter.ExecutionID != nil {
-		mongoFilter["execution_id"] = *filter.ExecutionID
-	}
-	if filter.Status != nil {
-		mongoFilter["status"] = *filter.Status
-	}
-	if filter.Level != nil {
-		mongoFilter["level"] = *filter.Level
-	}
-	if filter.StartDate != nil || filter.EndDate != nil {
-		dateFilter := bson.M{}
-		if filter.StartDate != nil {
-			dateFilter["$gte"] = *filter.StartDate
-		}
-		if filter.EndDate != nil {
-			dateFilter["$lte"] = *filter.EndDate
-		}
-		mongoFilter["created_at"] = dateFilter
-	}
-	if filter.MessageContains != nil && *filter.MessageContains != "" {
-		mongoFilter["$or"] = []bson.M{
-			{"workflow_name": bson.M{"$regex": *filter.MessageContains, "$options": "i"}},
-			{"error_message": bson.M{"$regex": *filter.MessageContains, "$options": "i"}},
-		}
-	}
-
-	// Count total
-	total, err := r.collection.CountDocuments(ctx, mongoFilter)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count logs: %w", err)
-	}
-
-	// Build find options
-	findOpts := options.Find()
-	if opts.Page > 0 && opts.PageSize > 0 {
-		skip := (opts.Page - 1) * opts.PageSize
-		findOpts.SetSkip(int64(skip)).SetLimit(int64(opts.PageSize))
-	}
-
-	// Sorting
-	sortField := "created_at"
-	sortOrder := -1
-	if opts.SortBy != "" {
-		sortField = opts.SortBy
-	}
-	if opts.SortDesc {
-		sortOrder = -1
-	} else {
-		sortOrder = 1
-	}
-	findOpts.SetSort(bson.D{{Key: sortField, Value: sortOrder}})
-
-	// Execute query
-	cursor, err := r.collection.Find(ctx, mongoFilter, findOpts)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to find logs: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var logs []models.WorkflowLog
-	if err := cursor.All(ctx, &logs); err != nil {
-		return nil, 0, fmt.Errorf("failed to decode logs: %w", err)
-	}
-
-	return logs, total, nil
-}
-

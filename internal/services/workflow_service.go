@@ -399,13 +399,13 @@ func (s *workflowService) toWorkflowResponse(workflow *models.Workflow) *models.
 		return nil
 	}
 
-	// Convertir steps a ExecutedWorkflowStep
+	// Convertir steps a ExecutedWorkflowStep - CORREGIDO
 	executedSteps := make([]models.ExecutedWorkflowStep, len(workflow.Steps))
 	for i, step := range workflow.Steps {
 		executedSteps[i] = models.ExecutedWorkflowStep{
 			ID:     step.ID,
 			Name:   step.Name,
-			Type:   models.ActionType(step.Type),
+			Type:   step.Type, // CORREGIDO: usar step.Type directamente sin conversión
 			Config: step.Config,
 		}
 	}
