@@ -180,7 +180,7 @@ type WorkflowResponse struct {
 	UpdatedAt      time.Time              `json:"updated_at"`
 }
 
-// IsActive verifica si el workflow está activo - CORREGIDO
+// IsActive verifica si el workflow está activo - SOLO UNA DEFINICIÓN
 func (w *Workflow) IsActive() bool {
 	return w.Status == WorkflowStatusActive && w.DeletedAt == nil && (w.Active == nil || *w.Active)
 }
@@ -291,3 +291,18 @@ func (w *Workflow) SetDefaults() {
 		}
 	}
 }
+
+type WorkflowListResponse struct {
+	Workflows  []*Workflow `json:"workflows"`
+	Total      int64       `json:"total"`
+	Page       int         `json:"page"`
+	PageSize   int         `json:"page_size"`
+	TotalPages int         `json:"total_pages"`
+	// Campos adicionales para compatibilidad
+	TotalCount int64 `json:"total_count,omitempty"`
+	HasNext    bool  `json:"has_next,omitempty"`
+	HasPrev    bool  `json:"has_prev,omitempty"`
+}
+
+// ExecutedWorkflowStep para respuestas (alias de WorkflowStep)
+type ExecutedWorkflowStep = WorkflowStep

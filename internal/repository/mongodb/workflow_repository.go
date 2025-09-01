@@ -118,7 +118,7 @@ func (r *workflowRepository) Create(ctx context.Context, workflow *models.Workfl
 	if workflow.Version == 0 {
 		workflow.Version = 1
 	}
-	if workflow.IsActive == nil {
+	if workflow.Active == nil {
 		active := true
 		workflow.Active = &active
 	}
@@ -160,207 +160,8 @@ func (r *workflowRepository) GetByID(ctx context.Context, id primitive.ObjectID)
 	return &workflow, nil
 }
 
-// GetByUserID obtiene workflows de un usuario con paginación
-func (r *workflowRepository) GetByUserID(ctx context.Context, userID primitive.ObjectID, limit, skip int) ([]*models.Workflow, error) {
-	if userID.IsZero() {
-		return nil, fmt.Errorf("invalid user ID")
-	}
-
-	// Validar límites
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-	if skip < 0 {
-		skip = 0
-	}
-
-	filter := bson.M{"user_id": userID}
-	opts := options.Find().
-		SetLimit(int64(limit)).
-		SetSkip(int64(skip)).
-		SetSort(bson.D{{Key: "created_at", Value: -1}})
-
-	cursor, err := r.collection.Find(ctx, filter, opts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find workflows by user: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var workflows []*models.Workflow
-	if err = cursor.All(ctx, &workflows); err != nil {
-		return nil, fmt.Errorf("failed to decode workflows: %w", err)
-	}
-
-	return workflows, nil
-}
-
-// GetByStatus obtiene workflows por estatus
-func (r *workflowRepository) GetByStatus(ctx context.Context, status string, limit, skip int) ([]*models.Workflow, error) {
-	if status == "" {
-		return nil, fmt.Errorf("status cannot be empty")
-	}
-
-	// Validar límites
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-	if skip < 0 {
-		skip = 0
-	}
-
-	filter := bson.M{"status": status}
-	opts := options.Find().
-		SetLimit(int64(limit)).
-		SetSkip(int64(skip)).
-		SetSort(bson.D{{Key: "created_at", Value: -1}})
-
-	cursor, err := r.collection.Find(ctx, filter, opts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find workflows by status: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var workflows []*models.Workflow
-	if err = cursor.All(ctx, &workflows); err != nil {
-		return nil, fmt.Errorf("failed to decode workflows: %w", err)
-	}
-
-	return workflows, nil
-}
-
-// GetByTags obtiene workflows que contengan cualquiera de los tags especificados
-func (r *workflowRepository) GetByTags(ctx context.Context, tags []string, limit, skip int) ([]*models.Workflow, error) {
-	if len(tags) == 0 {
-		return nil, fmt.Errorf("at least one tag is required")
-	}
-
-	// Validar límites
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-	if skip < 0 {
-		skip = 0
-	}
-
-	filter := bson.M{
-		"tags": bson.M{
-			"$in": tags,
-		},
-	}
-
-	opts := options.Find().
-		SetLimit(int64(limit)).
-		SetSkip(int64(skip)).
-		SetSort(bson.D{{Key: "created_at", Value: -1}})
-
-	cursor, err := r.collection.Find(ctx, filter, opts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find workflows by tags: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var workflows []*models.Workflow
-	if err = cursor.All(ctx, &workflows); err != nil {
-		return nil, fmt.Errorf("failed to decode workflows: %w", err)
-	}
-
-	return workflows, nil
-}
-
-// Search busca workflows con múltiples filtros
-func (r *workflowRepository) Search(ctx context.Context, filters repository.WorkflowSearchFilters) ([]*models.Workflow, int64, error) {
-	filter := bson.M{}
-
-	// Filtros básicos
-	if !filters.UserID.IsZero() {
-		filter["user_id"] = filters.UserID
-	}
-
-	if filters.Status != "" {
-		filter["status"] = filters.Status
-	}
-
-	if filters.IsActive != nil {
-		filter["is_active"] = *filters.IsActive
-	}
-
-	// Filtro por tags
-	if len(filters.Tags) > 0 {
-		filter["tags"] = bson.M{"$in": filters.Tags}
-	}
-
-	// Búsqueda por texto
-	if filters.Query != "" {
-		filter["$or"] = []bson.M{
-			{"name": bson.M{"$regex": filters.Query, "$options": "i"}},
-			{"description": bson.M{"$regex": filters.Query, "$options": "i"}},
-		}
-	}
-
-	// Filtro de fecha
-	if !filters.CreatedAfter.IsZero() || !filters.CreatedBefore.IsZero() {
-		dateFilter := bson.M{}
-		if !filters.CreatedAfter.IsZero() {
-			dateFilter["$gte"] = filters.CreatedAfter
-		}
-		if !filters.CreatedBefore.IsZero() {
-			dateFilter["$lte"] = filters.CreatedBefore
-		}
-		if len(dateFilter) > 0 {
-			filter["created_at"] = dateFilter
-		}
-	}
-
-	// Validar límites
-	limit := filters.Limit
-	skip := filters.Skip
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-	if skip < 0 {
-		skip = 0
-	}
-
-	// Contar total
-	totalCount, err := r.collection.CountDocuments(ctx, filter)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count workflows: %w", err)
-	}
-
-	// Obtener documentos
-	opts := options.Find().
-		SetLimit(int64(limit)).
-		SetSkip(int64(skip)).
-		SetSort(bson.D{{Key: "created_at", Value: -1}})
-
-	cursor, err := r.collection.Find(ctx, filter, opts)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to search workflows: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var workflows []*models.Workflow
-	if err = cursor.All(ctx, &workflows); err != nil {
-		return nil, 0, fmt.Errorf("failed to decode workflows: %w", err)
-	}
-
-	return workflows, totalCount, nil
-}
-
 // Update actualiza un workflow
-func (r *workflowRepository) Update(ctx context.Context, id primitive.ObjectID, updates bson.M) error {
+func (r *workflowRepository) Update(ctx context.Context, id primitive.ObjectID, updates map[string]interface{}) error {
 	if id.IsZero() {
 		return fmt.Errorf("invalid workflow ID")
 	}
@@ -413,45 +214,363 @@ func (r *workflowRepository) Delete(ctx context.Context, id primitive.ObjectID) 
 	return nil
 }
 
-// CreateVersion crea una nueva versión de un workflow existente
-func (r *workflowRepository) CreateVersion(ctx context.Context, originalID primitive.ObjectID, workflow *models.Workflow) error {
-	if originalID.IsZero() {
-		return fmt.Errorf("original workflow ID is required")
+// List obtiene workflows con paginación
+func (r *workflowRepository) List(ctx context.Context, page, pageSize int) (*models.WorkflowListResponse, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
 	}
 
-	// Obtener workflow original para determinar la siguiente versión
-	original, err := r.GetByID(ctx, originalID)
+	skip := (page - 1) * pageSize
+	filter := bson.M{"is_active": bson.M{"$ne": false}}
+
+	// Contar total
+	totalCount, err := r.collection.CountDocuments(ctx, filter)
 	if err != nil {
-		return fmt.Errorf("failed to get original workflow: %w", err)
+		return nil, fmt.Errorf("failed to count workflows: %w", err)
 	}
 
-	// Configurar nueva versión
-	workflow.ParentWorkflowID = &originalID
-	workflow.Version = original.Version + 1
-	workflow.ID = primitive.NewObjectID()
+	// Obtener documentos
+	opts := options.Find().
+		SetSkip(int64(skip)).
+		SetLimit(int64(pageSize)).
+		SetSort(bson.D{{Key: "created_at", Value: -1}})
 
-	now := time.Now()
-	workflow.CreatedAt = now
-	workflow.UpdatedAt = now
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find workflows: %w", err)
+	}
+	defer cursor.Close(ctx)
 
-	// Crear la nueva versión
-	if err := r.Create(ctx, workflow); err != nil {
-		return fmt.Errorf("failed to create workflow version: %w", err)
+	var workflows []*models.Workflow
+	if err = cursor.All(ctx, &workflows); err != nil {
+		return nil, fmt.Errorf("failed to decode workflows: %w", err)
+	}
+
+	totalPages := int((totalCount + int64(pageSize) - 1) / int64(pageSize))
+
+	return &models.WorkflowListResponse{
+		Workflows:  workflows,
+		Total:      totalCount,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	}, nil
+}
+
+// ListByUser obtiene workflows de un usuario específico
+func (r *workflowRepository) ListByUser(ctx context.Context, userID primitive.ObjectID, page, pageSize int) (*models.WorkflowListResponse, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	skip := (page - 1) * pageSize
+	filter := bson.M{
+		"user_id":   userID,
+		"is_active": bson.M{"$ne": false},
+	}
+
+	// Contar total
+	totalCount, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count workflows: %w", err)
+	}
+
+	// Obtener documentos
+	opts := options.Find().
+		SetSkip(int64(skip)).
+		SetLimit(int64(pageSize)).
+		SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find workflows: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var workflows []*models.Workflow
+	if err = cursor.All(ctx, &workflows); err != nil {
+		return nil, fmt.Errorf("failed to decode workflows: %w", err)
+	}
+
+	totalPages := int((totalCount + int64(pageSize) - 1) / int64(pageSize))
+
+	return &models.WorkflowListResponse{
+		Workflows:  workflows,
+		Total:      totalCount,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	}, nil
+}
+
+// ListByStatus obtiene workflows por estatus
+func (r *workflowRepository) ListByStatus(ctx context.Context, status models.WorkflowStatus, page, pageSize int) (*models.WorkflowListResponse, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	skip := (page - 1) * pageSize
+	filter := bson.M{
+		"status":    status,
+		"is_active": bson.M{"$ne": false},
+	}
+
+	// Contar total
+	totalCount, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count workflows: %w", err)
+	}
+
+	// Obtener documentos
+	opts := options.Find().
+		SetSkip(int64(skip)).
+		SetLimit(int64(pageSize)).
+		SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find workflows: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var workflows []*models.Workflow
+	if err = cursor.All(ctx, &workflows); err != nil {
+		return nil, fmt.Errorf("failed to decode workflows: %w", err)
+	}
+
+	totalPages := int((totalCount + int64(pageSize) - 1) / int64(pageSize))
+
+	return &models.WorkflowListResponse{
+		Workflows:  workflows,
+		Total:      totalCount,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	}, nil
+}
+
+// Search busca workflows con filtros
+func (r *workflowRepository) Search(ctx context.Context, query string, page, pageSize int) (*models.WorkflowListResponse, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	skip := (page - 1) * pageSize
+	filter := bson.M{"is_active": bson.M{"$ne": false}}
+
+	// Agregar búsqueda de texto si se proporciona query
+	if query != "" {
+		filter["$or"] = []bson.M{
+			{"name": bson.M{"$regex": query, "$options": "i"}},
+			{"description": bson.M{"$regex": query, "$options": "i"}},
+		}
+	}
+
+	// Contar total
+	totalCount, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count workflows: %w", err)
+	}
+
+	// Obtener documentos
+	opts := options.Find().
+		SetSkip(int64(skip)).
+		SetLimit(int64(pageSize)).
+		SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search workflows: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var workflows []*models.Workflow
+	if err = cursor.All(ctx, &workflows); err != nil {
+		return nil, fmt.Errorf("failed to decode workflows: %w", err)
+	}
+
+	totalPages := int((totalCount + int64(pageSize) - 1) / int64(pageSize))
+
+	return &models.WorkflowListResponse{
+		Workflows:  workflows,
+		Total:      totalCount,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	}, nil
+}
+
+// SearchByUser busca workflows de un usuario específico
+func (r *workflowRepository) SearchByUser(ctx context.Context, userID primitive.ObjectID, query string, page, pageSize int) (*models.WorkflowListResponse, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	skip := (page - 1) * pageSize
+	filter := bson.M{
+		"user_id":   userID,
+		"is_active": bson.M{"$ne": false},
+	}
+
+	// Agregar búsqueda de texto si se proporciona query
+	if query != "" {
+		filter["$or"] = []bson.M{
+			{"name": bson.M{"$regex": query, "$options": "i"}},
+			{"description": bson.M{"$regex": query, "$options": "i"}},
+		}
+	}
+
+	// Contar total
+	totalCount, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count workflows: %w", err)
+	}
+
+	// Obtener documentos
+	opts := options.Find().
+		SetSkip(int64(skip)).
+		SetLimit(int64(pageSize)).
+		SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search workflows: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var workflows []*models.Workflow
+	if err = cursor.All(ctx, &workflows); err != nil {
+		return nil, fmt.Errorf("failed to decode workflows: %w", err)
+	}
+
+	totalPages := int((totalCount + int64(pageSize) - 1) / int64(pageSize))
+
+	return &models.WorkflowListResponse{
+		Workflows:  workflows,
+		Total:      totalCount,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	}, nil
+}
+
+// UpdateStatus actualiza el status de un workflow
+func (r *workflowRepository) UpdateStatus(ctx context.Context, id primitive.ObjectID, status models.WorkflowStatus) error {
+	filter := bson.M{"_id": id}
+	update := bson.M{"$set": bson.M{
+		"status":     status,
+		"updated_at": time.Now(),
+	}}
+
+	result, err := r.collection.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("failed to update workflow status: %w", err)
+	}
+
+	if result.MatchedCount == 0 {
+		return fmt.Errorf("workflow not found")
 	}
 
 	return nil
 }
 
-// GetVersions obtiene todas las versiones de un workflow
-func (r *workflowRepository) GetVersions(ctx context.Context, parentID primitive.ObjectID) ([]*models.Workflow, error) {
-	if parentID.IsZero() {
-		return nil, fmt.Errorf("parent workflow ID is required")
+// UpdateRunStats actualiza las estadísticas de ejecución
+func (r *workflowRepository) UpdateRunStats(ctx context.Context, id primitive.ObjectID, success bool) error {
+	workflow, err := r.GetByID(ctx, id)
+	if err != nil {
+		return err
 	}
 
+	if workflow.Stats == nil {
+		workflow.Stats = &models.WorkflowStats{}
+	}
+
+	workflow.Stats.TotalExecutions++
+	if success {
+		workflow.Stats.SuccessfulExecutions++
+	} else {
+		workflow.Stats.FailedExecutions++
+	}
+
+	now := time.Now()
+	workflow.Stats.LastExecutionAt = &now
+
+	return r.Update(ctx, id, map[string]interface{}{
+		"stats": workflow.Stats,
+	})
+}
+
+// GetActiveWorkflows obtiene todos los workflows activos
+func (r *workflowRepository) GetActiveWorkflows(ctx context.Context) ([]*models.Workflow, error) {
+	filter := bson.M{
+		"status": bson.M{
+			"$in": []string{"active"},
+		},
+		"is_active": bson.M{"$ne": false},
+	}
+
+	cursor, err := r.collection.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get active workflows: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var workflows []*models.Workflow
+	if err = cursor.All(ctx, &workflows); err != nil {
+		return nil, fmt.Errorf("failed to decode active workflows: %w", err)
+	}
+
+	return workflows, nil
+}
+
+// GetWorkflowsByTriggerType obtiene workflows por tipo de trigger
+func (r *workflowRepository) GetWorkflowsByTriggerType(ctx context.Context, triggerType models.TriggerType) ([]*models.Workflow, error) {
+	filter := bson.M{
+		"triggers.type": triggerType,
+		"is_active":     bson.M{"$ne": false},
+		"status":        "active",
+	}
+
+	cursor, err := r.collection.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get workflows by trigger type: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var workflows []*models.Workflow
+	if err = cursor.All(ctx, &workflows); err != nil {
+		return nil, fmt.Errorf("failed to decode workflows: %w", err)
+	}
+
+	return workflows, nil
+}
+
+// CreateVersion crea una nueva versión de un workflow
+func (r *workflowRepository) CreateVersion(ctx context.Context, workflow *models.Workflow) error {
+	return r.Create(ctx, workflow)
+}
+
+// GetVersions obtiene todas las versiones de un workflow
+func (r *workflowRepository) GetVersions(ctx context.Context, workflowID primitive.ObjectID) ([]*models.Workflow, error) {
 	filter := bson.M{
 		"$or": []bson.M{
-			{"_id": parentID},
-			{"parent_workflow_id": parentID},
+			{"_id": workflowID},
+			{"parent_workflow_id": workflowID},
 		},
 	}
 
@@ -471,99 +590,136 @@ func (r *workflowRepository) GetVersions(ctx context.Context, parentID primitive
 	return workflows, nil
 }
 
-// UpdateStats actualiza las estadísticas de un workflow
-func (r *workflowRepository) UpdateStats(ctx context.Context, id primitive.ObjectID, stats *models.WorkflowStats) error {
-	if id.IsZero() {
-		return fmt.Errorf("invalid workflow ID")
+// ListByTags obtiene workflows que contengan los tags especificados
+func (r *workflowRepository) ListByTags(ctx context.Context, tags []string, page, pageSize int) (*models.WorkflowListResponse, error) {
+	if page <= 0 {
+		page = 1
 	}
-	if stats == nil {
-		return fmt.Errorf("stats cannot be nil")
-	}
-
-	updates := bson.M{
-		"stats.total_executions":       stats.TotalExecutions,
-		"stats.successful_executions":  stats.SuccessfulExecutions,
-		"stats.failed_executions":      stats.FailedExecutions,
-		"stats.average_execution_time": stats.AverageExecutionTime,
-		"stats.last_execution_at":      stats.LastExecutionAt,
-		"updated_at":                   time.Now(),
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
 	}
 
-	result, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": updates})
-	if err != nil {
-		return fmt.Errorf("failed to update workflow stats: %w", err)
-	}
-
-	if result.MatchedCount == 0 {
-		return fmt.Errorf("workflow not found")
-	}
-
-	return nil
-}
-
-// GetActiveWorkflows obtiene todos los workflows activos
-func (r *workflowRepository) GetActiveWorkflows(ctx context.Context) ([]*models.Workflow, error) {
+	skip := (page - 1) * pageSize
 	filter := bson.M{
-		"is_active": true,
-		"status": bson.M{
-			"$in": []string{"active", "published"},
-		},
+		"tags":      bson.M{"$in": tags},
+		"is_active": bson.M{"$ne": false},
 	}
 
-	cursor, err := r.collection.Find(ctx, filter)
+	// Contar total
+	totalCount, err := r.collection.CountDocuments(ctx, filter)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get active workflows: %w", err)
+		return nil, fmt.Errorf("failed to count workflows by tags: %w", err)
+	}
+
+	// Obtener documentos
+	opts := options.Find().
+		SetSkip(int64(skip)).
+		SetLimit(int64(pageSize)).
+		SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find workflows by tags: %w", err)
 	}
 	defer cursor.Close(ctx)
 
 	var workflows []*models.Workflow
 	if err = cursor.All(ctx, &workflows); err != nil {
-		return nil, fmt.Errorf("failed to decode active workflows: %w", err)
+		return nil, fmt.Errorf("failed to decode workflows: %w", err)
 	}
 
-	return workflows, nil
+	totalPages := int((totalCount + int64(pageSize) - 1) / int64(pageSize))
+
+	return &models.WorkflowListResponse{
+		Workflows:  workflows,
+		Total:      totalCount,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	}, nil
 }
 
-// GetPopularTags obtiene los tags más utilizados
-func (r *workflowRepository) GetPopularTags(ctx context.Context, limit int) ([]repository.TagCount, error) {
-	if limit <= 0 {
-		limit = 20
-	}
-
+// GetAllTags obtiene todos los tags únicos
+func (r *workflowRepository) GetAllTags(ctx context.Context) ([]string, error) {
 	pipeline := []bson.M{
 		{"$unwind": "$tags"},
-		{
-			"$group": bson.M{
-				"_id":   "$tags",
-				"count": bson.M{"$sum": 1},
-			},
-		},
-		{"$sort": bson.M{"count": -1}},
-		{"$limit": limit},
+		{"$group": bson.M{"_id": "$tags"}},
+		{"$sort": bson.M{"_id": 1}},
 	}
 
 	cursor, err := r.collection.Aggregate(ctx, pipeline)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get popular tags: %w", err)
+		return nil, fmt.Errorf("failed to get all tags: %w", err)
 	}
 	defer cursor.Close(ctx)
 
-	var tags []repository.TagCount
+	var tags []string
 	for cursor.Next(ctx) {
 		var result struct {
-			ID    string `bson:"_id"`
-			Count int    `bson:"count"`
+			ID string `bson:"_id"`
 		}
-
 		if err := cursor.Decode(&result); err != nil {
 			continue
 		}
-
-		tags = append(tags, repository.TagCount{
-			Tag:   result.ID,
-			Count: result.Count,
-		})
+		tags = append(tags, result.ID)
 	}
 
 	return tags, nil
+}
+
+// Count retorna el total de workflows activos
+func (r *workflowRepository) Count(ctx context.Context) (int64, error) {
+	filter := bson.M{"is_active": bson.M{"$ne": false}}
+	return r.collection.CountDocuments(ctx, filter)
+}
+
+// CountByUser retorna el total de workflows por usuario
+func (r *workflowRepository) CountByUser(ctx context.Context, userID primitive.ObjectID) (int64, error) {
+	filter := bson.M{
+		"user_id":   userID,
+		"is_active": bson.M{"$ne": false},
+	}
+	return r.collection.CountDocuments(ctx, filter)
+}
+
+// CountByStatus retorna el total de workflows por status
+func (r *workflowRepository) CountByStatus(ctx context.Context, status models.WorkflowStatus) (int64, error) {
+	filter := bson.M{
+		"status":    status,
+		"is_active": bson.M{"$ne": false},
+	}
+	return r.collection.CountDocuments(ctx, filter)
+}
+
+// NameExistsForUser verifica si existe un workflow con el mismo nombre para un usuario
+func (r *workflowRepository) NameExistsForUser(ctx context.Context, name string, userID primitive.ObjectID) (bool, error) {
+	filter := bson.M{
+		"name":      name,
+		"user_id":   userID,
+		"is_active": bson.M{"$ne": false},
+	}
+
+	count, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return false, fmt.Errorf("failed to check name existence: %w", err)
+	}
+
+	return count > 0, nil
+}
+
+// NameExistsForUserExcludeID verifica si existe un workflow con el mismo nombre excluyendo un ID específico
+func (r *workflowRepository) NameExistsForUserExcludeID(ctx context.Context, name string, userID primitive.ObjectID, excludeID primitive.ObjectID) (bool, error) {
+	filter := bson.M{
+		"name":      name,
+		"user_id":   userID,
+		"_id":       bson.M{"$ne": excludeID},
+		"is_active": bson.M{"$ne": false},
+	}
+
+	count, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return false, fmt.Errorf("failed to check name existence: %w", err)
+	}
+
+	return count > 0, nil
 }

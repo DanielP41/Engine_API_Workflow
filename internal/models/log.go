@@ -166,15 +166,3 @@ type LogListResponse struct {
 	PageSize   int            `json:"page_size"`
 	TotalPages int            `json:"total_pages"`
 }
-
-// WorkflowListResponse para respuestas de lista de workflows
-type WorkflowListResponse struct {
-	Workflows  []*Workflow `json:"workflows"`
-	Total      int64       `json:"total"`
-	Page       int         `json:"page"`
-	PageSize   int         `json:"page_size"`
-	TotalPages int         `json:"total_pages"`
-}
-
-// ExecutedWorkflowStep para respuestas (alias de WorkflowStep)
-type ExecutedWorkflowStep = WorkflowStep

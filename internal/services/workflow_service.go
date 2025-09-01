@@ -8,20 +8,19 @@ import (
 	"Engine_API_Workflow/internal/models"
 	"Engine_API_Workflow/internal/repository"
 
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type WorkflowService interface {
 	Create(ctx context.Context, req *models.CreateWorkflowRequest, userID primitive.ObjectID) (*models.WorkflowResponse, error)
 	GetByID(ctx context.Context, workflowID primitive.ObjectID) (*models.Workflow, error)
-	Search(ctx context.Context, filters repository.WorkflowSearchFilters, opts repository.PaginationOptions) ([]models.Workflow, int64, error)
+	Search(ctx context.Context, query string, page, pageSize int) (*models.WorkflowListResponse, error)
 	Update(ctx context.Context, workflowID primitive.ObjectID, req *models.UpdateWorkflowRequest, userID primitive.ObjectID) (*models.WorkflowResponse, error)
 	Delete(ctx context.Context, workflowID primitive.ObjectID) error
 	ToggleStatus(ctx context.Context, workflowID primitive.ObjectID, userID primitive.ObjectID) (*models.WorkflowResponse, error)
 	Clone(ctx context.Context, workflowID primitive.ObjectID, userID primitive.ObjectID, name, description string) (*models.WorkflowResponse, error)
-	GetUserWorkflows(ctx context.Context, userID primitive.ObjectID, opts repository.PaginationOptions) ([]models.Workflow, int64, error)
-	GetActiveWorkflows(ctx context.Context, opts repository.PaginationOptions) ([]models.Workflow, int64, error)
+	GetUserWorkflows(ctx context.Context, userID primitive.ObjectID, page, pageSize int) (*models.WorkflowListResponse, error)
+	GetActiveWorkflows(ctx context.Context) ([]*models.Workflow, error)
 	ValidateWorkflow(ctx context.Context, workflow *models.Workflow) error
 }
 
@@ -109,12 +108,8 @@ func (s *workflowService) GetByID(ctx context.Context, workflowID primitive.Obje
 	return workflow, nil
 }
 
-func (s *workflowService) Search(ctx context.Context, filters repository.WorkflowSearchFilters, opts repository.PaginationOptions) ([]models.Workflow, int64, error) {
-	workflows, total, err := s.workflowRepo.Search(ctx, filters, opts)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to search workflows: %w", err)
-	}
-	return workflows, total, nil
+func (s *workflowService) Search(ctx context.Context, query string, page, pageSize int) (*models.WorkflowListResponse, error) {
+	return s.workflowRepo.Search(ctx, query, page, pageSize)
 }
 
 func (s *workflowService) Update(ctx context.Context, workflowID primitive.ObjectID, req *models.UpdateWorkflowRequest, userID primitive.ObjectID) (*models.WorkflowResponse, error) {
@@ -127,8 +122,8 @@ func (s *workflowService) Update(ctx context.Context, workflowID primitive.Objec
 		return nil, fmt.Errorf("workflow not found")
 	}
 
-	// Preparar el update bson
-	update := bson.M{}
+	// Preparar el update map
+	update := make(map[string]interface{})
 
 	// Actualizar campos si están presentes
 	if req.Name != nil {
@@ -242,7 +237,7 @@ func (s *workflowService) ToggleStatus(ctx context.Context, workflowID primitive
 	}
 
 	// Actualizar el estado
-	update := bson.M{
+	update := map[string]interface{}{
 		"status":         newStatus,
 		"updated_at":     time.Now(),
 		"last_edited_by": userID,
@@ -317,7 +312,7 @@ func (s *workflowService) Clone(ctx context.Context, workflowID primitive.Object
 	clonedWorkflow.SetDefaults()
 
 	// Limpiar estadísticas (empezar con stats en cero)
-	clonedWorkflow.Stats = models.WorkflowStats{}
+	clonedWorkflow.Stats = &models.WorkflowStats{}
 
 	// Guardar en la base de datos
 	if err := s.workflowRepo.Create(ctx, clonedWorkflow); err != nil {
@@ -328,21 +323,12 @@ func (s *workflowService) Clone(ctx context.Context, workflowID primitive.Object
 	return response, nil
 }
 
-func (s *workflowService) GetUserWorkflows(ctx context.Context, userID primitive.ObjectID, opts repository.PaginationOptions) ([]models.Workflow, int64, error) {
-	filters := repository.WorkflowSearchFilters{
-		UserID: &userID,
-	}
-
-	return s.workflowRepo.Search(ctx, filters, opts)
+func (s *workflowService) GetUserWorkflows(ctx context.Context, userID primitive.ObjectID, page, pageSize int) (*models.WorkflowListResponse, error) {
+	return s.workflowRepo.ListByUser(ctx, userID, page, pageSize)
 }
 
-func (s *workflowService) GetActiveWorkflows(ctx context.Context, opts repository.PaginationOptions) ([]models.Workflow, int64, error) {
-	status := models.WorkflowStatusActive
-	filters := repository.WorkflowSearchFilters{
-		Status: &status,
-	}
-
-	return s.workflowRepo.Search(ctx, filters, opts)
+func (s *workflowService) GetActiveWorkflows(ctx context.Context) ([]*models.Workflow, error) {
+	return s.workflowRepo.GetActiveWorkflows(ctx)
 }
 
 func (s *workflowService) ValidateWorkflow(ctx context.Context, workflow *models.Workflow) error {
@@ -421,9 +407,12 @@ func (s *workflowService) toWorkflowResponse(workflow *models.Workflow) *models.
 			Name:   step.Name,
 			Type:   models.ActionType(step.Type),
 			Config: step.Config,
-			Order:  i,
-			Status: models.WorkflowStatusDraft, // Estado inicial
 		}
+	}
+
+	stats := models.WorkflowStats{}
+	if workflow.Stats != nil {
+		stats = *workflow.Stats
 	}
 
 	return &models.WorkflowResponse{
@@ -445,7 +434,7 @@ func (s *workflowService) toWorkflowResponse(workflow *models.Workflow) *models.
 		RetryDelayMs:   workflow.RetryDelayMs,
 		MaxConcurrent:  workflow.MaxConcurrent,
 		Environment:    workflow.Environment,
-		Stats:          workflow.Stats,
+		Stats:          stats,
 		CreatedAt:      workflow.CreatedAt,
 		UpdatedAt:      workflow.UpdatedAt,
 	}

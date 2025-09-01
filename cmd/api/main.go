@@ -11,6 +11,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"Engine_API_Workflow/internal/api/handlers"
+	"Engine_API_Workflow/internal/api/middleware"
 	"Engine_API_Workflow/internal/api/routes"
 	"Engine_API_Workflow/internal/config"
 	"Engine_API_Workflow/internal/repository/mongodb"
@@ -56,16 +57,25 @@ func main() {
 	}()
 	appLogger.Info("Connected to Redis successfully")
 
-	// Inicializar servicios
+	// Inicializar servicios JWT
 	jwtService := jwt.NewService(cfg.JWTSecret, "engine-api-workflow")
-	authService := services.NewAuthService(jwtService)
 
 	// Inicializar repositorios
 	db := mongoClient.Database(cfg.MongoDatabase)
-	userRepo := mongodb.NewUserRepository(db, appLogger)
+	userRepo := mongodb.NewUserRepository(db)
+	workflowRepo := mongodb.NewWorkflowRepository(db)
+	logRepo := mongodb.NewLogRepository(db)
+
+	// Inicializar servicios de aplicación
+	authService := services.NewAuthService(jwtService)
+	workflowService := services.NewWorkflowService(workflowRepo, userRepo)
+	logService := services.NewLogService(logRepo, workflowRepo, userRepo)
+	queueService := services.NewQueueService(redisClient, appLogger.(*logger.Logger))
 
 	// Inicializar handlers
 	authHandler := handlers.NewAuthHandler(userRepo, authService)
+	workflowHandler := handlers.NewWorkflowHandler(workflowService, logService)
+	triggerHandler := handlers.NewTriggerHandler(workflowRepo, logRepo, queueService, appLogger.(*logger.Logger))
 
 	// Configurar Fiber
 	app := fiber.New(fiber.Config{
@@ -77,11 +87,24 @@ func main() {
 		IdleTimeout:  time.Second * 30,
 	})
 
+	// Configurar middlewares
+	corsConfig := middleware.DefaultCORSConfig()
+	if cfg.Environment == "production" {
+		corsConfig = middleware.ProductionCORSConfig([]string{})
+	}
+
+	app.Use(middleware.CORSMiddleware(corsConfig))
+	app.Use(middleware.SecurityHeadersMiddleware())
+	app.Use(middleware.APIResponseHeadersMiddleware())
+	middleware.SetupMiddleware(app, appLogger)
+
 	// Configurar rutas
 	routeConfig := &routes.RouteConfig{
-		AuthHandler: authHandler,
-		JWTService:  jwtService,
-		Logger:      appLogger,
+		AuthHandler:     authHandler,
+		WorkflowHandler: workflowHandler,
+		TriggerHandler:  triggerHandler,
+		JWTService:      jwtService,
+		Logger:          appLogger,
 	}
 	routes.SetupRoutes(app, routeConfig)
 

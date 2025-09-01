@@ -10,34 +10,36 @@ import (
 )
 
 // LoggerMiddleware registra detalles de cada solicitud HTTP
-func LoggerMiddleware(c *fiber.Ctx) error {
-	start := time.Now()
+func LoggerMiddleware(log *logger.Logger) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		start := time.Now()
 
-	// Continuar con el siguiente handler
-	err := c.Next()
+		// Continuar con el siguiente handler
+		err := c.Next()
 
-	// Obtener detalles de la solicitud
-	status := c.Response().StatusCode()
-	path := c.Path()
-	method := c.Method()
-	latency := time.Since(start).Milliseconds()
+		// Obtener detalles de la solicitud
+		status := c.Response().StatusCode()
+		path := c.Path()
+		method := c.Method()
+		latency := time.Since(start).Milliseconds()
 
-	// Registrar la solicitud
-	logger.Info("HTTP Request",
-		"method", method,
-		"path", path,
-		"status", status,
-		"latency_ms", latency,
-	)
+		// Registrar la solicitud
+		log.Info("HTTP Request",
+			"method", method,
+			"path", path,
+			"status", status,
+			"latency_ms", latency,
+		)
 
-	return err
+		return err
+	}
 }
 
 // SetupMiddleware configura los middlewares comunes
-func SetupMiddleware(app *fiber.App) {
+func SetupMiddleware(app *fiber.App, log *logger.Logger) {
 	// Middleware de recuperación para evitar pánico
 	app.Use(recover.New())
 
 	// Middleware de logging
-	app.Use(LoggerMiddleware)
+	app.Use(LoggerMiddleware(log))
 }
