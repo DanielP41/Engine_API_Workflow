@@ -14,26 +14,21 @@ type Config struct {
 	Environment string
 	LogLevel    string
 
-	// Database - CORREGIDO para coincidir con main.go
 	MongoURI      string
 	MongoDatabase string
 
-	// Redis - CORREGIDO para coincidir con main.go
 	RedisHost     string
 	RedisPort     string
 	RedisPassword string
 	RedisDB       int
 
 	// JWT
-	JWTSecret string
+	JWTSecret    string
+	JWTExpiresIn string
 
 	// External Services
 	SlackWebhookURL string
 	SlackBotToken   string
-
-	// Backwards compatibility
-	DatabaseURL string // Deprecated: usar MongoURI + MongoDatabase
-	RedisURL    string // Deprecated: usar RedisHost + RedisPort
 }
 
 func Load() *Config {
@@ -44,17 +39,18 @@ func Load() *Config {
 
 	// Configuración principal
 	cfg := &Config{
-		ServerPort:  getEnv("PORT", "8081"),
-		Environment: getEnv("ENV", "development"),
-		LogLevel:    getEnv("LOG_LEVEL", "info"),
-		JWTSecret:   getEnv("JWT_SECRET", "your-super-secret-jwt-key-change-this-in-production"),
+		ServerPort:   getEnv("PORT", "8081"), // CORREGIDO: usar 8081.-
+		Environment:  getEnv("ENV", "development"),
+		LogLevel:     getEnv("LOG_LEVEL", "info"),
+		JWTSecret:    getEnv("JWT_SECRET", "your-super-secret-jwt-key-change-this-in-production"),
+		JWTExpiresIn: getEnv("JWT_EXPIRES_IN", "24h"),
 	}
 
-	// Configuración MongoDB - NUEVO formato compatible con main.go
-	cfg.MongoURI = getEnv("MONGODB_URI", "mongodb://admin:password123@localhost:27017/engine_workflow?authSource=admin")
+	// Configuración MongoDB - CORREGIDO para consistencia y Docker
+	cfg.MongoURI = getEnv("MONGODB_URI", "mongodb://admin:password123@mongodb:27017/engine_workflow?authSource=admin")
 	cfg.MongoDatabase = getEnv("MONGODB_DATABASE", "engine_workflow")
 
-	// Configuración Redis - NUEVO formato compatible con main.go
+	// Configuración Redis - CORREGIDO para consistencia
 	cfg.RedisHost = getEnv("REDIS_HOST", "localhost")
 	cfg.RedisPort = getEnv("REDIS_PORT", "6379")
 	cfg.RedisPassword = getEnv("REDIS_PASSWORD", "")
@@ -63,10 +59,6 @@ func Load() *Config {
 	// Configuración de servicios externos
 	cfg.SlackWebhookURL = getEnv("SLACK_WEBHOOK_URL", "")
 	cfg.SlackBotToken = getEnv("SLACK_BOT_TOKEN", "")
-
-	// Compatibilidad hacia atrás (para otros archivos que puedan usar el formato anterior)
-	cfg.DatabaseURL = cfg.MongoURI
-	cfg.RedisURL = "redis://" + cfg.RedisHost + ":" + cfg.RedisPort
 
 	return cfg
 }

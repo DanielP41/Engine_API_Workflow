@@ -9,13 +9,25 @@ import (
 	"Engine_API_Workflow/pkg/jwt"
 )
 
+// AuthService define la interfaz del servicio de autenticación - CORREGIDO
+type AuthService interface {
+	HashPassword(password string) (string, error)
+	CheckPassword(password, hash string) error
+	GenerateTokens(userID primitive.ObjectID, email string, role string) (*jwt.TokenPair, error)
+	ValidateToken(token string) (*jwt.Claims, error)
+	ValidateAccessToken(token string) (*jwt.Claims, error)
+	ValidateRefreshToken(token string) (*jwt.Claims, error)
+	RefreshTokens(refreshToken string) (*jwt.TokenPair, error)
+	RevokeToken(token string) error
+}
+
 // AuthServiceImpl implementa el servicio de autenticación
 type AuthServiceImpl struct {
-	jwtService jwt.JWTService // Cambio: usar la interfaz correcta
+	jwtService jwt.JWTService
 }
 
 // NewAuthService crea una nueva instancia del servicio de autenticación
-func NewAuthService(jwtService jwt.JWTService) *AuthServiceImpl { // Cambio: usar la interfaz correcta
+func NewAuthService(jwtService jwt.JWTService) AuthService {
 	return &AuthServiceImpl{
 		jwtService: jwtService,
 	}
@@ -40,7 +52,7 @@ func (s *AuthServiceImpl) CheckPassword(password, hash string) error {
 	return nil
 }
 
-// GenerateTokens genera tanto el access token como el refresh token
+// GenerateTokens genera tanto el access token como el refresh token - SIGNATURE CORREGIDA
 func (s *AuthServiceImpl) GenerateTokens(userID primitive.ObjectID, email, role string) (*jwt.TokenPair, error) {
 	// Usar el método correcto de la interfaz JWTService
 	tokenPair, err := s.jwtService.GenerateTokens(userID, email, role)

@@ -7,31 +7,23 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"go.mongodb.org/mongo-driver/bson/primitive" //actuar como un puente entre el sistema de tipos de Go y el sistema de tipos de datos de BSON (Binary JSON), que es el formato de almacenamiento de documentos de MongoDB.
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 
 	"Engine_API_Workflow/internal/models"
 	"Engine_API_Workflow/internal/repository"
+	"Engine_API_Workflow/internal/services"
 	"Engine_API_Workflow/internal/utils"
-	"Engine_API_Workflow/pkg/jwt"
 )
 
-// AuthHandler maneja todas las operaciones de autenticación
+// AuthHandler maneja todas las operaciones de autenticación - CORREGIDO
 type AuthHandler struct {
 	userRepo    repository.UserRepository
-	authService AuthService // Interfaz para el servicio de autenticación
+	authService services.AuthService // Usar la interfaz del paquete services
 }
 
-// AuthService define los métodos del servicio de autenticación
-type AuthService interface {
-	HashPassword(password string) (string, error)
-	CheckPassword(password, hash string) error
-	GenerateTokens(userID string, email string, role string) (accessToken, refreshToken string, err error)
-	ValidateToken(token string) (*jwt.Claims, error)
-}
-
-// NewAuthHandler crea una nueva instancia del handler de autenticación
-func NewAuthHandler(userRepo repository.UserRepository, authService AuthService) *AuthHandler {
+// NewAuthHandler crea una nueva instancia del handler de autenticación - CORREGIDO
+func NewAuthHandler(userRepo repository.UserRepository, authService services.AuthService) *AuthHandler {
 	return &AuthHandler{
 		userRepo:    userRepo,
 		authService: authService,
@@ -104,7 +96,7 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	defer cancel()
 
 	existingUser, err := h.userRepo.GetByEmail(ctx, req.Email)
-	if err != nil && err != mongo.ErrNoDocuments {
+	if err != nil && err.Error() != "user not found" {
 		log.Printf("Error checking existing user: %v", err)
 		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Database error", "Could not check existing user")
 	}
@@ -126,11 +118,14 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 		Name:      strings.TrimSpace(req.Name),
 		Email:     req.Email,
 		Password:  hashedPassword,
-		Role:      req.Role,
+		Role:      models.Role(req.Role),
 		IsActive:  true,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
+
+	// Aplicar valores por defecto
+	user.BeforeCreate()
 
 	// Guardar en la base de datos
 	createdUser, err := h.userRepo.Create(ctx, user)
@@ -139,11 +134,11 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "User creation failed", "Could not create user account")
 	}
 
-	// Generar tokens JWT
-	accessToken, refreshToken, err := h.authService.GenerateTokens(
-		createdUser.ID.Hex(),
+	// Generar tokens JWT - SIGNATURE CORREGIDA
+	tokenPair, err := h.authService.GenerateTokens(
+		createdUser.ID,
 		createdUser.Email,
-		createdUser.Role,
+		string(createdUser.Role),
 	)
 	if err != nil {
 		log.Printf("Error generating tokens: %v", err)
@@ -151,7 +146,7 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	}
 
 	// Actualizar último login
-	if err := h.userRepo.UpdateLastLogin(ctx, createdUser.ID.Hex()); err != nil {
+	if err := h.userRepo.UpdateLastLogin(ctx, createdUser.ID); err != nil {
 		log.Printf("Error updating last login: %v", err)
 		// No retornamos error porque el usuario ya fue creado exitosamente
 	}
@@ -162,13 +157,13 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 			ID:        createdUser.ID.Hex(),
 			Name:      createdUser.Name,
 			Email:     createdUser.Email,
-			Role:      createdUser.Role,
+			Role:      string(createdUser.Role),
 			IsActive:  createdUser.IsActive,
 			CreatedAt: createdUser.CreatedAt,
 			UpdatedAt: createdUser.UpdatedAt,
 		},
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
+		AccessToken:  tokenPair.AccessToken,
+		RefreshToken: tokenPair.RefreshToken,
 		ExpiresIn:    3600, // 1 hora en segundos
 	}
 
@@ -199,7 +194,7 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 
 	user, err := h.userRepo.GetByEmail(ctx, req.Email)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
+		if err == mongo.ErrNoDocuments || err.Error() == "user not found" {
 			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid credentials", "Email or password is incorrect")
 		}
 		log.Printf("Error finding user: %v", err)
@@ -216,11 +211,11 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid credentials", "Email or password is incorrect")
 	}
 
-	// Generar tokens JWT
-	accessToken, refreshToken, err := h.authService.GenerateTokens(
-		user.ID.Hex(),
+	// Generar tokens JWT - SIGNATURE CORREGIDA
+	tokenPair, err := h.authService.GenerateTokens(
+		user.ID,
 		user.Email,
-		user.Role,
+		string(user.Role),
 	)
 	if err != nil {
 		log.Printf("Error generating tokens: %v", err)
@@ -228,7 +223,7 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	}
 
 	// Actualizar último login
-	if err := h.userRepo.UpdateLastLogin(ctx, user.ID.Hex()); err != nil {
+	if err := h.userRepo.UpdateLastLogin(ctx, user.ID); err != nil {
 		log.Printf("Error updating last login: %v", err)
 		// No retornamos error porque el login fue exitoso
 	}
@@ -239,13 +234,13 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 			ID:        user.ID.Hex(),
 			Name:      user.Name,
 			Email:     user.Email,
-			Role:      user.Role,
+			Role:      string(user.Role),
 			IsActive:  user.IsActive,
 			CreatedAt: user.CreatedAt,
 			UpdatedAt: user.UpdatedAt,
 		},
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
+		AccessToken:  tokenPair.AccessToken,
+		RefreshToken: tokenPair.RefreshToken,
 		ExpiresIn:    3600, // 1 hora en segundos
 	}
 
@@ -268,23 +263,24 @@ func (h *AuthHandler) RefreshToken(c *fiber.Ctx) error {
 	}
 
 	// Validar el refresh token
-	claims, err := h.authService.ValidateToken(req.RefreshToken)
+	claims, err := h.authService.ValidateRefreshToken(req.RefreshToken)
 	if err != nil {
 		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid refresh token", "The refresh token is invalid or expired")
 	}
 
-	// Verificar que sea un refresh token
-	if claims.Type != "refresh" {
-		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid token type", "Expected refresh token")
+	// Convertir userID de string a ObjectID
+	userID, err := primitive.ObjectIDFromHex(claims.UserID)
+	if err != nil {
+		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid user ID", "")
 	}
 
 	// Buscar usuario para verificar que aún existe y está activo
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	user, err := h.userRepo.GetByID(ctx, claims.UserID)
+	user, err := h.userRepo.GetByID(ctx, userID)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
+		if err == mongo.ErrNoDocuments || err.Error() == "user not found" {
 			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "User not found", "The user associated with this token no longer exists")
 		}
 		log.Printf("Error finding user: %v", err)
@@ -296,11 +292,11 @@ func (h *AuthHandler) RefreshToken(c *fiber.Ctx) error {
 		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Account deactivated", "Your account has been deactivated")
 	}
 
-	// Generar nuevos tokens
-	accessToken, refreshToken, err := h.authService.GenerateTokens(
-		user.ID.Hex(),
+	// Generar nuevos tokens - SIGNATURE CORREGIDA
+	tokenPair, err := h.authService.GenerateTokens(
+		user.ID,
 		user.Email,
-		user.Role,
+		string(user.Role),
 	)
 	if err != nil {
 		log.Printf("Error generating tokens: %v", err)
@@ -313,13 +309,13 @@ func (h *AuthHandler) RefreshToken(c *fiber.Ctx) error {
 			ID:        user.ID.Hex(),
 			Name:      user.Name,
 			Email:     user.Email,
-			Role:      user.Role,
+			Role:      string(user.Role),
 			IsActive:  user.IsActive,
 			CreatedAt: user.CreatedAt,
 			UpdatedAt: user.UpdatedAt,
 		},
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
+		AccessToken:  tokenPair.AccessToken,
+		RefreshToken: tokenPair.RefreshToken,
 		ExpiresIn:    3600, // 1 hora en segundos
 	}
 
@@ -330,7 +326,15 @@ func (h *AuthHandler) RefreshToken(c *fiber.Ctx) error {
 // GET /auth/profile
 func (h *AuthHandler) GetProfile(c *fiber.Ctx) error {
 	// Obtener el ID del usuario del contexto (establecido por el middleware de auth)
-	userID := c.Locals("userID").(string)
+	userIDInterface := c.Locals("userID")
+	if userIDInterface == nil {
+		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "User not authenticated", "")
+	}
+
+	userID, ok := userIDInterface.(primitive.ObjectID)
+	if !ok {
+		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid user ID", "")
+	}
 
 	// Buscar usuario
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -338,7 +342,7 @@ func (h *AuthHandler) GetProfile(c *fiber.Ctx) error {
 
 	user, err := h.userRepo.GetByID(ctx, userID)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
+		if err == mongo.ErrNoDocuments || err.Error() == "user not found" {
 			return utils.ErrorResponse(c, fiber.StatusNotFound, "User not found", "The user profile could not be found")
 		}
 		log.Printf("Error finding user: %v", err)
@@ -350,7 +354,7 @@ func (h *AuthHandler) GetProfile(c *fiber.Ctx) error {
 		ID:        user.ID.Hex(),
 		Name:      user.Name,
 		Email:     user.Email,
-		Role:      user.Role,
+		Role:      string(user.Role),
 		IsActive:  user.IsActive,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
@@ -363,7 +367,6 @@ func (h *AuthHandler) GetProfile(c *fiber.Ctx) error {
 // POST /auth/logout
 func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 	// En un sistema JWT stateless, el logout se maneja principalmente del lado cliente
-	// eliminando los tokens. Aquí podrías implementar una blacklist de tokens si fuera necesario.
 
 	return utils.SuccessResponse(c, fiber.StatusOK, "Logout successful", map[string]string{
 		"message": "Please remove the access and refresh tokens from your client",

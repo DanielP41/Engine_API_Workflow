@@ -9,67 +9,109 @@ import (
 	"go.uber.org/zap"
 
 	"Engine_API_Workflow/internal/models"
-	"Engine_API_Workflow/internal/repository"
 	"Engine_API_Workflow/internal/utils"
 	jwtPkg "Engine_API_Workflow/pkg/jwt"
 )
 
-// AuthMiddleware validates JWT tokens - CORREGIDO: usar función con fiber.Ctx
-func AuthMiddleware(jwtService jwtPkg.JWTService, logger *zap.Logger) fiber.Handler {
+// AuthMiddleware estructura para el middleware de autenticación - CORREGIDO
+type AuthMiddleware struct {
+	jwtService jwtPkg.JWTService // Usar la interfaz correcta
+	logger     *zap.Logger
+}
+
+// NewAuthMiddleware crea una nueva instancia del middleware de autenticación - CORREGIDO
+func NewAuthMiddleware(jwtService jwtPkg.JWTService) *AuthMiddleware {
+	return &AuthMiddleware{
+		jwtService: jwtService,
+		logger:     zap.NewNop(), // Logger por defecto, puede ser configurado
+	}
+}
+
+// RequireAuth middleware que requiere autenticación - CORREGIDO
+func (m *AuthMiddleware) RequireAuth() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Get authorization header
 		authHeader := c.Get("Authorization")
 		if authHeader == "" {
-			logger.Debug("Missing authorization header")
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Authorization header required", "")
+			if m.logger != nil {
+				m.logger.Debug("Missing authorization header")
+			}
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Authorization header required", "")
 		}
 
 		// Check if it starts with "Bearer "
 		if !strings.HasPrefix(authHeader, "Bearer ") {
-			logger.Debug("Invalid authorization header format")
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Invalid authorization header format", "Use 'Bearer <token>'")
+			if m.logger != nil {
+				m.logger.Debug("Invalid authorization header format")
+			}
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid authorization header format", "Use 'Bearer <token>'")
 		}
 
 		// Extract token
 		token := strings.TrimPrefix(authHeader, "Bearer ")
 		if token == "" {
-			logger.Debug("Empty token")
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Token is required", "")
+			if m.logger != nil {
+				m.logger.Debug("Empty token")
+			}
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Token is required", "")
 		}
 
-		// Validar token usando la interfaz correctamente
-		claims, err := jwtService.ValidateToken(token)
+		// Validate token
+		claims, err := m.jwtService.ValidateToken(token)
 		if err != nil {
-			logger.Debug("Invalid token", zap.Error(err))
+			if m.logger != nil {
+				m.logger.Debug("Invalid token", zap.Error(err))
+			}
 
 			// Check if token is expired
 			if ve, ok := err.(*jwt.ValidationError); ok {
 				if ve.Errors&jwt.ValidationErrorExpired != 0 {
-					return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Token expired", "Please refresh your token")
+					return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Token expired", "Please refresh your token")
 				}
 			}
 
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Invalid token", "")
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid token", "")
 		}
 
 		// Convert user ID string to ObjectID
 		userID, err := primitive.ObjectIDFromHex(claims.UserID)
 		if err != nil {
-			logger.Error("Invalid user ID in token", zap.Error(err), zap.String("user_id", claims.UserID))
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Invalid token", "")
+			if m.logger != nil {
+				m.logger.Error("Invalid user ID in token", zap.Error(err), zap.String("user_id", claims.UserID))
+			}
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid token", "")
 		}
 
 		// Store user info in context
 		c.Locals("userID", userID)
 		c.Locals("userRole", claims.Role)
 		c.Locals("tokenType", claims.Type)
+		c.Locals("user_id", userID) // Alias para compatibilidad
+		c.Locals("is_admin", claims.Role == models.RoleAdmin)
 
 		return c.Next()
 	}
 }
 
-// OptionalAuthMiddleware validates JWT tokens but doesn't require them
-func OptionalAuthMiddleware(jwtService jwtPkg.JWTService, logger *zap.Logger) fiber.Handler {
+// RequireAdmin middleware que requiere rol de admin - CORREGIDO
+func (m *AuthMiddleware) RequireAdmin() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userRole := c.Locals("userRole")
+		if userRole == nil {
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Authentication required", "")
+		}
+
+		role, ok := userRole.(string)
+		if !ok || role != string(models.RoleAdmin) {
+			return utils.ErrorResponse(c, fiber.StatusForbidden, "Admin access required", "")
+		}
+
+		return c.Next()
+	}
+}
+
+// OptionalAuth middleware que permite autenticación opcional - CORREGIDO
+func (m *AuthMiddleware) OptionalAuth() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Get authorization header
 		authHeader := c.Get("Authorization")
@@ -91,18 +133,22 @@ func OptionalAuthMiddleware(jwtService jwtPkg.JWTService, logger *zap.Logger) fi
 			return c.Next()
 		}
 
-		// Validar token usando la interfaz correctamente
-		claims, err := jwtService.ValidateToken(token)
+		// Validate token
+		claims, err := m.jwtService.ValidateToken(token)
 		if err != nil {
 			// Invalid token but optional, continue without auth
-			logger.Debug("Invalid optional token", zap.Error(err))
+			if m.logger != nil {
+				m.logger.Debug("Invalid optional token", zap.Error(err))
+			}
 			return c.Next()
 		}
 
 		// Convert user ID string to ObjectID
 		userID, err := primitive.ObjectIDFromHex(claims.UserID)
 		if err != nil {
-			logger.Debug("Invalid user ID in optional token", zap.Error(err))
+			if m.logger != nil {
+				m.logger.Debug("Invalid user ID in optional token", zap.Error(err))
+			}
 			return c.Next()
 		}
 
@@ -110,39 +156,24 @@ func OptionalAuthMiddleware(jwtService jwtPkg.JWTService, logger *zap.Logger) fi
 		c.Locals("userID", userID)
 		c.Locals("userRole", claims.Role)
 		c.Locals("tokenType", claims.Type)
+		c.Locals("user_id", userID) // Alias para compatibilidad
+		c.Locals("is_admin", claims.Role == string(models.RoleAdmin))
 
 		return c.Next()
 	}
 }
 
-// AdminRequiredMiddleware ensures the user has admin role
-func AdminRequiredMiddleware() fiber.Handler {
+// RoleRequired middleware que requiere roles específicos - CORREGIDO
+func (m *AuthMiddleware) RoleRequired(allowedRoles ...string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userRole := c.Locals("userRole")
 		if userRole == nil {
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Authentication required", "")
-		}
-
-		role, ok := userRole.(string)
-		if !ok || role != string(models.RoleAdmin) {
-			return utils.ErrorResponseWithCode(c, fiber.StatusForbidden, "Admin access required", "")
-		}
-
-		return c.Next()
-	}
-}
-
-// RoleRequiredMiddleware ensures the user has one of the specified roles
-func RoleRequiredMiddleware(allowedRoles ...string) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		userRole := c.Locals("userRole")
-		if userRole == nil {
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Authentication required", "")
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Authentication required", "")
 		}
 
 		role, ok := userRole.(string)
 		if !ok {
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Invalid user role", "")
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid user role", "")
 		}
 
 		// Check if user role is in allowed roles
@@ -152,122 +183,69 @@ func RoleRequiredMiddleware(allowedRoles ...string) fiber.Handler {
 			}
 		}
 
-		return utils.ErrorResponseWithCode(c, fiber.StatusForbidden, "Insufficient permissions", "")
+		return utils.ErrorResponse(c, fiber.StatusForbidden, "Insufficient permissions", "")
 	}
 }
 
-// RefreshTokenMiddleware validates refresh tokens
-func RefreshTokenMiddleware(jwtService jwtPkg.JWTService, logger *zap.Logger) fiber.Handler {
+// RefreshTokenRequired middleware que valida refresh tokens - CORREGIDO
+func (m *AuthMiddleware) RefreshTokenRequired() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Get authorization header
 		authHeader := c.Get("Authorization")
 		if authHeader == "" {
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Authorization header required", "")
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Authorization header required", "")
 		}
 
 		// Check if it starts with "Bearer "
 		if !strings.HasPrefix(authHeader, "Bearer ") {
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Invalid authorization header format", "Use 'Bearer <token>'")
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid authorization header format", "Use 'Bearer <token>'")
 		}
 
 		// Extract token
 		token := strings.TrimPrefix(authHeader, "Bearer ")
 		if token == "" {
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Token is required", "")
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Token is required", "")
 		}
 
 		// Validate refresh token
-		claims, err := jwtService.ValidateToken(token)
+		claims, err := m.jwtService.ValidateToken(token)
 		if err != nil {
-			logger.Debug("Invalid refresh token", zap.Error(err))
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Invalid refresh token", "")
+			if m.logger != nil {
+				m.logger.Debug("Invalid refresh token", zap.Error(err))
+			}
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid refresh token", "")
 		}
 
 		// Check if it's actually a refresh token
 		if claims.Type != "refresh" {
-			logger.Debug("Token is not a refresh token", zap.String("type", claims.Type))
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Invalid token type", "Refresh token required")
+			if m.logger != nil {
+				m.logger.Debug("Token is not a refresh token", zap.String("type", claims.Type))
+			}
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid token type", "Refresh token required")
 		}
 
 		// Convert user ID string to ObjectID
 		userID, err := primitive.ObjectIDFromHex(claims.UserID)
 		if err != nil {
-			logger.Error("Invalid user ID in refresh token", zap.Error(err))
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Invalid token", "")
+			if m.logger != nil {
+				m.logger.Error("Invalid user ID in refresh token", zap.Error(err))
+			}
+			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid token", "")
 		}
 
 		// Store user info in context
 		c.Locals("userID", userID)
 		c.Locals("userRole", claims.Role)
 		c.Locals("tokenType", claims.Type)
+		c.Locals("user_id", userID) // Alias para compatibilidad
 
 		return c.Next()
 	}
 }
 
-// UserOwnershipMiddleware ensures the user can only access their own resources
-func UserOwnershipMiddleware(userRepo repository.UserRepository, logger *zap.Logger) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		// Get current user ID from context
-		userID := c.Locals("userID")
-		if userID == nil {
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Authentication required", "")
-		}
+// Helper functions para extraer información del contexto
 
-		currentUserID, ok := userID.(primitive.ObjectID)
-		if !ok {
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Invalid user ID", "")
-		}
-
-		// Get user role
-		userRole := c.Locals("userRole")
-		role, ok := userRole.(string)
-		if !ok {
-			return utils.ErrorResponseWithCode(c, fiber.StatusUnauthorized, "Invalid user role", "")
-		}
-
-		// Admins can access any resource
-		if role == string(models.RoleAdmin) {
-			return c.Next()
-		}
-
-		// Get target user ID from URL params
-		targetUserIDParam := c.Params("userID")
-		if targetUserIDParam == "" {
-			// If no user ID in params, user can access their own resources
-			c.Locals("targetUserID", currentUserID)
-			return c.Next()
-		}
-
-		// Convert target user ID to ObjectID
-		targetUserID, err := primitive.ObjectIDFromHex(targetUserIDParam)
-		if err != nil {
-			return utils.ErrorResponseWithCode(c, fiber.StatusBadRequest, "Invalid user ID format", "")
-		}
-
-		// Check if user is trying to access their own resource
-		if currentUserID != targetUserID {
-			return utils.ErrorResponseWithCode(c, fiber.StatusForbidden, "Access denied", "You can only access your own resources")
-		}
-
-		c.Locals("targetUserID", targetUserID)
-		return c.Next()
-	}
-}
-
-// RateLimitByUserMiddleware implements per-user rate limiting
-func RateLimitByUserMiddleware() fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		// This is a placeholder for rate limiting implementation
-		// You would typically use Redis or an in-memory store to track requests per user
-
-		// For now, just pass through
-		// TODO: Implement actual rate limiting logic
-		return c.Next()
-	}
-}
-
-// GetCurrentUserID extracts the current user ID from the request context
+// GetCurrentUserID extrae el ID del usuario actual del contexto
 func GetCurrentUserID(c *fiber.Ctx) (primitive.ObjectID, error) {
 	userID := c.Locals("userID")
 	if userID == nil {
@@ -282,7 +260,7 @@ func GetCurrentUserID(c *fiber.Ctx) (primitive.ObjectID, error) {
 	return objID, nil
 }
 
-// GetCurrentUserRole extracts the current user role from the request context
+// GetCurrentUserRole extrae el rol del usuario actual del contexto
 func GetCurrentUserRole(c *fiber.Ctx) (string, error) {
 	userRole := c.Locals("userRole")
 	if userRole == nil {
@@ -297,7 +275,7 @@ func GetCurrentUserRole(c *fiber.Ctx) (string, error) {
 	return role, nil
 }
 
-// IsAdmin checks if the current user is an admin
+// IsAdmin verifica si el usuario actual es admin
 func IsAdmin(c *fiber.Ctx) bool {
 	role, err := GetCurrentUserRole(c)
 	if err != nil {
@@ -306,8 +284,13 @@ func IsAdmin(c *fiber.Ctx) bool {
 	return role == string(models.RoleAdmin)
 }
 
-// IsAuthenticated checks if the request is authenticated
+// IsAuthenticated verifica si la petición está autenticada
 func IsAuthenticated(c *fiber.Ctx) bool {
 	_, err := GetCurrentUserID(c)
 	return err == nil
+}
+
+// SetLogger configura el logger para el middleware
+func (m *AuthMiddleware) SetLogger(logger *zap.Logger) {
+	m.logger = logger
 }
