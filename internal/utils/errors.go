@@ -74,30 +74,30 @@ func NewValidationError(message string, details ...string) *APIError {
 func HandleError(c *fiber.Ctx, err error) error {
 	// Check if it's already an APIError
 	if apiErr, ok := err.(*APIError); ok {
-		return c.Status(apiErr.Code).JSON(NewErrorResponse(apiErr.Message, apiErr.Details))
+		return ErrorResponseFunc(c, apiErr.Code, apiErr.Message, apiErr.Details)
 	}
 
 	// Handle known business logic errors
 	switch err {
 	case ErrUserNotFound:
-		return c.Status(http.StatusNotFound).JSON(NewErrorResponse("User not found", ""))
+		return NotFoundResponse(c, "User not found")
 	case ErrUserAlreadyExists:
-		return c.Status(http.StatusConflict).JSON(NewErrorResponse("User already exists", ""))
+		return ErrorResponseFunc(c, http.StatusConflict, "User already exists", "")
 	case ErrInvalidCredentials:
-		return c.Status(http.StatusUnauthorized).JSON(NewErrorResponse("Invalid credentials", ""))
+		return UnauthorizedResponse(c, "Invalid credentials")
 	case ErrWorkflowNotFound:
-		return c.Status(http.StatusNotFound).JSON(NewErrorResponse("Workflow not found", ""))
+		return NotFoundResponse(c, "Workflow not found")
 	case ErrUnauthorized:
-		return c.Status(http.StatusUnauthorized).JSON(NewErrorResponse("Unauthorized", ""))
+		return UnauthorizedResponse(c, "Unauthorized")
 	case ErrForbidden:
-		return c.Status(http.StatusForbidden).JSON(NewErrorResponse("Forbidden", ""))
+		return ForbiddenResponse(c, "Forbidden")
 	case ErrValidationFailed:
-		return c.Status(http.StatusUnprocessableEntity).JSON(NewErrorResponse("Validation failed", ""))
+		return ErrorResponseFunc(c, http.StatusUnprocessableEntity, "Validation failed", "")
 	case ErrBadRequest:
-		return c.Status(http.StatusBadRequest).JSON(NewErrorResponse("Bad request", ""))
+		return BadRequestResponse(c, "Bad request", nil)
 	default:
 		// For unknown errors, log them and return a generic internal server error
-		return c.Status(http.StatusInternalServerError).JSON(NewErrorResponse("Internal server error", ""))
+		return InternalServerErrorResponse(c, "Internal server error", err)
 	}
 }
 
@@ -108,19 +108,19 @@ type ValidationErrorDetail struct {
 	Value   any    `json:"value,omitempty"`
 }
 
-// ValidationError represents multiple validation errors
-type ValidationError struct {
+// ValidationErrorStruct represents multiple validation errors
+type ValidationErrorStruct struct {
 	Message string                  `json:"message"`
 	Errors  []ValidationErrorDetail `json:"errors"`
 }
 
-func (e ValidationError) Error() string {
+func (e ValidationErrorStruct) Error() string {
 	return e.Message
 }
 
 // NewValidationErrors creates a new validation error with multiple field errors
-func NewValidationErrors(errors []ValidationErrorDetail) *ValidationError {
-	return &ValidationError{
+func NewValidationErrors(errors []ValidationErrorDetail) *ValidationErrorStruct {
+	return &ValidationErrorStruct{
 		Message: "Validation failed",
 		Errors:  errors,
 	}

@@ -19,7 +19,7 @@ type logRepository struct {
 
 // NewLogRepository creates a new log repository
 func NewLogRepository(db *mongo.Database) repository.LogRepository {
-	collection := db.Collection("workflow_logs") // Nombre consistente
+	collection := db.Collection("logs")
 
 	// Create indexes
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -63,20 +63,11 @@ func NewLogRepository(db *mongo.Database) repository.LogRepository {
 }
 
 func (r *logRepository) Create(ctx context.Context, log *models.WorkflowLog) error {
-	if log.ID.IsZero() {
-		log.ID = primitive.NewObjectID()
-	}
-	if log.CreatedAt.IsZero() {
-		log.CreatedAt = time.Now()
-	}
-	log.UpdatedAt = time.Now()
+	log.ID = primitive.NewObjectID()
+	log.CreatedAt = time.Now()
 
 	_, err := r.collection.InsertOne(ctx, log)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 func (r *logRepository) GetByID(ctx context.Context, id primitive.ObjectID) (*models.WorkflowLog, error) {
@@ -107,12 +98,7 @@ func (r *logRepository) GetByExecutionID(ctx context.Context, executionID string
 	return &log, nil
 }
 
-// Update actualiza un log 
 func (r *logRepository) Update(ctx context.Context, id primitive.ObjectID, update map[string]interface{}) error {
-	if len(update) == 0 {
-		return nil
-	}
-
 	update["updated_at"] = time.Now()
 
 	result, err := r.collection.UpdateOne(
@@ -120,6 +106,7 @@ func (r *logRepository) Update(ctx context.Context, id primitive.ObjectID, updat
 		bson.M{"_id": id},
 		bson.M{"$set": update},
 	)
+
 	if err != nil {
 		return err
 	}
@@ -144,166 +131,149 @@ func (r *logRepository) Delete(ctx context.Context, id primitive.ObjectID) error
 	return nil
 }
 
-// GetByWorkflowID con signature unificada - CORREGIDO
-func (r *logRepository) GetByWorkflowID(ctx context.Context, workflowID primitive.ObjectID, opts repository.PaginationOptions) ([]*models.WorkflowLog, int64, error) {
-	filter := bson.M{"workflow_id": workflowID}
+// FindWithPagination busca logs con paginación
+func (r *logRepository) FindWithPagination(ctx context.Context, filter map[string]interface{}, page, limit int) ([]models.WorkflowLog, int64, error) {
+	// Calcular skip
+	skip := (page - 1) * limit
 
-	// Contar total
+	// Contar total de documentos
 	total, err := r.collection.CountDocuments(ctx, filter)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Configurar paginación
-	page := opts.Page
-	pageSize := opts.PageSize
-	if page <= 0 {
-		page = 1
-	}
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 20
-	}
-
-	skip := (page - 1) * pageSize
-
-	// Configurar ordenamiento
-	sortBy := opts.SortBy
-	if sortBy == "" {
-		sortBy = "created_at"
-	}
-
-	sortOrder := -1 // desc por defecto
-	if opts.SortDesc {
-		sortOrder = -1
-	}
-
-	findOptions := options.Find().
+	// Configurar opciones de búsqueda
+	opts := options.Find().
 		SetSkip(int64(skip)).
-		SetLimit(int64(pageSize)).
-		SetSort(bson.D{{Key: sortBy, Value: sortOrder}})
+		SetLimit(int64(limit)).
+		SetSort(bson.D{{Key: "created_at", Value: -1}})
 
-	cursor, err := r.collection.Find(ctx, filter, findOptions)
+	// Ejecutar búsqueda
+	cursor, err := r.collection.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer cursor.Close(ctx)
 
-	var logs []*models.WorkflowLog
-	if err := cursor.All(ctx, &logs); err != nil {
+	// Decodificar resultados
+	var logs []models.WorkflowLog
+	if err = cursor.All(ctx, &logs); err != nil {
 		return nil, 0, err
 	}
 
 	return logs, total, nil
 }
 
-// Search con signature unificada - CORREGIDO
-func (r *logRepository) Search(ctx context.Context, filter repository.LogSearchFilter, opts repository.PaginationOptions) ([]*models.WorkflowLog, int64, error) {
-	query := bson.M{}
+func (r *logRepository) GetByWorkflowID(ctx context.Context, workflowID primitive.ObjectID, opts repository.PaginationOptions) ([]models.WorkflowLog, int64, error) {
+	filter := bson.M{"workflow_id": workflowID}
+	return r.FindWithPagination(ctx, filter, opts.Page, opts.PageSize)
+}
 
-	// Build query based on filters
+func (r *logRepository) GetByUserID(ctx context.Context, userID primitive.ObjectID, opts repository.PaginationOptions) ([]models.WorkflowLog, int64, error) {
+	filter := bson.M{"user_id": userID}
+	return r.FindWithPagination(ctx, filter, opts.Page, opts.PageSize)
+}
+
+func (r *logRepository) GetStats(ctx context.Context, filter repository.LogSearchFilter) (*models.LogStats, error) {
+	// Construir filtro de búsqueda
+	mongoFilter := bson.M{}
+
 	if filter.WorkflowID != nil {
-		query["workflow_id"] = *filter.WorkflowID
+		mongoFilter["workflow_id"] = *filter.WorkflowID
 	}
 
 	if filter.UserID != nil {
-		query["user_id"] = *filter.UserID
+		mongoFilter["user_id"] = *filter.UserID
+	}
+
+	if filter.Status != nil {
+		mongoFilter["status"] = *filter.Status
+	}
+
+	if filter.StartDate != nil || filter.EndDate != nil {
+		dateFilter := bson.M{}
+		if filter.StartDate != nil {
+			dateFilter["$gte"] = *filter.StartDate
+		}
+		if filter.EndDate != nil {
+			dateFilter["$lte"] = *filter.EndDate
+		}
+		mongoFilter["created_at"] = dateFilter
+	}
+
+	// Ejecutar agregación para estadísticas
+	pipeline := []bson.M{
+		{"$match": mongoFilter},
+		{"$group": bson.M{
+			"_id":                    nil,
+			"total_executions":       bson.M{"$sum": 1},
+			"successful_runs":        bson.M{"$sum": bson.M{"$cond": []interface{}{bson.M{"$eq": []string{"$status", "completed"}}, 1, 0}}},
+			"failed_runs":            bson.M{"$sum": bson.M{"$cond": []interface{}{bson.M{"$eq": []string{"$status", "failed"}}, 1, 0}}},
+			"average_execution_time": bson.M{"$avg": "$duration"},
+		}},
+	}
+
+	cursor, err := r.collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var result []bson.M
+	if err = cursor.All(ctx, &result); err != nil {
+		return nil, err
+	}
+
+	stats := &models.LogStats{
+		TotalExecutions:      0,
+		SuccessfulRuns:       0,
+		FailedRuns:           0,
+		AverageExecutionTime: 0,
+	}
+
+	if len(result) > 0 {
+		data := result[0]
+		if total, ok := data["total_executions"].(int32); ok {
+			stats.TotalExecutions = int64(total)
+		}
+		if successful, ok := data["successful_runs"].(int32); ok {
+			stats.SuccessfulRuns = int64(successful)
+		}
+		if failed, ok := data["failed_runs"].(int32); ok {
+			stats.FailedRuns = int64(failed)
+		}
+		if avgTime, ok := data["average_execution_time"].(float64); ok {
+			stats.AverageExecutionTime = avgTime
+		}
+	}
+
+	return stats, nil
+}
+
+func (r *logRepository) Search(ctx context.Context, filter repository.LogSearchFilter, opts repository.PaginationOptions) ([]models.WorkflowLog, int64, error) {
+	// Convertir LogSearchFilter a filtro de MongoDB
+	mongoFilter := bson.M{}
+
+	if filter.WorkflowID != nil {
+		mongoFilter["workflow_id"] = *filter.WorkflowID
+	}
+
+	if filter.UserID != nil {
+		mongoFilter["user_id"] = *filter.UserID
 	}
 
 	if filter.ExecutionID != nil {
-		query["execution_id"] = *filter.ExecutionID
+		mongoFilter["execution_id"] = *filter.ExecutionID
 	}
 
 	if filter.Status != nil {
-		query["status"] = *filter.Status
+		mongoFilter["status"] = *filter.Status
 	}
 
-	if filter.Level != nil {
-		query["level"] = *filter.Level
-	}
-
-	// Date range filter
-	if filter.StartDate != nil || filter.EndDate != nil {
-		dateFilter := bson.M{}
-		if filter.StartDate != nil {
-			dateFilter["$gte"] = *filter.StartDate
-		}
-		if filter.EndDate != nil {
-			dateFilter["$lte"] = *filter.EndDate
-		}
-		query["created_at"] = dateFilter
-	}
-
-	// Message contains filter
 	if filter.MessageContains != nil && *filter.MessageContains != "" {
-		query["error_message"] = bson.M{"$regex": *filter.MessageContains, "$options": "i"}
+		mongoFilter["message"] = bson.M{"$regex": *filter.MessageContains, "$options": "i"}
 	}
 
-	// Contar total
-	total, err := r.collection.CountDocuments(ctx, query)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// Configurar paginación
-	page := opts.Page
-	pageSize := opts.PageSize
-	if page <= 0 {
-		page = 1
-	}
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 20
-	}
-
-	skip := (page - 1) * pageSize
-
-	// Configurar ordenamiento
-	sortBy := opts.SortBy
-	if sortBy == "" {
-		sortBy = "created_at"
-	}
-
-	sortOrder := -1 // desc por defecto
-	if opts.SortDesc {
-		sortOrder = -1
-	}
-
-	findOptions := options.Find().
-		SetSkip(int64(skip)).
-		SetLimit(int64(pageSize)).
-		SetSort(bson.D{{Key: sortBy, Value: sortOrder}})
-
-	cursor, err := r.collection.Find(ctx, query, findOptions)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer cursor.Close(ctx)
-
-	var logs []*models.WorkflowLog
-	if err := cursor.All(ctx, &logs); err != nil {
-		return nil, 0, err
-	}
-
-	return logs, total, nil
-}
-
-// GetStats con signature corregida - CORREGIDO
-func (r *logRepository) GetStats(ctx context.Context, filter repository.LogSearchFilter) (*models.LogStats, error) {
-	matchStage := bson.M{}
-
-	// Aplicar filtros
-	if filter.WorkflowID != nil {
-		matchStage["workflow_id"] = *filter.WorkflowID
-	}
-
-	if filter.UserID != nil {
-		matchStage["user_id"] = *filter.UserID
-	}
-
-	if filter.Status != nil {
-		matchStage["status"] = *filter.Status
-	}
-
-	// Filtro de fecha
 	if filter.StartDate != nil || filter.EndDate != nil {
 		dateFilter := bson.M{}
 		if filter.StartDate != nil {
@@ -312,114 +282,129 @@ func (r *logRepository) GetStats(ctx context.Context, filter repository.LogSearc
 		if filter.EndDate != nil {
 			dateFilter["$lte"] = *filter.EndDate
 		}
-		matchStage["created_at"] = dateFilter
+		mongoFilter["created_at"] = dateFilter
 	}
 
-	pipeline := mongo.Pipeline{
-		{{"$match", matchStage}},
-		{{"$group", bson.M{
-			"_id":               nil,
-			"total_executions":  bson.M{"$sum": 1},
-			"successful_runs":   bson.M{"$sum": bson.M{"$cond": []interface{}{bson.M{"$eq": []interface{}{"$status", "completed"}}, 1, 0}}},
-			"failed_runs":       bson.M{"$sum": bson.M{"$cond": []interface{}{bson.M{"$eq": []interface{}{"$status", "failed"}}, 1, 0}}},
-			"avg_execution_time": bson.M{"$avg": "$duration"},
-			"total_execution_time": bson.M{"$sum": "$duration"},
-		}}},
+	return r.FindWithPagination(ctx, mongoFilter, opts.Page, opts.PageSize)
+}
+
+// Implementar métodos restantes de la interfaz
+func (r *logRepository) Query(ctx context.Context, req *models.LogQueryRequest) (*models.LogListResponse, error) {
+	// Implementación básica
+	filter := bson.M{}
+	if req.WorkflowID != nil {
+		filter["workflow_id"] = *req.WorkflowID
 	}
 
-	cursor, err := r.collection.Aggregate(ctx, pipeline)
+	logs, total, err := r.FindWithPagination(ctx, filter, req.Page, req.PageSize)
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
 
-	var results []bson.M
-	if err := cursor.All(ctx, &results); err != nil {
-		return nil, err
+	// Convertir a punteros
+	logPtrs := make([]*models.WorkflowLog, len(logs))
+	for i := range logs {
+		logPtrs[i] = &logs[i]
 	}
 
-	if len(results) == 0 {
-		return &models.LogStats{
-			TotalExecutions:      0,
-			SuccessfulRuns:       0,
-			FailedRuns:           0,
-			AverageExecutionTime: 0,
-		}, nil
-	}
-
-	result := results[0]
-	stats := &models.LogStats{
-		TotalExecutions:      getInt64(result, "total_executions"),
-		SuccessfulRuns:       getInt64(result, "successful_runs"),
-		FailedRuns:           getInt64(result, "failed_runs"),
-		AverageExecutionTime: getFloat64(result, "avg_execution_time"),
-		TotalExecutionTime:   getInt64(result, "total_execution_time"),
-	}
-
-	// Calcular tasa de éxito
-	if stats.TotalExecutions > 0 {
-		stats.SuccessRate = float64(stats.SuccessfulRuns) / float64(stats.TotalExecutions) * 100
-	}
-
-	return stats, nil
+	return &models.LogListResponse{
+		Logs:       logPtrs,
+		Total:      total,
+		Page:       req.Page,
+		PageSize:   req.PageSize,
+		TotalPages: int((total + int64(req.PageSize) - 1) / int64(req.PageSize)),
+	}, nil
 }
 
-// GetStatistics versión legacy - IMPLEMENTADO
-func (r *logRepository) GetStatistics(ctx context.Context, filter map[string]interface{}) (map[string]interface{}, error) {
-	matchStage := bson.M{}
-	for k, v := range filter {
-		matchStage[k] = v
-	}
-
-	pipeline := mongo.Pipeline{
-		{{"$match", matchStage}},
-		{{"$group", bson.M{
-			"_id":            "$status",
-			"count":          bson.M{"$sum": 1},
-			"total_duration": bson.M{"$sum": "$duration"},
-			"avg_duration":   bson.M{"$avg": "$duration"},
-		}}},
-	}
-
-	cursor, err := r.collection.Aggregate(ctx, pipeline)
+func (r *logRepository) List(ctx context.Context, page, pageSize int) (*models.LogListResponse, error) {
+	logs, total, err := r.FindWithPagination(ctx, bson.M{}, page, pageSize)
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
 
-	var results []bson.M
-	if err := cursor.All(ctx, &results); err != nil {
+	logPtrs := make([]*models.WorkflowLog, len(logs))
+	for i := range logs {
+		logPtrs[i] = &logs[i]
+	}
+
+	return &models.LogListResponse{
+		Logs:       logPtrs,
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: int((total + int64(pageSize) - 1) / int64(pageSize)),
+	}, nil
+}
+
+func (r *logRepository) ListByWorkflow(ctx context.Context, workflowID primitive.ObjectID, page, pageSize int) (*models.LogListResponse, error) {
+	filter := bson.M{"workflow_id": workflowID}
+	logs, total, err := r.FindWithPagination(ctx, filter, page, pageSize)
+	if err != nil {
 		return nil, err
 	}
 
-	stats := make(map[string]interface{})
-	statusStats := make(map[string]interface{})
-	totalLogs := int64(0)
-
-	for _, result := range results {
-		status := result["_id"].(string)
-		count := getInt32(result, "count")
-		totalLogs += int64(count)
-
-		statusStats[status] = map[string]interface{}{
-			"count":          count,
-			"avg_duration":   getFloat64(result, "avg_duration"),
-			"total_duration": getInt64(result, "total_duration"),
-		}
+	logPtrs := make([]*models.WorkflowLog, len(logs))
+	for i := range logs {
+		logPtrs[i] = &logs[i]
 	}
 
-	stats["by_status"] = statusStats
-	stats["total_logs"] = totalLogs
-
-	return stats, nil
+	return &models.LogListResponse{
+		Logs:       logPtrs,
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: int((total + int64(pageSize) - 1) / int64(pageSize)),
+	}, nil
 }
 
-// GetRecentLogs obtiene logs recientes - IMPLEMENTADO
+func (r *logRepository) ListByUser(ctx context.Context, userID primitive.ObjectID, page, pageSize int) (*models.LogListResponse, error) {
+	filter := bson.M{"user_id": userID}
+	logs, total, err := r.FindWithPagination(ctx, filter, page, pageSize)
+	if err != nil {
+		return nil, err
+	}
+
+	logPtrs := make([]*models.WorkflowLog, len(logs))
+	for i := range logs {
+		logPtrs[i] = &logs[i]
+	}
+
+	return &models.LogListResponse{
+		Logs:       logPtrs,
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: int((total + int64(pageSize) - 1) / int64(pageSize)),
+	}, nil
+}
+
+func (r *logRepository) ListByStatus(ctx context.Context, status models.ExecutionStatus, page, pageSize int) (*models.LogListResponse, error) {
+	filter := bson.M{"status": string(status)}
+	logs, total, err := r.FindWithPagination(ctx, filter, page, pageSize)
+	if err != nil {
+		return nil, err
+	}
+
+	logPtrs := make([]*models.WorkflowLog, len(logs))
+	for i := range logs {
+		logPtrs[i] = &logs[i]
+	}
+
+	return &models.LogListResponse{
+		Logs:       logPtrs,
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: int((total + int64(pageSize) - 1) / int64(pageSize)),
+	}, nil
+}
+
+// Métodos adicionales requeridos por la interfaz
 func (r *logRepository) GetRecentLogs(ctx context.Context, hours int, limit int) ([]*models.WorkflowLog, error) {
-	startTime := time.Now().Add(-time.Duration(hours) * time.Hour)
-	
 	filter := bson.M{
-		"created_at": bson.M{"$gte": startTime},
+		"created_at": bson.M{
+			"$gte": time.Now().Add(-time.Duration(hours) * time.Hour),
+		},
 	}
 
 	opts := options.Find().
@@ -433,63 +418,196 @@ func (r *logRepository) GetRecentLogs(ctx context.Context, hours int, limit int)
 	defer cursor.Close(ctx)
 
 	var logs []*models.WorkflowLog
-	if err := cursor.All(ctx, &logs); err != nil {
+	if err = cursor.All(ctx, &logs); err != nil {
 		return nil, err
 	}
 
 	return logs, nil
 }
 
-// GetLogsByDateRange obtiene logs por rango de fechas - IMPLEMENTADO
-func (r *logRepository) GetLogsByDateRange(ctx context.Context, startDate, endDate time.Time, page, pageSize int) ([]*models.WorkflowLog, int64, error) {
+func (r *logRepository) GetLogsByDateRange(ctx context.Context, startDate, endDate string, page, pageSize int) (*models.LogListResponse, error) {
+	// Parsear fechas
+	start, err := time.Parse(time.RFC3339, startDate)
+	if err != nil {
+		return nil, err
+	}
+
+	end, err := time.Parse(time.RFC3339, endDate)
+	if err != nil {
+		return nil, err
+	}
+
 	filter := bson.M{
 		"created_at": bson.M{
-			"$gte": startDate,
-			"$lte": endDate,
+			"$gte": start,
+			"$lte": end,
 		},
 	}
 
-	// Contar total
+	logs, total, err := r.FindWithPagination(ctx, filter, page, pageSize)
+	if err != nil {
+		return nil, err
+	}
+
+	logPtrs := make([]*models.WorkflowLog, len(logs))
+	for i := range logs {
+		logPtrs[i] = &logs[i]
+	}
+
+	return &models.LogListResponse{
+		Logs:       logPtrs,
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: int((total + int64(pageSize) - 1) / int64(pageSize)),
+	}, nil
+}
+
+func (r *logRepository) GetStatistics(ctx context.Context) (*models.LogStatistics, error) {
+	// Implementación básica de estadísticas
+	total, err := r.collection.CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.LogStatistics{
+		TotalExecutions: total,
+		DataPeriod:      "all_time",
+		LastUpdated:     time.Now(),
+	}, nil
+}
+
+func (r *logRepository) GetStatisticsByWorkflow(ctx context.Context, workflowID primitive.ObjectID) (*models.LogStatistics, error) {
+	filter := bson.M{"workflow_id": workflowID}
 	total, err := r.collection.CountDocuments(ctx, filter)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 
-	// Paginación
-	if page <= 0 {
-		page = 1
-	}
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 20
+	return &models.LogStatistics{
+		TotalExecutions: total,
+		DataPeriod:      "workflow_specific",
+		LastUpdated:     time.Now(),
+	}, nil
+}
+
+func (r *logRepository) GetStatisticsByUser(ctx context.Context, userID primitive.ObjectID) (*models.LogStatistics, error) {
+	filter := bson.M{"user_id": userID}
+	total, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, err
 	}
 
-	skip := (page - 1) * pageSize
+	return &models.LogStatistics{
+		TotalExecutions: total,
+		DataPeriod:      "user_specific",
+		LastUpdated:     time.Now(),
+	}, nil
+}
 
-	opts := options.Find().
-		SetSkip(int64(skip)).
-		SetLimit(int64(pageSize)).
-		SetSort(bson.D{{Key: "created_at", Value: -1}})
+func (r *logRepository) GetStatisticsByDateRange(ctx context.Context, startDate, endDate string) (*models.LogStatistics, error) {
+	start, err := time.Parse(time.RFC3339, startDate)
+	if err != nil {
+		return nil, err
+	}
+
+	end, err := time.Parse(time.RFC3339, endDate)
+	if err != nil {
+		return nil, err
+	}
+
+	filter := bson.M{
+		"created_at": bson.M{
+			"$gte": start,
+			"$lte": end,
+		},
+	}
+
+	total, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.LogStatistics{
+		TotalExecutions: total,
+		DataPeriod:      "date_range",
+		LastUpdated:     time.Now(),
+	}, nil
+}
+
+func (r *logRepository) GetRunningExecutions(ctx context.Context) ([]*models.WorkflowLog, error) {
+	filter := bson.M{"status": "running"}
+
+	cursor, err := r.collection.Find(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var logs []*models.WorkflowLog
+	if err = cursor.All(ctx, &logs); err != nil {
+		return nil, err
+	}
+
+	return logs, nil
+}
+
+func (r *logRepository) GetFailedExecutions(ctx context.Context, limit int) ([]*models.WorkflowLog, error) {
+	filter := bson.M{"status": "failed"}
+	opts := options.Find().SetLimit(int64(limit)).SetSort(bson.D{{Key: "created_at", Value: -1}})
 
 	cursor, err := r.collection.Find(ctx, filter, opts)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	defer cursor.Close(ctx)
 
 	var logs []*models.WorkflowLog
-	if err := cursor.All(ctx, &logs); err != nil {
-		return nil, 0, err
+	if err = cursor.All(ctx, &logs); err != nil {
+		return nil, err
 	}
 
-	return logs, total, nil
+	return logs, nil
 }
 
-// DeleteOldLogs elimina logs antiguos - IMPLEMENTADO
-func (r *logRepository) DeleteOldLogs(ctx context.Context, olderThan time.Time) (int64, error) {
-	result, err := r.collection.DeleteMany(
-		ctx,
-		bson.M{"created_at": bson.M{"$lt": olderThan}},
-	)
+func (r *logRepository) GetLastExecution(ctx context.Context, workflowID primitive.ObjectID) (*models.WorkflowLog, error) {
+	filter := bson.M{"workflow_id": workflowID}
+	opts := options.FindOne().SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	var log models.WorkflowLog
+	err := r.collection.FindOne(ctx, filter, opts).Decode(&log)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, repository.ErrLogNotFound
+		}
+		return nil, err
+	}
+
+	return &log, nil
+}
+
+func (r *logRepository) GetExecutionHistory(ctx context.Context, workflowID primitive.ObjectID, limit int) ([]*models.WorkflowLog, error) {
+	filter := bson.M{"workflow_id": workflowID}
+	opts := options.Find().SetLimit(int64(limit)).SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var logs []*models.WorkflowLog
+	if err = cursor.All(ctx, &logs); err != nil {
+		return nil, err
+	}
+
+	return logs, nil
+}
+
+func (r *logRepository) DeleteOldLogs(ctx context.Context, cutoffDate time.Time) (int64, error) {
+	filter := bson.M{"created_at": bson.M{"$lt": cutoffDate}}
+
+	result, err := r.collection.DeleteMany(ctx, filter)
 	if err != nil {
 		return 0, err
 	}
@@ -497,12 +615,10 @@ func (r *logRepository) DeleteOldLogs(ctx context.Context, olderThan time.Time) 
 	return result.DeletedCount, nil
 }
 
-// DeleteLogsByWorkflow elimina logs de un workflow específico - IMPLEMENTADO
 func (r *logRepository) DeleteLogsByWorkflow(ctx context.Context, workflowID primitive.ObjectID) (int64, error) {
-	result, err := r.collection.DeleteMany(
-		ctx,
-		bson.M{"workflow_id": workflowID},
-	)
+	filter := bson.M{"workflow_id": workflowID}
+
+	result, err := r.collection.DeleteMany(ctx, filter)
 	if err != nil {
 		return 0, err
 	}
@@ -510,105 +626,155 @@ func (r *logRepository) DeleteLogsByWorkflow(ctx context.Context, workflowID pri
 	return result.DeletedCount, nil
 }
 
-// Helper functions para conversion de tipos
-func getInt64(m bson.M, key string) int64 {
-	if val, exists := m[key]; exists && val != nil {
-		switch v := val.(type) {
-		case int64:
-			return v
-		case int32:
-			return int64(v)
-		case int:
-			return int64(v)
-		case float64:
-			return int64(v)
-		}
-	}
-	return 0
-}
-
-func getInt32(m bson.M, key string) int32 {
-	if val, exists := m[key]; exists && val != nil {
-		switch v := val.(type) {
-		case int32:
-			return v
-		case int64:
-			return int32(v)
-		case int:
-			return int32(v)
-		case float64:
-			return int32(v)
-		}
-	}
-	return 0
-}
-
-func getFloat64(m bson.M, key string) float64 {
-	if val, exists := m[key]; exists && val != nil {
-		switch v := val.(type) {
-		case float64:
-			return v
-		case float32:
-			return float64(v)
-		case int64:
-			return float64(v)
-		case int32:
-			return float64(v)
-		case int:
-			return float64(v)
-		}
-	}
-	return 0.0
-}) * pageSize
-
-	// Configurar ordenamiento
-	sortBy := opts.SortBy
-	if sortBy == "" {
-		sortBy = "created_at"
+func (r *logRepository) GetExecutionCountByStatus(ctx context.Context) (map[models.ExecutionStatus]int64, error) {
+	pipeline := []bson.M{
+		{"$group": bson.M{
+			"_id":   "$status",
+			"count": bson.M{"$sum": 1},
+		}},
 	}
 
-	sortOrder := -1 // desc por defecto
-	if opts.SortDesc {
-		sortOrder = -1
-	}
-
-	findOptions := options.Find().
-		SetSkip(int64(skip)).
-		SetLimit(int64(pageSize)).
-		SetSort(bson.D{{Key: sortBy, Value: sortOrder}})
-
-	cursor, err := r.collection.Find(ctx, filter, findOptions)
+	cursor, err := r.collection.Aggregate(ctx, pipeline)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	defer cursor.Close(ctx)
 
-	var logs []*models.WorkflowLog
-	if err := cursor.All(ctx, &logs); err != nil {
-		return nil, 0, err
+	result := make(map[models.ExecutionStatus]int64)
+	for cursor.Next(ctx) {
+		var doc struct {
+			ID    string `bson:"_id"`
+			Count int64  `bson:"count"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			continue
+		}
+		result[models.ExecutionStatus(doc.ID)] = doc.Count
 	}
 
-	return logs, total, nil
+	return result, nil
 }
 
-// GetByUserID con signature unificada - CORREGIDO
-func (r *logRepository) GetByUserID(ctx context.Context, userID primitive.ObjectID, opts repository.PaginationOptions) ([]*models.WorkflowLog, int64, error) {
-	filter := bson.M{"user_id": userID}
+func (r *logRepository) GetExecutionCountByTriggerType(ctx context.Context) (map[models.TriggerType]int64, error) {
+	pipeline := []bson.M{
+		{"$group": bson.M{
+			"_id":   "$trigger_type",
+			"count": bson.M{"$sum": 1},
+		}},
+	}
 
-	// Contar total
-	total, err := r.collection.CountDocuments(ctx, filter)
+	cursor, err := r.collection.Aggregate(ctx, pipeline)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	result := make(map[models.TriggerType]int64)
+	for cursor.Next(ctx) {
+		var doc struct {
+			ID    string `bson:"_id"`
+			Count int64  `bson:"count"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			continue
+		}
+		result[models.TriggerType(doc.ID)] = doc.Count
 	}
 
-	// Configurar paginación
-	page := opts.Page
-	pageSize := opts.PageSize
-	if page <= 0 {
-		page = 1
-	}
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 20
+	return result, nil
+}
+
+func (r *logRepository) GetAverageExecutionDuration(ctx context.Context) (float64, error) {
+	pipeline := []bson.M{
+		{"$group": bson.M{
+			"_id":     nil,
+			"avgTime": bson.M{"$avg": "$duration"},
+		}},
 	}
 
-	skip := (page - 1
+	cursor, err := r.collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return 0, err
+	}
+	defer cursor.Close(ctx)
+
+	if cursor.Next(ctx) {
+		var result struct {
+			AvgTime float64 `bson:"avgTime"`
+		}
+		if err := cursor.Decode(&result); err != nil {
+			return 0, err
+		}
+		return result.AvgTime, nil
+	}
+
+	return 0, nil
+}
+
+func (r *logRepository) GetExecutionTrends(ctx context.Context, days int) (map[string]int64, error) {
+	// Implementación básica
+	startDate := time.Now().AddDate(0, 0, -days)
+	filter := bson.M{"created_at": bson.M{"$gte": startDate}}
+
+	count, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]int64{"total": count}, nil
+}
+
+func (r *logRepository) SearchLogs(ctx context.Context, searchTerm string, page, pageSize int) (*models.LogListResponse, error) {
+	filter := bson.M{
+		"$or": []bson.M{
+			{"workflow_name": bson.M{"$regex": searchTerm, "$options": "i"}},
+			{"error_message": bson.M{"$regex": searchTerm, "$options": "i"}},
+		},
+	}
+
+	logs, total, err := r.FindWithPagination(ctx, filter, page, pageSize)
+	if err != nil {
+		return nil, err
+	}
+
+	logPtrs := make([]*models.WorkflowLog, len(logs))
+	for i := range logs {
+		logPtrs[i] = &logs[i]
+	}
+
+	return &models.LogListResponse{
+		Logs:       logPtrs,
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: int((total + int64(pageSize) - 1) / int64(pageSize)),
+	}, nil
+}
+
+func (r *logRepository) SearchLogsByWorkflow(ctx context.Context, workflowID primitive.ObjectID, searchTerm string, page, pageSize int) (*models.LogListResponse, error) {
+	filter := bson.M{
+		"workflow_id": workflowID,
+		"$or": []bson.M{
+			{"workflow_name": bson.M{"$regex": searchTerm, "$options": "i"}},
+			{"error_message": bson.M{"$regex": searchTerm, "$options": "i"}},
+		},
+	}
+
+	logs, total, err := r.FindWithPagination(ctx, filter, page, pageSize)
+	if err != nil {
+		return nil, err
+	}
+
+	logPtrs := make([]*models.WorkflowLog, len(logs))
+	for i := range logs {
+		logPtrs[i] = &logs[i]
+	}
+
+	return &models.LogListResponse{
+		Logs:       logPtrs,
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: int((total + int64(pageSize) - 1) / int64(pageSize)),
+	}, nil
+}

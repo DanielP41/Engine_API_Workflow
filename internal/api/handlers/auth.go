@@ -8,25 +8,28 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
 
 	"Engine_API_Workflow/internal/models"
 	"Engine_API_Workflow/internal/repository"
 	"Engine_API_Workflow/internal/services"
 	"Engine_API_Workflow/internal/utils"
+	"Engine_API_Workflow/pkg/jwt"
 )
 
-// AuthHandler maneja todas las operaciones de autenticación - CORREGIDO
+// AuthHandler maneja todas las operaciones de autenticación
 type AuthHandler struct {
 	userRepo    repository.UserRepository
-	authService services.AuthService // Usar la interfaz del paquete services
+	authService services.AuthService
+	jwtService  jwt.JWTService
+	validator   *utils.Validator
 }
 
-// NewAuthHandler crea una nueva instancia del handler de autenticación - CORREGIDO
-func NewAuthHandler(userRepo repository.UserRepository, authService services.AuthService) *AuthHandler {
+// NewAuthHandler crea una nueva instancia del handler de autenticación
+func NewAuthHandler(authService services.AuthService, jwtService jwt.JWTService, validator *utils.Validator) *AuthHandler {
 	return &AuthHandler{
-		userRepo:    userRepo,
 		authService: authService,
+		jwtService:  jwtService,
+		validator:   validator,
 	}
 }
 
@@ -54,7 +57,7 @@ type AuthResponse struct {
 	User         *UserResponse `json:"user"`
 	AccessToken  string        `json:"access_token"`
 	RefreshToken string        `json:"refresh_token"`
-	ExpiresIn    int64         `json:"expires_in"` // segundos hasta expiración
+	ExpiresIn    int64         `json:"expires_in"`
 }
 
 // UserResponse estructura para información del usuario en respuestas
@@ -69,47 +72,41 @@ type UserResponse struct {
 }
 
 // Register maneja el registro de nuevos usuarios
-// POST /auth/register
 func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	var req RegisterRequest
 
-	// Parsear el cuerpo de la petición
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Invalid JSON format", err.Error())
+		return utils.BadRequestResponse(c, "Invalid JSON format", err)
 	}
 
-	// Validar los datos de entrada
-	if err := utils.ValidateStruct(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Validation failed", err.Error())
+	if err := h.validator.Validate(&req); err != nil {
+		return utils.ValidationErrorResponse(c, "Validation failed", err)
 	}
 
-	// Normalizar email a minúsculas
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
-
-	// Establecer rol por defecto si no se proporciona
 	if req.Role == "" {
 		req.Role = "user"
 	}
 
-	// Verificar si el usuario ya existe
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Verificar si el usuario ya existe
 	existingUser, err := h.userRepo.GetByEmail(ctx, req.Email)
 	if err != nil && err.Error() != "user not found" {
 		log.Printf("Error checking existing user: %v", err)
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Database error", "Could not check existing user")
+		return utils.InternalServerErrorResponse(c, "Database error", err)
 	}
 
 	if existingUser != nil {
-		return utils.ErrorResponse(c, fiber.StatusConflict, "User already exists", "A user with this email already exists")
+		return utils.ErrorResponseFunc(c, fiber.StatusConflict, "User already exists", "A user with this email already exists")
 	}
 
 	// Hash de la contraseña
 	hashedPassword, err := h.authService.HashPassword(req.Password)
 	if err != nil {
 		log.Printf("Error hashing password: %v", err)
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Password encryption failed", "Could not process password")
+		return utils.InternalServerErrorResponse(c, "Password encryption failed", err)
 	}
 
 	// Crear nuevo usuario
@@ -124,31 +121,27 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 		UpdatedAt: time.Now(),
 	}
 
-	// Aplicar valores por defecto
-	user.BeforeCreate()
-
 	// Guardar en la base de datos
 	createdUser, err := h.userRepo.Create(ctx, user)
 	if err != nil {
 		log.Printf("Error creating user: %v", err)
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "User creation failed", "Could not create user account")
+		return utils.InternalServerErrorResponse(c, "User creation failed", err)
 	}
 
-	// Generar tokens JWT - SIGNATURE CORREGIDA
-	tokenPair, err := h.authService.GenerateTokens(
-		createdUser.ID,
+	// Generar tokens JWT
+	accessToken, refreshToken, err := h.authService.GenerateTokens(
+		createdUser.ID.Hex(),
 		createdUser.Email,
 		string(createdUser.Role),
 	)
 	if err != nil {
 		log.Printf("Error generating tokens: %v", err)
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Token generation failed", "Could not generate authentication tokens")
+		return utils.InternalServerErrorResponse(c, "Token generation failed", err)
 	}
 
 	// Actualizar último login
-	if err := h.userRepo.UpdateLastLogin(ctx, createdUser.ID); err != nil {
+	if err := h.userRepo.UpdateLastLoginString(ctx, createdUser.ID.Hex()); err != nil {
 		log.Printf("Error updating last login: %v", err)
-		// No retornamos error porque el usuario ya fue creado exitosamente
 	}
 
 	// Preparar respuesta
@@ -162,73 +155,62 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 			CreatedAt: createdUser.CreatedAt,
 			UpdatedAt: createdUser.UpdatedAt,
 		},
-		AccessToken:  tokenPair.AccessToken,
-		RefreshToken: tokenPair.RefreshToken,
-		ExpiresIn:    3600, // 1 hora en segundos
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresIn:    3600,
 	}
 
 	return utils.SuccessResponse(c, fiber.StatusCreated, "User registered successfully", response)
 }
 
 // Login maneja el inicio de sesión de usuarios
-// POST /auth/login
 func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	var req LoginRequest
 
-	// Parsear el cuerpo de la petición
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Invalid JSON format", err.Error())
+		return utils.BadRequestResponse(c, "Invalid JSON format", err)
 	}
 
-	// Validar los datos de entrada
-	if err := utils.ValidateStruct(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Validation failed", err.Error())
+	if err := h.validator.Validate(&req); err != nil {
+		return utils.ValidationErrorResponse(c, "Validation failed", err)
 	}
 
-	// Normalizar email
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
-	// Buscar usuario por email
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	user, err := h.userRepo.GetByEmail(ctx, req.Email)
 	if err != nil {
-		if err == mongo.ErrNoDocuments || err.Error() == "user not found" {
-			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid credentials", "Email or password is incorrect")
+		if err.Error() == "user not found" {
+			return utils.UnauthorizedResponse(c, "Invalid credentials")
 		}
 		log.Printf("Error finding user: %v", err)
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Database error", "Could not retrieve user information")
+		return utils.InternalServerErrorResponse(c, "Database error", err)
 	}
 
-	// Verificar si el usuario está activo
 	if !user.IsActive {
-		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Account deactivated", "Your account has been deactivated")
+		return utils.UnauthorizedResponse(c, "Account deactivated")
 	}
 
-	// Verificar contraseña
 	if err := h.authService.CheckPassword(req.Password, user.Password); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid credentials", "Email or password is incorrect")
+		return utils.UnauthorizedResponse(c, "Invalid credentials")
 	}
 
-	// Generar tokens JWT - SIGNATURE CORREGIDA
-	tokenPair, err := h.authService.GenerateTokens(
-		user.ID,
+	accessToken, refreshToken, err := h.authService.GenerateTokens(
+		user.ID.Hex(),
 		user.Email,
 		string(user.Role),
 	)
 	if err != nil {
 		log.Printf("Error generating tokens: %v", err)
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Token generation failed", "Could not generate authentication tokens")
+		return utils.InternalServerErrorResponse(c, "Token generation failed", err)
 	}
 
-	// Actualizar último login
-	if err := h.userRepo.UpdateLastLogin(ctx, user.ID); err != nil {
+	if err := h.userRepo.UpdateLastLoginString(ctx, user.ID.Hex()); err != nil {
 		log.Printf("Error updating last login: %v", err)
-		// No retornamos error porque el login fue exitoso
 	}
 
-	// Preparar respuesta
 	response := &AuthResponse{
 		User: &UserResponse{
 			ID:        user.ID.Hex(),
@@ -239,71 +221,61 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 			CreatedAt: user.CreatedAt,
 			UpdatedAt: user.UpdatedAt,
 		},
-		AccessToken:  tokenPair.AccessToken,
-		RefreshToken: tokenPair.RefreshToken,
-		ExpiresIn:    3600, // 1 hora en segundos
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresIn:    3600,
 	}
 
 	return utils.SuccessResponse(c, fiber.StatusOK, "Login successful", response)
 }
 
 // RefreshToken maneja la renovación de tokens de acceso
-// POST /auth/refresh
 func (h *AuthHandler) RefreshToken(c *fiber.Ctx) error {
 	var req RefreshTokenRequest
 
-	// Parsear el cuerpo de la petición
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Invalid JSON format", err.Error())
+		return utils.BadRequestResponse(c, "Invalid JSON format", err)
 	}
 
-	// Validar los datos de entrada
-	if err := utils.ValidateStruct(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Validation failed", err.Error())
+	if err := h.validator.Validate(&req); err != nil {
+		return utils.ValidationErrorResponse(c, "Validation failed", err)
 	}
 
-	// Validar el refresh token
-	claims, err := h.authService.ValidateRefreshToken(req.RefreshToken)
+	claims, err := h.authService.ValidateToken(req.RefreshToken)
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid refresh token", "The refresh token is invalid or expired")
+		return utils.UnauthorizedResponse(c, "Invalid refresh token")
 	}
 
-	// Convertir userID de string a ObjectID
-	userID, err := primitive.ObjectIDFromHex(claims.UserID)
-	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid user ID", "")
+	if claims.Type != "refresh" {
+		return utils.UnauthorizedResponse(c, "Invalid token type")
 	}
 
-	// Buscar usuario para verificar que aún existe y está activo
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	user, err := h.userRepo.GetByID(ctx, userID)
+	user, err := h.userRepo.GetByIDString(ctx, claims.UserID)
 	if err != nil {
-		if err == mongo.ErrNoDocuments || err.Error() == "user not found" {
-			return utils.ErrorResponse(c, fiber.StatusUnauthorized, "User not found", "The user associated with this token no longer exists")
+		if err.Error() == "user not found" {
+			return utils.UnauthorizedResponse(c, "User not found")
 		}
 		log.Printf("Error finding user: %v", err)
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Database error", "Could not retrieve user information")
+		return utils.InternalServerErrorResponse(c, "Database error", err)
 	}
 
-	// Verificar si el usuario está activo
 	if !user.IsActive {
-		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Account deactivated", "Your account has been deactivated")
+		return utils.UnauthorizedResponse(c, "Account deactivated")
 	}
 
-	// Generar nuevos tokens - SIGNATURE CORREGIDA
-	tokenPair, err := h.authService.GenerateTokens(
-		user.ID,
+	accessToken, refreshToken, err := h.authService.GenerateTokens(
+		user.ID.Hex(),
 		user.Email,
 		string(user.Role),
 	)
 	if err != nil {
 		log.Printf("Error generating tokens: %v", err)
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Token generation failed", "Could not generate new authentication tokens")
+		return utils.InternalServerErrorResponse(c, "Token generation failed", err)
 	}
 
-	// Preparar respuesta
 	response := &AuthResponse{
 		User: &UserResponse{
 			ID:        user.ID.Hex(),
@@ -314,42 +286,30 @@ func (h *AuthHandler) RefreshToken(c *fiber.Ctx) error {
 			CreatedAt: user.CreatedAt,
 			UpdatedAt: user.UpdatedAt,
 		},
-		AccessToken:  tokenPair.AccessToken,
-		RefreshToken: tokenPair.RefreshToken,
-		ExpiresIn:    3600, // 1 hora en segundos
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresIn:    3600,
 	}
 
 	return utils.SuccessResponse(c, fiber.StatusOK, "Token refreshed successfully", response)
 }
 
 // GetProfile obtiene la información del perfil del usuario autenticado
-// GET /auth/profile
 func (h *AuthHandler) GetProfile(c *fiber.Ctx) error {
-	// Obtener el ID del usuario del contexto (establecido por el middleware de auth)
-	userIDInterface := c.Locals("userID")
-	if userIDInterface == nil {
-		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "User not authenticated", "")
-	}
+	userID := c.Locals("userID").(string)
 
-	userID, ok := userIDInterface.(primitive.ObjectID)
-	if !ok {
-		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "Invalid user ID", "")
-	}
-
-	// Buscar usuario
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	user, err := h.userRepo.GetByID(ctx, userID)
+	user, err := h.userRepo.GetByIDString(ctx, userID)
 	if err != nil {
-		if err == mongo.ErrNoDocuments || err.Error() == "user not found" {
-			return utils.ErrorResponse(c, fiber.StatusNotFound, "User not found", "The user profile could not be found")
+		if err.Error() == "user not found" {
+			return utils.NotFoundResponse(c, "User not found")
 		}
 		log.Printf("Error finding user: %v", err)
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Database error", "Could not retrieve user profile")
+		return utils.InternalServerErrorResponse(c, "Database error", err)
 	}
 
-	// Preparar respuesta
 	response := &UserResponse{
 		ID:        user.ID.Hex(),
 		Name:      user.Name,
@@ -363,11 +323,8 @@ func (h *AuthHandler) GetProfile(c *fiber.Ctx) error {
 	return utils.SuccessResponse(c, fiber.StatusOK, "Profile retrieved successfully", response)
 }
 
-// Logout maneja el cierre de sesión (opcional, principalmente para invalidar tokens del lado cliente)
-// POST /auth/logout
+// Logout maneja el cierre de sesión
 func (h *AuthHandler) Logout(c *fiber.Ctx) error {
-	// En un sistema JWT stateless, el logout se maneja principalmente del lado cliente
-
 	return utils.SuccessResponse(c, fiber.StatusOK, "Logout successful", map[string]string{
 		"message": "Please remove the access and refresh tokens from your client",
 	})

@@ -10,12 +10,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"Engine_API_Workflow/internal/api/handlers"
-	"Engine_API_Workflow/internal/api/middleware"
 	"Engine_API_Workflow/internal/api/routes"
 	"Engine_API_Workflow/internal/config"
-	"Engine_API_Workflow/internal/repository/mongodb"
-	"Engine_API_Workflow/internal/services"
 	"Engine_API_Workflow/pkg/database"
 	"Engine_API_Workflow/pkg/jwt"
 	"Engine_API_Workflow/pkg/logger"
@@ -60,23 +56,6 @@ func main() {
 	// Inicializar servicios JWT
 	jwtService := jwt.NewService(cfg.JWTSecret, "engine-api-workflow")
 
-	// Inicializar repositorios
-	db := mongoClient.Database(cfg.MongoDatabase)
-	userRepo := mongodb.NewUserRepository(db)
-	workflowRepo := mongodb.NewWorkflowRepository(db)
-	logRepo := mongodb.NewLogRepository(db)
-
-	// Inicializar servicios de aplicación
-	authService := services.NewAuthService(jwtService)
-	workflowService := services.NewWorkflowService(workflowRepo, userRepo)
-	logService := services.NewLogService(logRepo, workflowRepo, userRepo)
-	queueService := services.NewQueueService(redisClient, appLogger.(*logger.Logger))
-
-	// Inicializar handlers
-	authHandler := handlers.NewAuthHandler(userRepo, authService)
-	workflowHandler := handlers.NewWorkflowHandler(workflowService, logService)
-	triggerHandler := handlers.NewTriggerHandler(workflowRepo, logRepo, queueService, appLogger.(*logger.Logger))
-
 	// Configurar Fiber
 	app := fiber.New(fiber.Config{
 		ServerHeader: "Engine-API-Workflow",
@@ -87,26 +66,11 @@ func main() {
 		IdleTimeout:  time.Second * 30,
 	})
 
-	// Configurar middlewares
-	corsConfig := middleware.DefaultCORSConfig()
-	if cfg.Environment == "production" {
-		corsConfig = middleware.ProductionCORSConfig([]string{})
-	}
-
-	app.Use(middleware.CORSMiddleware(corsConfig))
-	app.Use(middleware.SecurityHeadersMiddleware())
-	app.Use(middleware.APIResponseHeadersMiddleware())
-	middleware.SetupMiddleware(app, appLogger)
+	// Obtener base de datos
+	db := mongoClient.Database(cfg.MongoDatabase)
 
 	// Configurar rutas
-	routeConfig := &routes.RouteConfig{
-		AuthHandler:     authHandler,
-		WorkflowHandler: workflowHandler,
-		TriggerHandler:  triggerHandler,
-		JWTService:      jwtService,
-		Logger:          appLogger,
-	}
-	routes.SetupRoutes(app, routeConfig)
+	routes.SetupRoutesComplete(app, db, jwtService, appLogger)
 
 	// Canal para manejar señales del sistema
 	c := make(chan os.Signal, 1)
@@ -159,7 +123,7 @@ func customErrorHandler(log *logger.Logger) fiber.ErrorHandler {
 
 		// Enviar respuesta de error personalizada
 		return c.Status(code).JSON(fiber.Map{
-			"status":    "error",
+			"success":   false,
 			"message":   getErrorMessage(code),
 			"error":     err.Error(),
 			"timestamp": time.Now().UTC(),

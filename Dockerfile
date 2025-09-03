@@ -1,54 +1,56 @@
-# Build stage
+# Dockerfile simplificado para resolver errores de build
 FROM golang:1.23.5-alpine AS builder
 
-# Install git (needed for go mod download)
-RUN apk add --no-cache git
+# Instalar herramientas necesarias
+RUN apk add --no-cache git ca-certificates tzdata wget curl
 
-# Set working directory
+# Configurar directorio de trabajo
 WORKDIR /app
 
-# Copy go mod files
+# Copiar archivos de módulos Go
 COPY go.mod go.sum ./
 
-# Download dependencies
-RUN go mod download
+# Descargar dependencias
+RUN go mod download && go mod tidy
 
-# Copy source code
+# Copiar código fuente
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main cmd/api/main.go
+# Compilar la aplicación
+RUN CGO_ENABLED=0 GOOS=linux go build -o main cmd/api/main.go
 
-# Final stage
-FROM alpine:latest
+# Stage final
+FROM alpine:3.19
 
-# Install ca-certificates for HTTPS requests
-RUN apk --no-cache add ca-certificates tzdata
+# Instalar herramientas básicas
+RUN apk --no-cache add ca-certificates wget curl tzdata && \
+    update-ca-certificates
 
-# Create non-root user
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Crear usuario no-root
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -u 1001 -S appuser -G appgroup
 
-# Set working directory
-WORKDIR /root/
+# Configurar directorio de trabajo
+WORKDIR /app
 
-# Copy the binary from builder stage
+# Copiar binario desde builder
 COPY --from=builder /app/main .
 
-# Copy .env file (optional, can be overridden by environment variables)
+# Copiar configuración
 COPY .env.example .env
 
-# Change ownership to non-root user
-RUN chown -R appuser:appgroup /root/
+# Cambiar propietario
+RUN chown -R appuser:appgroup /app
 
-# Switch to non-root user
+# Cambiar a usuario no-root
 USER appuser
 
-# Expose port
+# Exponer puerto
 EXPOSE 8081
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8081/api/v1/health || exit 1
 
-# Run the application
+# Comando por defecto
 CMD ["./main"]

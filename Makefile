@@ -1,207 +1,188 @@
-.PHONY: run build test clean docker-up docker-down dev-setup
+.PHONY: help run build test clean docker-up docker-down docker-rebuild install deps fmt lint vet
 
 # Variables
 APP_NAME=engine-api-workflow
 DOCKER_COMPOSE=docker-compose
-GO_VERSION=1.23.5
-MAIN_PATH=cmd/api/main.go
+GO_VERSION=1.23
+BINARY_PATH=bin/$(APP_NAME)
 
-# Colors for output
-RED=\033[31m
-GREEN=\033[32m
-YELLOW=\033[33m
-BLUE=\033[34m
-RESET=\033[0m
+# Default target
+help: ## Show this help message
+	@echo "Engine API Workflow - Available commands:"
+	@echo "==========================================="
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 # Development commands
-run:
-	@echo "$(GREEN)Starting application...$(RESET)"
-	@if [ -f .env ]; then \
-		export $$(cat .env | xargs) && go run $(MAIN_PATH); \
-	else \
-		echo "$(YELLOW)Warning: .env file not found, using defaults$(RESET)"; \
-		go run $(MAIN_PATH); \
-	fi
+run: deps ## Run the application locally
+	@echo "🚀 Starting Engine API Workflow..."
+	@if [ ! -f .env ]; then cp .env.example .env; echo "📋 Created .env file"; fi
+	go run cmd/api/main.go
 
-dev:
-	@echo "$(BLUE)Starting in development mode with hot reload...$(RESET)"
-	@if command -v air > /dev/null; then \
-		air; \
-	else \
-		echo "$(YELLOW)Air not found. Install with: go install github.com/cosmtrek/air@latest$(RESET)"; \
-		make run; \
-	fi
+build: deps ## Build the application
+	@echo "🔨 Building $(APP_NAME)..."
+	@mkdir -p bin
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o $(BINARY_PATH) cmd/api/main.go
+	@echo "✅ Build completed: $(BINARY_PATH)"
 
-build:
-	@echo "$(GREEN)Building application...$(RESET)"
-	@CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o bin/$(APP_NAME) $(MAIN_PATH)
-	@echo "$(GREEN)Build completed: bin/$(APP_NAME)$(RESET)"
+build-local: deps ## Build for local OS
+	@echo "🔨 Building $(APP_NAME) for local system..."
+	@mkdir -p bin
+	go build -o $(BINARY_PATH) cmd/api/main.go
+	@echo "✅ Build completed: $(BINARY_PATH)"
 
-build-local:
-	@echo "$(GREEN)Building for local OS...$(RESET)"
-	@go build -o bin/$(APP_NAME) $(MAIN_PATH)
-	@echo "$(GREEN)Local build completed: bin/$(APP_NAME)$(RESET)"
+install: ## Install the application globally
+	go install cmd/api/main.go
 
-# Testing commands
-test:
-	@echo "$(BLUE)Running tests...$(RESET)"
-	@go test -v ./...
+# Testing
+test: ## Run tests
+	@echo "🧪 Running tests..."
+	go test -v ./...
 
-test-coverage:
-	@echo "$(BLUE)Running tests with coverage...$(RESET)"
-	@go test -v -coverprofile=coverage.out ./...
-	@go tool cover -html=coverage.out -o coverage.html
-	@echo "$(GREEN)Coverage report generated: coverage.html$(RESET)"
+test-coverage: ## Run tests with coverage
+	@echo "🧪 Running tests with coverage..."
+	go test -v -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "📊 Coverage report generated: coverage.html"
 
-test-integration:
-	@echo "$(BLUE)Running integration tests...$(RESET)"
-	@go test -v -tags=integration ./tests/integration/...
+test-race: ## Run tests with race detector
+	@echo "🧪 Running tests with race detector..."
+	go test -race -v ./...
 
 # Docker commands
-docker-build:
-	@echo "$(BLUE)Building Docker image...$(RESET)"
-	@docker build -t $(APP_NAME):latest .
+docker-up: ## Start all services with Docker
+	@echo "🐳 Starting Docker services..."
+	$(DOCKER_COMPOSE) up -d
+	@echo "✅ Docker services started"
 
-docker-up:
-	@echo "$(BLUE)Starting services with Docker Compose...$(RESET)"
-	@$(DOCKER_COMPOSE) up -d
-	@echo "$(GREEN)Services started successfully$(RESET)"
+docker-down: ## Stop all Docker services
+	@echo "🐳 Stopping Docker services..."
+	$(DOCKER_COMPOSE) down
+	@echo "✅ Docker services stopped"
 
-docker-down:
-	@echo "$(YELLOW)Stopping Docker services...$(RESET)"
-	@$(DOCKER_COMPOSE) down
+docker-logs: ## Show Docker logs
+	$(DOCKER_COMPOSE) logs -f
 
-docker-logs:
-	@echo "$(BLUE)Showing Docker logs...$(RESET)"
-	@$(DOCKER_COMPOSE) logs -f
+docker-rebuild: ## Rebuild and start Docker services
+	@echo "🐳 Rebuilding Docker services..."
+	$(DOCKER_COMPOSE) up -d --build
+	@echo "✅ Docker services rebuilt and started"
 
-docker-rebuild:
-	@echo "$(BLUE)Rebuilding and restarting services...$(RESET)"
-	@$(DOCKER_COMPOSE) down
-	@$(DOCKER_COMPOSE) up -d --build
-	@echo "$(GREEN)Services rebuilt and restarted$(RESET)"
-
-docker-clean:
-	@echo "$(YELLOW)Cleaning Docker resources...$(RESET)"
-	@$(DOCKER_COMPOSE) down -v --remove-orphans
-	@docker system prune -f
+docker-clean: ## Clean Docker containers and volumes
+	@echo "🧹 Cleaning Docker resources..."
+	$(DOCKER_COMPOSE) down -v --remove-orphans
+	docker system prune -f
+	@echo "✅ Docker cleanup completed"
 
 # Database commands
-db-up:
-	@echo "$(BLUE)Starting only database services...$(RESET)"
-	@$(DOCKER_COMPOSE) up -d mongodb redis
+db-up: ## Start only database services
+	@echo "🗄️ Starting database services..."
+	$(DOCKER_COMPOSE) up -d mongodb redis
+	@echo "✅ Database services started"
 
-db-migrate:
-	@echo "$(BLUE)Running database migrations...$(RESET)"
-	@echo "$(YELLOW)Migration system not implemented yet$(RESET)"
+db-down: ## Stop database services
+	@echo "🗄️ Stopping database services..."
+	$(DOCKER_COMPOSE) stop mongodb redis
+	@echo "✅ Database services stopped"
 
-db-seed:
-	@echo "$(BLUE)Seeding database...$(RESET)"
-	@echo "$(YELLOW)Seeding system not implemented yet$(RESET)"
-
-# Development setup
-dev-setup: clean deps docker-up
-	@echo "$(GREEN)Development environment setup complete!$(RESET)"
-	@echo "$(BLUE)You can now run 'make run' to start the application$(RESET)"
-
-# Dependency management
-deps:
-	@echo "$(BLUE)Installing dependencies...$(RESET)"
-	@go mod download
-	@go mod tidy
-	@echo "$(GREEN)Dependencies installed$(RESET)"
-
-deps-update:
-	@echo "$(BLUE)Updating dependencies...$(RESET)"
-	@go get -u ./...
-	@go mod tidy
-	@echo "$(GREEN)Dependencies updated$(RESET)"
-
-# Cleanup commands
-clean:
-	@echo "$(YELLOW)Cleaning up...$(RESET)"
-	@go mod tidy
-	@go clean
-	@rm -f bin/$(APP_NAME)
-	@rm -f coverage.out coverage.html
-	@echo "$(GREEN)Cleanup completed$(RESET)"
-
-clean-all: clean docker-clean
-	@echo "$(GREEN)Full cleanup completed$(RESET)"
+db-reset: ## Reset database (WARNING: This will delete all data)
+	@echo "⚠️  Resetting database - all data will be lost!"
+	@read -p "Are you sure? [y/N]: " confirm && [ "$$confirm" = "y" ]
+	$(DOCKER_COMPOSE) down mongodb redis
+	docker volume rm $$(docker volume ls -q | grep workflow) 2>/dev/null || true
+	$(DOCKER_COMPOSE) up -d mongodb redis
+	@echo "✅ Database reset completed"
 
 # Code quality
-lint:
-	@echo "$(BLUE)Running linter...$(RESET)"
-	@if command -v golangci-lint > /dev/null; then \
+deps: ## Download and tidy dependencies
+	@echo "📦 Installing dependencies..."
+	go mod download
+	go mod tidy
+	@echo "✅ Dependencies installed"
+
+fmt: ## Format Go code
+	@echo "🎨 Formatting code..."
+	go fmt ./...
+	@echo "✅ Code formatted"
+
+lint: ## Run golangci-lint
+	@echo "🔍 Running linter..."
+	@if command -v golangci-lint >/dev/null 2>&1; then \
 		golangci-lint run; \
 	else \
-		echo "$(YELLOW)golangci-lint not found. Install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest$(RESET)"; \
+		echo "⚠️  golangci-lint not installed. Install with: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $$(go env GOPATH)/bin v1.54.2"; \
 	fi
 
-format:
-	@echo "$(BLUE)Formatting code...$(RESET)"
-	@go fmt ./...
-	@echo "$(GREEN)Code formatted$(RESET)"
+vet: ## Run go vet
+	@echo "🔍 Running go vet..."
+	go vet ./...
+	@echo "✅ Vet completed"
 
-# Generate documentation
-docs:
-	@echo "$(BLUE)Generating documentation...$(RESET)"
-	@if command -v swag > /dev/null; then \
-		swag init -g $(MAIN_PATH) -o docs/api; \
+security: ## Run gosec security scanner
+	@echo "🔒 Running security scan..."
+	@if command -v gosec >/dev/null 2>&1; then \
+		gosec ./...; \
 	else \
-		echo "$(YELLOW)swag not found. Install with: go install github.com/swaggo/swag/cmd/swag@latest$(RESET)"; \
+		echo "⚠️  gosec not installed. Install with: go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest"; \
 	fi
+
+# Cleanup
+clean: ## Clean build artifacts and dependencies
+	@echo "🧹 Cleaning up..."
+	go clean
+	rm -rf bin/
+	rm -f coverage.out coverage.html
+	rm -f app.log app.pid
+	@echo "✅ Cleanup completed"
+
+clean-all: clean docker-clean ## Clean everything including Docker resources
 
 # Environment setup
-env-copy:
-	@if [ ! -f .env ]; then \
-		echo "$(BLUE)Copying .env.example to .env...$(RESET)"; \
-		cp .env.example .env; \
-		echo "$(GREEN).env file created. Please review and update values as needed.$(RESET)"; \
-	else \
-		echo "$(YELLOW).env file already exists$(RESET)"; \
-	fi
+setup: ## Initial project setup
+	@echo "🚀 Setting up Engine API Workflow..."
+	@if [ ! -f .env ]; then cp .env.example .env; echo "📋 Created .env file"; fi
+	@chmod +x scripts/*.sh 2>/dev/null || true
+	$(MAKE) deps
+	$(MAKE) fmt
+	@echo "✅ Setup completed"
+
+# Development helpers
+dev: db-up ## Start development environment
+	@echo "🛠️ Starting development environment..."
+	@sleep 5  # Wait for databases to be ready
+	$(MAKE) run
+
+dev-reset: db-reset ## Reset development environment
+	@echo "🔄 Resetting development environment..."
+	$(MAKE) clean
+	$(MAKE) deps
+	@echo "✅ Development environment reset"
+
+# Production helpers
+prod-build: ## Build production binary
+	@echo "🏭 Building production binary..."
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+		-ldflags="-w -s -X main.version=$$(git describe --tags --always --dirty)" \
+		-o $(BINARY_PATH) cmd/api/main.go
+	@echo "✅ Production build completed"
 
 # Health checks
-health-check:
-	@echo "$(BLUE)Checking application health...$(RESET)"
-	@curl -f http://localhost:8081/api/v1/health || echo "$(RED)Health check failed$(RESET)"
+health: ## Check application health
+	@echo "🏥 Checking application health..."
+	@curl -f http://localhost:8081/api/v1/health || echo "❌ Application is not responding"
 
-# Show help
-help:
-	@echo "$(GREEN)Available commands:$(RESET)"
-	@echo "  $(BLUE)Development:$(RESET)"
-	@echo "    run          - Run the application"
-	@echo "    dev          - Run with hot reload (requires air)"
-	@echo "    build        - Build the application for Linux"
-	@echo "    build-local  - Build the application for current OS"
-	@echo "    dev-setup    - Setup complete development environment"
-	@echo ""
-	@echo "  $(BLUE)Testing:$(RESET)"
-	@echo "    test         - Run unit tests"
-	@echo "    test-coverage - Run tests with coverage report"
-	@echo "    test-integration - Run integration tests"
-	@echo ""
-	@echo "  $(BLUE)Docker:$(RESET)"
-	@echo "    docker-build   - Build Docker image"
-	@echo "    docker-up      - Start services with Docker Compose"
-	@echo "    docker-down    - Stop Docker services"
-	@echo "    docker-logs    - Show Docker logs"
-	@echo "    docker-rebuild - Rebuild and restart services"
-	@echo "    docker-clean   - Clean Docker resources"
-	@echo ""
-	@echo "  $(BLUE)Database:$(RESET)"
-	@echo "    db-up        - Start only database services"
-	@echo "    db-migrate   - Run database migrations"
-	@echo "    db-seed      - Seed database with test data"
-	@echo ""
-	@echo "  $(BLUE)Utilities:$(RESET)"
-	@echo "    clean        - Clean build artifacts"
-	@echo "    clean-all    - Clean everything including Docker"
-	@echo "    deps         - Install dependencies"
-	@echo "    deps-update  - Update all dependencies"
-	@echo "    lint         - Run linter"
-	@echo "    format       - Format code"
-	@echo "    docs         - Generate API documentation"
-	@echo "    env-copy     - Copy .env.example to .env"
-	@echo "    health-check - Check application health"
+check-deps: ## Verify system dependencies
+	@echo "🔍 Checking system dependencies..."
+	@echo "Go version: $$(go version)"
+	@docker --version 2>/dev/null || echo "⚠️  Docker not found"
+	@docker-compose --version 2>/dev/null || docker compose version 2>/dev/null || echo "⚠️  Docker Compose not found"
+	@echo "✅ Dependency check completed"
+
+# Show application info
+info: ## Show application information
+	@echo "Engine API Workflow Information"
+	@echo "==============================="
+	@echo "App Name: $(APP_NAME)"
+	@echo "Go Version: $(GO_VERSION)"
+	@echo "Binary Path: $(BINARY_PATH)"
+	@echo "Docker Compose: $(DOCKER_COMPOSE)"
+	@if [ -f $(BINARY_PATH) ]; then echo "Binary Size: $$(du -h $(BINARY_PATH) | cut -f1)"; fi

@@ -19,7 +19,12 @@ func NewValidator() *Validator {
 	}
 }
 
-// ValidateStruct valida una estructura
+// Validate valida una estructura
+func (v *Validator) Validate(s interface{}) error {
+	return v.validate.Struct(s)
+}
+
+// ValidateStruct valida una estructura (función global para compatibilidad)
 func ValidateStruct(s interface{}) error {
 	validator := validator.New()
 	return validator.Struct(s)
