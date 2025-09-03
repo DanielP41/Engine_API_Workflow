@@ -604,7 +604,9 @@ func (r *logRepository) GetExecutionHistory(ctx context.Context, workflowID prim
 	return logs, nil
 }
 
-func (r *logRepository) DeleteOldLogs(ctx context.Context, cutoffDate time.Time) (int64, error) {
+func (r *logRepository) DeleteOldLogs(ctx context.Context, daysOld int) (int64, error) {
+	// Calcular fecha de corte basada en los días especificados
+	cutoffDate := time.Now().AddDate(0, 0, -daysOld)
 	filter := bson.M{"created_at": bson.M{"$lt": cutoffDate}}
 
 	result, err := r.collection.DeleteMany(ctx, filter)
