@@ -192,17 +192,19 @@ type LogSearchFilter struct {
 	Limit           *int                `json:"limit,omitempty"`
 }
 
-// WorkflowSearchFilters for workflow searches
+// WorkflowSearchFilters for workflow searches - CORREGIDO: Usar punteros para permitir verificación de nil
 type WorkflowSearchFilters struct {
-	UserID        primitive.ObjectID `json:"user_id,omitempty"`
-	Status        string             `json:"status,omitempty"`
-	IsActive      *bool              `json:"is_active,omitempty"`
-	Tags          []string           `json:"tags,omitempty"`
-	Query         string             `json:"query,omitempty"`
-	CreatedAfter  time.Time          `json:"created_after,omitempty"`
-	CreatedBefore time.Time          `json:"created_before,omitempty"`
-	Limit         int                `json:"limit,omitempty"`
-	Skip          int                `json:"skip,omitempty"`
+	UserID        *primitive.ObjectID    `json:"user_id,omitempty"`
+	Status        *models.WorkflowStatus `json:"status,omitempty"`
+	IsActive      *bool                  `json:"is_active,omitempty"`
+	Tags          []string               `json:"tags,omitempty"`
+	Query         *string                `json:"query,omitempty"`
+	Search        *string                `json:"search,omitempty"`      // AGREGADO: Alias para compatibilidad
+	Environment   *string                `json:"environment,omitempty"` // AGREGADO: Campo faltante
+	CreatedAfter  *time.Time             `json:"created_after,omitempty"`
+	CreatedBefore *time.Time             `json:"created_before,omitempty"`
+	Limit         int                    `json:"limit,omitempty"`
+	Skip          int                    `json:"skip,omitempty"`
 }
 
 // TagCount for popular tags
