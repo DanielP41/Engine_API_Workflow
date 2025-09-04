@@ -80,24 +80,24 @@ func HandleError(c *fiber.Ctx, err error) error {
 	// Handle known business logic errors
 	switch err {
 	case ErrUserNotFound:
-		return NotFoundResponse(c, "User not found")
+		return ErrorResponseFunc(c, http.StatusNotFound, "User not found", "")
 	case ErrUserAlreadyExists:
 		return ErrorResponseFunc(c, http.StatusConflict, "User already exists", "")
 	case ErrInvalidCredentials:
-		return UnauthorizedResponse(c, "Invalid credentials")
+		return ErrorResponseFunc(c, http.StatusUnauthorized, "Invalid credentials", "")
 	case ErrWorkflowNotFound:
-		return NotFoundResponse(c, "Workflow not found")
+		return ErrorResponseFunc(c, http.StatusNotFound, "Workflow not found", "")
 	case ErrUnauthorized:
-		return UnauthorizedResponse(c, "Unauthorized")
+		return ErrorResponseFunc(c, http.StatusUnauthorized, "Unauthorized", "")
 	case ErrForbidden:
-		return ForbiddenResponse(c, "Forbidden")
+		return ErrorResponseFunc(c, http.StatusForbidden, "Forbidden", "")
 	case ErrValidationFailed:
 		return ErrorResponseFunc(c, http.StatusUnprocessableEntity, "Validation failed", "")
 	case ErrBadRequest:
-		return BadRequestResponse(c, "Bad request", nil)
+		return ErrorResponseFunc(c, http.StatusBadRequest, "Bad request", "")
 	default:
 		// For unknown errors, log them and return a generic internal server error
-		return InternalServerErrorResponse(c, "Internal server error", err)
+		return ErrorResponseFunc(c, http.StatusInternalServerError, "Internal server error", "")
 	}
 }
 
@@ -108,19 +108,19 @@ type ValidationErrorDetail struct {
 	Value   any    `json:"value,omitempty"`
 }
 
-// ValidationErrorStruct represents multiple validation errors
-type ValidationErrorStruct struct {
+// ValidationError represents multiple validation errors
+type ValidationError struct {
 	Message string                  `json:"message"`
 	Errors  []ValidationErrorDetail `json:"errors"`
 }
 
-func (e ValidationErrorStruct) Error() string {
+func (e ValidationError) Error() string {
 	return e.Message
 }
 
 // NewValidationErrors creates a new validation error with multiple field errors
-func NewValidationErrors(errors []ValidationErrorDetail) *ValidationErrorStruct {
-	return &ValidationErrorStruct{
+func NewValidationErrors(errors []ValidationErrorDetail) *ValidationError {
+	return &ValidationError{
 		Message: "Validation failed",
 		Errors:  errors,
 	}
