@@ -3,7 +3,7 @@ package models
 import (
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/bson/primitive" //drivers de monogoDB para GO.-
 )
 
 // Role represents user roles
