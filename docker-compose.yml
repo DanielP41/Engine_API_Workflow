@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # MongoDB
   mongodb:
@@ -21,6 +19,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 40s
 
   # Redis
   redis:
@@ -38,6 +37,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
 
   # API
   api:
@@ -49,10 +49,8 @@ services:
     ports:
       - "8081:8081"
     depends_on:
-      mongodb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - mongodb
+      - redis
     networks:
       - workflow_network
     environment:
@@ -95,7 +93,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 60s
 
 volumes:
   mongodb_data:
