@@ -49,8 +49,8 @@ func (h *WorkflowHandler) CreateWorkflow(c *fiber.Ctx) error {
 	}
 
 	// Validate request
-	if err := h.validator.Validate(req); err != nil {
-		return utils.ValidationErrorResponse(c, err)
+	if err := utils.ValidateStruct(&req); err != nil {
+		return utils.ValidationErrorResponse(c, "Validation failed", err)
 	}
 
 	// Get user from context (set by auth middleware)
@@ -109,7 +109,7 @@ func (h *WorkflowHandler) GetWorkflows(c *fiber.Ctx) error {
 		filters.UserID = &userID
 	}
 
-	// Get workflows
+	// Get workflows - CORREGIDO: ahora coincide con el servicio que retorna []*models.Workflow
 	workflows, total, err := h.workflowService.Search(c.Context(), filters, pagination)
 	if err != nil {
 		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get workflows", err)
@@ -117,14 +117,16 @@ func (h *WorkflowHandler) GetWorkflows(c *fiber.Ctx) error {
 
 	// Build response
 	totalPages := int((total + int64(pagination.PageSize) - 1) / int64(pagination.PageSize))
-	response := models.WorkflowListResponse{
-		Workflows:  workflows,
-		TotalCount: total,
-		Page:       pagination.Page,
-		PageSize:   pagination.PageSize,
-		TotalPages: totalPages,
-		HasNext:    pagination.Page < totalPages,
-		HasPrev:    pagination.Page > 1,
+
+	// CORREGIDO: Crear la respuesta correctamente según el modelo
+	response := map[string]interface{}{
+		"workflows":   workflows, // workflows es []*models.Workflow
+		"total":       total,
+		"page":        pagination.Page,
+		"page_size":   pagination.PageSize,
+		"total_pages": totalPages,
+		"has_next":    pagination.Page < totalPages,
+		"has_prev":    pagination.Page > 1,
 	}
 
 	return utils.SuccessResponse(c, fiber.StatusOK, "Workflows retrieved successfully", response)
@@ -207,8 +209,8 @@ func (h *WorkflowHandler) UpdateWorkflow(c *fiber.Ctx) error {
 	}
 
 	// Validate request
-	if err := h.validator.Validate(req); err != nil {
-		return utils.ValidationErrorResponse(c, err)
+	if err := utils.ValidateStruct(&req); err != nil {
+		return utils.ValidationErrorResponse(c, "Validation failed", err)
 	}
 
 	// Get user from context
@@ -467,15 +469,13 @@ func (h *WorkflowHandler) parsePaginationParams(c *fiber.Ctx) (repository.Pagina
 		pageSize = 10
 	}
 
-	if sortOrder != "asc" && sortOrder != "desc" {
-		sortOrder = "desc"
-	}
+	sortDesc := sortOrder == "desc"
 
 	return repository.PaginationOptions{
-		Page:      page,
-		PageSize:  pageSize,
-		SortBy:    sortBy,
-		SortOrder: sortOrder,
+		Page:     page,
+		PageSize: pageSize,
+		SortBy:   sortBy,
+		SortDesc: sortDesc,
 	}, nil
 }
 
