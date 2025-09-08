@@ -1,12 +1,14 @@
 package jwt
 
 import (
-	"errors"//para manejo de errores
+	"errors"
 	"fmt"
-	"time"// para configuraciones de tiempo.-
+	"slices"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"go.mongodb.org/mongo-driver/bson/primitive"//para menejo de objetos en formato BSON (JSON binario).-
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
 
 // JWTService interfaz para el servicio JWT
 type JWTService interface {
@@ -57,14 +59,14 @@ type Config struct {
 
 // Validation errors
 var (
-	ErrInvalidToken       = errors.New("invalid token")
-	ErrTokenExpired       = errors.New("token has expired")
-	ErrTokenNotValidYet   = errors.New("token not valid yet")
-	ErrTokenMalformed     = errors.New("malformed token")
-	ErrInvalidSignature   = errors.New("invalid token signature")
-	ErrInvalidTokenType   = errors.New("invalid token type")
-	ErrInvalidClaims      = errors.New("invalid token claims")
-	ErrTokenRevoked       = errors.New("token has been revoked")
+	ErrInvalidToken     = errors.New("invalid token")
+	ErrTokenExpired     = errors.New("token has expired")
+	ErrTokenNotValidYet = errors.New("token not valid yet")
+	ErrTokenMalformed   = errors.New("malformed token")
+	ErrInvalidSignature = errors.New("invalid token signature")
+	ErrInvalidTokenType = errors.New("invalid token type")
+	ErrInvalidClaims    = errors.New("invalid token claims")
+	ErrTokenRevoked     = errors.New("token has been revoked")
 )
 
 // NewJWTService crea una nueva instancia del servicio JWT
@@ -256,7 +258,7 @@ func (s *jwtService) RefreshToken(refreshTokenString string) (*TokenPair, error)
 	return s.GenerateTokens(userID, claims.Email, claims.Role)
 }
 
-// RevokeToken revoca un token (implementación básica)----
+// RevokeToken revoca un token (implementación básica)
 func (s *jwtService) RevokeToken(tokenString string) error {
 	// En una implementación real, agregarías el token a una blacklist
 	// Por ahora, solo validamos que el token sea válido
@@ -264,7 +266,7 @@ func (s *jwtService) RevokeToken(tokenString string) error {
 	if err != nil {
 		return fmt.Errorf("cannot revoke invalid token: %w", err)
 	}
-	
+
 	// TODO: Implementar blacklist en Redis
 	return nil
 }
@@ -276,8 +278,8 @@ func (s *jwtService) validateClaims(claims *Claims) error {
 		return fmt.Errorf("invalid issuer: expected %s, got %s", s.issuer, claims.Issuer)
 	}
 
-	// Validar audience
-	if !claims.VerifyAudience(s.audience, true) {
+	// Validar audience - CORREGIDO para JWT v5
+	if !slices.Contains(claims.Audience, s.audience) {
 		return fmt.Errorf("invalid audience: expected %s", s.audience)
 	}
 
@@ -309,23 +311,20 @@ func (s *jwtService) validateClaims(claims *Claims) error {
 	return nil
 }
 
-// mapJWTError mapea errores de JWT a errores personalizados
+// mapJWTError mapea errores de JWT a errores personalizados - CORREGIDO para JWT v5
 func (s *jwtService) mapJWTError(err error) error {
-	if ve, ok := err.(*jwt.ValidationError); ok {
-		switch {
-		case ve.Errors&jwt.ValidationErrorExpired != 0:
-			return ErrTokenExpired
-		case ve.Errors&jwt.ValidationErrorNotValidYet != 0:
-			return ErrTokenNotValidYet
-		case ve.Errors&jwt.ValidationErrorMalformed != 0:
-			return ErrTokenMalformed
-		case ve.Errors&jwt.ValidationErrorSignatureInvalid != 0:
-			return ErrInvalidSignature
-		default:
-			return ErrInvalidToken
-		}
+	switch {
+	case errors.Is(err, jwt.ErrTokenExpired):
+		return ErrTokenExpired
+	case errors.Is(err, jwt.ErrTokenNotValidYet):
+		return ErrTokenNotValidYet
+	case errors.Is(err, jwt.ErrTokenMalformed):
+		return ErrTokenMalformed
+	case errors.Is(err, jwt.ErrSignatureInvalid):
+		return ErrInvalidSignature
+	default:
+		return ErrInvalidToken
 	}
-	return fmt.Errorf("token validation error: %w", err)
 }
 
 // generateJTI genera un JWT ID único
@@ -396,9 +395,9 @@ func (c *Claims) TimeUntilExpiry() time.Duration {
 	return time.Until(c.ExpiresAt.Time)
 }
 
-// IsValidFor verifica si el token es válido para una audiencia específica
+// IsValidFor verifica si el token es válido para una audiencia específica - CORREGIDO para JWT v5
 func (c *Claims) IsValidFor(audience string) bool {
-	return c.VerifyAudience(audience, true)
+	return slices.Contains(c.Audience, audience)
 }
 
 // TokenInfo estructura con información resumida del token

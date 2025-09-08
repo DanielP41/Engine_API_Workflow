@@ -1,56 +1,44 @@
-# Dockerfile simplificado para resolver errores de build
+# Build stage
 FROM golang:1.23.5-alpine AS builder
+# Install git and ca-certificates
+RUN apk add --no-cache git ca-certificates wget
 
-# Instalar herramientas necesarias
-RUN apk add --no-cache git ca-certificates tzdata wget curl
-
-# Configurar directorio de trabajo
+# Set working directory
 WORKDIR /app
 
-# Copiar archivos de módulos Go
+# Copy go mod files
 COPY go.mod go.sum ./
 
-# Descargar dependencias
-RUN go mod download && go mod tidy
+# Download dependencies
+RUN go mod download
 
-# Copiar código fuente
+# Copy source code
 COPY . .
 
-# Compilar la aplicación
-RUN CGO_ENABLED=0 GOOS=linux go build -o main cmd/api/main.go
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-w -s' -o main cmd/api/main.go
 
-# Stage final
-FROM alpine:3.19
+# Final stage
+FROM alpine:latest
 
-# Instalar herramientas básicas
-RUN apk --no-cache add ca-certificates wget curl tzdata && \
-    update-ca-certificates
+# Install ca-certificates and wget for health checks
+RUN apk --no-cache add ca-certificates wget tzdata
 
-# Crear usuario no-root
-RUN addgroup -g 1001 -S appgroup && \
-    adduser -u 1001 -S appuser -G appgroup
+# Create app directory
+WORKDIR /root/
 
-# Configurar directorio de trabajo
-WORKDIR /app
-
-# Copiar binario desde builder
+# Copy the binary from builder stage
 COPY --from=builder /app/main .
 
-# Copiar configuración
-COPY .env.example .env
+# Make sure binary is executable
+RUN chmod +x ./main
 
-# Cambiar propietario
-RUN chown -R appuser:appgroup /app
-
-# Cambiar a usuario no-root
-USER appuser
-
-# Exponer puerto
+# Expose port
 EXPOSE 8081
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8081/api/v1/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8081/health || exit 1
 
-# Comando por defecto
+# Run the application
 CMD ["./main"]

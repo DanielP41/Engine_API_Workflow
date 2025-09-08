@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -340,26 +341,21 @@ func (m *AuthMiddleware) shouldSkipPath(path string) bool {
 	return false
 }
 
-// handleTokenValidationError maneja errores específicos de validación de tokens
+// handleTokenValidationError maneja errores específicos de validación de tokens - CORREGIDO para JWT v5
 func (m *AuthMiddleware) handleTokenValidationError(c *fiber.Ctx, err error) error {
-	// Verificar si es un error específico de JWT
-	if ve, ok := err.(*jwt.ValidationError); ok {
-		switch {
-		case ve.Errors&jwt.ValidationErrorExpired != 0:
-			return utils.UnauthorizedResponse(c, "Token has expired")
-		case ve.Errors&jwt.ValidationErrorNotValidYet != 0:
-			return utils.UnauthorizedResponse(c, "Token not valid yet")
-		case ve.Errors&jwt.ValidationErrorMalformed != 0:
-			return utils.UnauthorizedResponse(c, "Malformed token")
-		case ve.Errors&jwt.ValidationErrorSignatureInvalid != 0:
-			return utils.UnauthorizedResponse(c, "Invalid token signature")
-		default:
-			return utils.UnauthorizedResponse(c, "Invalid token")
-		}
+	// Usar el manejo de errores moderno de JWT v5
+	switch {
+	case errors.Is(err, jwt.ErrTokenExpired):
+		return utils.UnauthorizedResponse(c, "Token has expired")
+	case errors.Is(err, jwt.ErrTokenNotValidYet):
+		return utils.UnauthorizedResponse(c, "Token not valid yet")
+	case errors.Is(err, jwt.ErrTokenMalformed):
+		return utils.UnauthorizedResponse(c, "Malformed token")
+	case errors.Is(err, jwt.ErrSignatureInvalid):
+		return utils.UnauthorizedResponse(c, "Invalid token signature")
+	default:
+		return utils.UnauthorizedResponse(c, "Invalid token")
 	}
-
-	// Error genérico
-	return utils.UnauthorizedResponse(c, "Token validation failed")
 }
 
 // logAuthSuccess registra autenticación exitosa
@@ -452,21 +448,21 @@ type UserContext struct {
 	IsAdmin bool   `json:"is_admin"`
 }
 
-// CreateLogoutHandler crea un handler para logout que usa blacklist
+// CreateLogoutHandler crea un handler para logout que usa blacklist - CORREGIDO
 func (m *AuthMiddleware) CreateLogoutHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Solo proceder si hay blacklist habilitado
 		if m.tokenBlacklist == nil {
-			return c.JSON(utils.SuccessResponse("Logged out successfully", fiber.Map{
+			return utils.SuccessResponse(c, fiber.StatusOK, "Logged out successfully", fiber.Map{
 				"message": "Token blacklisting disabled - please remove token from client",
-			}))
+			})
 		}
 
 		// Extraer token
 		token, err := m.extractToken(c)
 		if err != nil {
 			// Si no hay token, considerar logout exitoso
-			return c.JSON(utils.SuccessResponse("Logged out successfully", nil))
+			return utils.SuccessResponse(c, fiber.StatusOK, "Logged out successfully", nil)
 		}
 
 		// Agregar token a blacklist
@@ -475,14 +471,13 @@ func (m *AuthMiddleware) CreateLogoutHandler() fiber.Handler {
 
 		if err := m.tokenBlacklist.BlacklistTokenWithReason(ctx, token, "user_logout"); err != nil {
 			m.logger.Error("Failed to blacklist token during logout", "error", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(
-				utils.ErrorResponse("Logout failed", "Could not revoke token"))
+			return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Logout failed", "Could not revoke token")
 		}
 
 		m.logger.Info("User logged out successfully",
 			"user_id", c.Locals("userID"),
 			"ip", c.IP())
 
-		return c.JSON(utils.SuccessResponse("Logged out successfully", nil))
+		return utils.SuccessResponse(c, fiber.StatusOK, "Logged out successfully", nil)
 	}
 }
