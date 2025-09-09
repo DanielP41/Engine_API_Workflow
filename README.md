@@ -33,6 +33,47 @@ Una solución robusta y escalable que permite a empresas configurar y automatiza
 - [ ] Testing y documentación
 - [ ] Deployment y monitoreo
 
+## Funcionalidades Implementadas
+**Sistema de Autenticación**
+
+ Registro y login de usuarios
+ JWT con access y refresh tokens
+ Blacklist automática de tokens
+ Rate limiting por usuario
+ Roles y permisos (RBAC)
+
+**Gestión de Workflows**
+
+ CRUD completo de workflows
+ Sistema de pasos condicionales
+ Triggers múltiples (manual, webhook, scheduled)
+ Versionado de workflows
+ Clonación y templates
+
+**Monitoreo y Logs**
+
+ Auditoría completa de acciones
+ Logs estructurados
+ Métricas de ejecución
+ Health checks automatizados
+ Estadísticas en tiempo real
+
+**Procesamiento Asíncrono**
+
+ Sistema de colas con prioridades
+ Jobs diferidos y programados
+ Manejo básico de reintentos
+ Workers distribuidos (en desarrollo)
+
+**Arquitectura**
+El proyecto implementa Clean Architecture con separación de responsabilidades:
+
+Handlers: Capa de presentación (REST API)
+Services: Lógica de negocio
+Repositories: Acceso a datos
+Models: Entidades de dominio
+
+
 ## Quick Start
 
 ```bash
