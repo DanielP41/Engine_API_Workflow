@@ -6,6 +6,7 @@ import (
 	"Engine_API_Workflow/internal/api/handlers"
 	"Engine_API_Workflow/internal/repository/mongodb"
 	"Engine_API_Workflow/internal/services"
+	"Engine_API_Workflow/internal/utils"
 	"Engine_API_Workflow/pkg/jwt"
 	"Engine_API_Workflow/pkg/logger"
 
@@ -34,17 +35,28 @@ func SetupRoutes(app *fiber.App, config *RouteConfig) {
 	// API v1
 	api := app.Group("/api/v1")
 
-	// Rutas de autenticación (públicas)
+	// Health check en la ruta de API también
+	api.Get("/health", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"status":    "ok",
+			"message":   "Engine API Workflow is running",
+			"version":   "1.0.0",
+			"timestamp": time.Now(),
+		})
+	})
+
+	// Rutas de autenticación (públicas por ahora)
 	setupAuthRoutes(api, config)
 
-	// Rutas protegidas
-	setupProtectedRoutes(api, config)
+	// Rutas básicas (sin middleware complejo por ahora)
+	setupBasicRoutes(api, config)
 
 	// Ruta catch-all para 404
 	app.Use("*", func(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"success": false,
 			"message": "Endpoint not found",
+			"path":    c.Path(),
 		})
 	})
 }
@@ -59,40 +71,24 @@ func setupAuthRoutes(api fiber.Router, config *RouteConfig) {
 	auth.Post("/refresh", config.AuthHandler.RefreshToken)
 	auth.Post("/logout", config.AuthHandler.Logout)
 
-	// Ruta protegida simple sin middleware por ahora
+	// Profile (sin middleware por ahora)
 	auth.Get("/profile", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
-			"message": "Profile endpoint - Coming soon",
+			"success": true,
+			"message": "Profile endpoint - Authentication coming soon",
 		})
 	})
 }
 
-// setupProtectedRoutes configura las rutas que requieren autenticación
-func setupProtectedRoutes(api fiber.Router, config *RouteConfig) {
-	// Crear un grupo protegido simple sin middleware complejo por ahora
-	protected := api.Group("/protected")
-
-	// Rutas de workflows
-	setupWorkflowRoutes(protected, config)
-
-	// Rutas de logs
-	setupLogRoutes(protected, config)
-
-	// Rutas de triggers
-	setupTriggerRoutes(protected, config)
-
-	// Rutas de administración
-	setupAdminRoutes(protected, config)
-}
-
-// setupWorkflowRoutes configura las rutas de workflows
-func setupWorkflowRoutes(protected fiber.Router, config *RouteConfig) {
-	workflows := protected.Group("/workflows")
-
+// setupBasicRoutes configura rutas básicas sin middleware complejo
+func setupBasicRoutes(api fiber.Router, config *RouteConfig) {
+	// Workflows
+	workflows := api.Group("/workflows")
 	workflows.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"success": true,
 			"message": "Workflows list - Coming soon",
+			"data":    []interface{}{},
 		})
 	})
 
@@ -114,37 +110,13 @@ func setupWorkflowRoutes(protected fiber.Router, config *RouteConfig) {
 		})
 	})
 
-	workflows.Put("/:id", func(c *fiber.Ctx) error {
-		id := c.Params("id")
-		return c.JSON(fiber.Map{
-			"success": true,
-			"message": "Update workflow - Coming soon",
-			"data": fiber.Map{
-				"id": id,
-			},
-		})
-	})
-
-	workflows.Delete("/:id", func(c *fiber.Ctx) error {
-		id := c.Params("id")
-		return c.JSON(fiber.Map{
-			"success": true,
-			"message": "Delete workflow - Coming soon",
-			"data": fiber.Map{
-				"id": id,
-			},
-		})
-	})
-}
-
-// setupLogRoutes configura las rutas de logs
-func setupLogRoutes(protected fiber.Router, config *RouteConfig) {
-	logs := protected.Group("/logs")
-
+	// Logs
+	logs := api.Group("/logs")
 	logs.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"success": true,
 			"message": "Logs list - Coming soon",
+			"data":    []interface{}{},
 		})
 	})
 
@@ -158,12 +130,9 @@ func setupLogRoutes(protected fiber.Router, config *RouteConfig) {
 			},
 		})
 	})
-}
 
-// setupTriggerRoutes configura las rutas de triggers
-func setupTriggerRoutes(protected fiber.Router, config *RouteConfig) {
-	triggers := protected.Group("/triggers")
-
+	// Triggers
+	triggers := api.Group("/triggers")
 	triggers.Post("/workflow", func(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
 			"success": true,
@@ -171,51 +140,33 @@ func setupTriggerRoutes(protected fiber.Router, config *RouteConfig) {
 		})
 	})
 
-	triggers.Post("/webhook/:webhook_id", func(c *fiber.Ctx) error {
-		webhookID := c.Params("webhook_id")
-		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+	// Admin (sin middleware de admin por ahora)
+	admin := api.Group("/admin")
+	admin.Get("/stats", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
 			"success": true,
-			"message": "Trigger webhook - Coming soon",
+			"message": "Admin system stats - Coming soon",
 			"data": fiber.Map{
-				"webhook_id": webhookID,
+				"system": "healthy",
+				"uptime": "coming soon",
 			},
 		})
 	})
 }
 
-// setupAdminRoutes configura las rutas de administración
-func setupAdminRoutes(protected fiber.Router, config *RouteConfig) {
-	admin := protected.Group("/admin")
-
-	admin.Get("/users", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
-			"success": true,
-			"message": "Admin users list - Coming soon",
-		})
-	})
-
-	admin.Get("/stats", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
-			"success": true,
-			"message": "Admin system stats - Coming soon",
-		})
-	})
-}
-
-// SetupRoutesFromDatabase es una función alternativa que inicializa desde la base de datos
+// SetupRoutesFromDatabase - CORREGIDO: parámetros correctos para los constructores
 func SetupRoutesFromDatabase(app *fiber.App, db *mongo.Database, jwtService jwt.JWTService, appLogger *logger.Logger) {
 	// Inicializar repositorios
 	userRepo := mongodb.NewUserRepository(db)
 
-	// Inicializar servicios - USAR LA IMPLEMENTACIÓN REAL
-	authService := &services.AuthServiceImpl{}
+	// CORREGIDO: NewAuthService espera UserRepository, no JWTService
+	authService := services.NewAuthService(userRepo)
 
-	// Inicializar handlers - USAR SOLO LOS ARGUMENTOS QUE FUNCIONEN
-	authHandler := &handlers.AuthHandler{}
+	// CORREGIDO: Inicializar validator correctamente
+	validator := utils.NewValidator()
 
-	// Si hay problemas con el constructor, inicializar directamente
-	_ = userRepo    // Usar la variable para evitar error de "not used"
-	_ = authService // Usar la variable para evitar error de "not used"
+	// CORREGIDO: NewAuthHandler espera (AuthService, JWTService, *Validator)
+	authHandler := handlers.NewAuthHandler(authService, jwtService, validator)
 
 	// Crear configuración
 	config := &RouteConfig{
