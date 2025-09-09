@@ -160,12 +160,19 @@ type QueueRepository interface {
 	SetJobStatus(ctx context.Context, jobID string, status string) error
 	GetJobStatus(ctx context.Context, jobID string) (string, error)
 
-	// Statistics
+	// Statistics - CORREGIDO: Mantener ambas versiones para compatibilidad
 	GetQueueStats(ctx context.Context, queueName string) (map[string]interface{}, error)
+	GetQueueStatsAll(ctx context.Context) (map[string]int64, error) // AGREGADO: Nueva versión sin parámetros
 	GetAllQueueNames(ctx context.Context) ([]string, error)
 
 	// Health check
 	Ping(ctx context.Context) error
+
+	// AGREGADO: Métodos específicos que usa worker/engine.go
+	Dequeue(ctx context.Context) (*models.QueueTask, error)
+	MarkCompleted(ctx context.Context, taskID string) error
+	MarkFailed(ctx context.Context, taskID string, err error) error
+	GetProcessingTasks(ctx context.Context) ([]*models.QueueTask, error)
 }
 
 // PaginationOptions for consistent pagination
