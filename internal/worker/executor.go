@@ -152,7 +152,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 			zap.String("step_name", currentStep.Name),
 			zap.String("step_type", currentStep.Type))
 
-		// Ejecutar el paso
+		// CORREGIDO: Cambiar firma para coincidir con StepProcessor.ProcessStep
 		stepResult, err := e.executeStep(ctx, currentStep, execCtx)
 		if err != nil {
 			result.Success = false
@@ -235,8 +235,8 @@ func (e *WorkflowExecutor) executeStep(ctx context.Context, step *models.Workflo
 	stepCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	// Procesar el paso según su tipo
-	result, err := e.stepProcessor.ProcessStep(stepCtx, step, execCtx)
+	// CORREGIDO: Pasar *step como valor y execCtx.Variables como map[string]interface{}
+	result, err := e.stepProcessor.ProcessStep(stepCtx, *step, execCtx.Variables)
 	if err != nil {
 		return &StepResult{
 			Success:      false,
@@ -245,13 +245,20 @@ func (e *WorkflowExecutor) executeStep(ctx context.Context, step *models.Workflo
 		}, err
 	}
 
-	result.Duration = time.Since(startTime)
-	return result, nil
+	// CORREGIDO: Crear StepResult desde el output del procesador
+	stepResult := &StepResult{
+		Success:  true,
+		Output:   result,
+		Duration: time.Since(startTime),
+	}
+
+	return stepResult, nil
 }
 
 // createStepExecution crea un registro de ejecución de paso
 func (e *WorkflowExecutor) createStepExecution(step *models.WorkflowStep, result *StepResult, err error) models.StepExecution {
 	now := time.Now()
+	// CORREGIDO: Convertir Duration a int64 milliseconds
 	duration := int64(result.Duration.Milliseconds())
 
 	status := models.WorkflowStatus("completed")

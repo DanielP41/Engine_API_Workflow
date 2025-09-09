@@ -24,19 +24,9 @@ func NewStepProcessor(logger *zap.Logger) *StepProcessor {
 }
 
 // ProcessStep procesa un paso individual del workflow
-func (p *StepProcessor) ProcessStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}) (*models.StepExecution, error) {
+// CORREGIDO: Cambiar tipo de retorno de *models.StepExecution a map[string]interface{}
+func (p *StepProcessor) ProcessStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}) (map[string]interface{}, error) {
 	startTime := time.Now()
-
-	execution := &models.StepExecution{
-		StepID:     step.ID,
-		StepName:   step.Name,
-		ActionType: models.ActionType(step.Type),
-		Status:     models.WorkflowStatus("running"),
-		StartedAt:  startTime,
-		Input:      step.Config,
-		Output:     make(map[string]interface{}),
-		RetryCount: 0,
-	}
 
 	logger := p.logger.With(
 		zap.String("step_id", step.ID),
@@ -48,68 +38,60 @@ func (p *StepProcessor) ProcessStep(ctx context.Context, step models.WorkflowSte
 
 	// Verificar si el paso está habilitado
 	if !step.IsEnabled {
-		execution.Status = models.WorkflowStatus("skipped")
-		execution.Output["reason"] = "step disabled"
-		p.completeExecution(execution, startTime)
-		return execution, nil
+		return map[string]interface{}{
+			"status": "skipped",
+			"reason": "step disabled",
+		}, nil
 	}
 
 	// Procesar según el tipo de paso
+	var result map[string]interface{}
 	var err error
+
 	switch step.Type {
 	case "http":
-		err = p.processHTTPStep(ctx, step, context, execution, logger)
+		result, err = p.processHTTPStep(ctx, step, context, logger)
 	case "email":
-		err = p.processEmailStep(ctx, step, context, execution, logger)
+		result, err = p.processEmailStep(ctx, step, context, logger)
 	case "slack":
-		err = p.processSlackStep(ctx, step, context, execution, logger)
+		result, err = p.processSlackStep(ctx, step, context, logger)
 	case "webhook":
-		err = p.processWebhookStep(ctx, step, context, execution, logger)
+		result, err = p.processWebhookStep(ctx, step, context, logger)
 	case "delay":
-		err = p.processDelayStep(ctx, step, context, execution, logger)
+		result, err = p.processDelayStep(ctx, step, context, logger)
 	case "condition":
-		err = p.processConditionStep(ctx, step, context, execution, logger)
+		result, err = p.processConditionStep(ctx, step, context, logger)
 	case "transform":
-		err = p.processTransformStep(ctx, step, context, execution, logger)
+		result, err = p.processTransformStep(ctx, step, context, logger)
 	case "database":
-		err = p.processDatabaseStep(ctx, step, context, execution, logger)
+		result, err = p.processDatabaseStep(ctx, step, context, logger)
 	case "notification":
-		err = p.processNotificationStep(ctx, step, context, execution, logger)
+		result, err = p.processNotificationStep(ctx, step, context, logger)
 	default:
-		err = fmt.Errorf("unknown step type: %s", step.Type)
+		return nil, fmt.Errorf("unknown step type: %s", step.Type)
 	}
-
-	// Completar la ejecución
-	p.completeExecution(execution, startTime)
 
 	if err != nil {
-		execution.Status = models.WorkflowStatus("failed")
-		execution.ErrorMessage = err.Error()
 		logger.Error("Step processing failed", zap.Error(err))
-	} else {
-		execution.Status = models.WorkflowStatus("completed")
-		logger.Info("Step processing completed successfully")
+		return nil, err
 	}
 
-	return execution, err
-}
+	// Agregar información de timing
+	if result == nil {
+		result = make(map[string]interface{})
+	}
+	result["processing_time_ms"] = time.Since(startTime).Milliseconds()
+	result["processed_at"] = time.Now()
 
-// completeExecution completa los datos de ejecución del paso
-func (p *StepProcessor) completeExecution(execution *models.StepExecution, startTime time.Time) {
-	completedAt := time.Now()
-	duration := completedAt.Sub(startTime)
-
-	execution.CompletedAt = &completedAt
-	durationMs := duration.Milliseconds()
-	execution.Duration = &durationMs
-	execution.ExecutionTime = durationMs
+	logger.Info("Step processing completed successfully")
+	return result, nil
 }
 
 // processHTTPStep procesa un paso HTTP
-func (p *StepProcessor) processHTTPStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, execution *models.StepExecution, logger *zap.Logger) error {
+func (p *StepProcessor) processHTTPStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, logger *zap.Logger) (map[string]interface{}, error) {
 	url, ok := step.Config["url"].(string)
 	if !ok {
-		return fmt.Errorf("missing url in HTTP step config")
+		return nil, fmt.Errorf("missing url in HTTP step config")
 	}
 
 	method, _ := step.Config["method"].(string)
@@ -126,26 +108,24 @@ func (p *StepProcessor) processHTTPStep(ctx context.Context, step models.Workflo
 	// Simular HTTP request
 	time.Sleep(100 * time.Millisecond)
 
-	execution.Output = map[string]interface{}{
+	return map[string]interface{}{
 		"status_code": 200,
 		"response":    "OK",
 		"url":         url,
 		"method":      method,
 		"headers":     headers,
-	}
-
-	return nil
+	}, nil
 }
 
 // processEmailStep procesa un paso de email
-func (p *StepProcessor) processEmailStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, execution *models.StepExecution, logger *zap.Logger) error {
+func (p *StepProcessor) processEmailStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, logger *zap.Logger) (map[string]interface{}, error) {
 	to, ok := step.Config["to"].(string)
 	if !ok {
-		return fmt.Errorf("missing 'to' address in email step config")
+		return nil, fmt.Errorf("missing 'to' address in email step config")
 	}
 
 	subject, _ := step.Config["subject"].(string)
-	body, _ := step.Config["body"].(string)
+	// CORREGIDO: Eliminar variable body no utilizada
 	from, _ := step.Config["from"].(string)
 
 	logger.Info("Processing email step",
@@ -155,21 +135,19 @@ func (p *StepProcessor) processEmailStep(ctx context.Context, step models.Workfl
 	// Simular envío de email
 	time.Sleep(200 * time.Millisecond)
 
-	execution.Output = map[string]interface{}{
+	return map[string]interface{}{
 		"sent":    true,
 		"to":      to,
 		"subject": subject,
 		"from":    from,
-	}
-
-	return nil
+	}, nil
 }
 
 // processSlackStep procesa un paso de Slack
-func (p *StepProcessor) processSlackStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, execution *models.StepExecution, logger *zap.Logger) error {
+func (p *StepProcessor) processSlackStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, logger *zap.Logger) (map[string]interface{}, error) {
 	channel, ok := step.Config["channel"].(string)
 	if !ok {
-		return fmt.Errorf("missing channel in Slack step config")
+		return nil, fmt.Errorf("missing channel in Slack step config")
 	}
 
 	message, _ := step.Config["message"].(string)
@@ -181,21 +159,19 @@ func (p *StepProcessor) processSlackStep(ctx context.Context, step models.Workfl
 	// Simular llamada a Slack API
 	time.Sleep(150 * time.Millisecond)
 
-	execution.Output = map[string]interface{}{
+	return map[string]interface{}{
 		"sent":     true,
 		"channel":  channel,
 		"message":  message,
 		"username": username,
-	}
-
-	return nil
+	}, nil
 }
 
 // processWebhookStep procesa un paso de webhook
-func (p *StepProcessor) processWebhookStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, execution *models.StepExecution, logger *zap.Logger) error {
+func (p *StepProcessor) processWebhookStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, logger *zap.Logger) (map[string]interface{}, error) {
 	url, ok := step.Config["url"].(string)
 	if !ok {
-		return fmt.Errorf("missing URL in webhook step config")
+		return nil, fmt.Errorf("missing URL in webhook step config")
 	}
 
 	method, _ := step.Config["method"].(string)
@@ -210,18 +186,16 @@ func (p *StepProcessor) processWebhookStep(ctx context.Context, step models.Work
 	// Simular llamada a webhook
 	time.Sleep(300 * time.Millisecond)
 
-	execution.Output = map[string]interface{}{
+	return map[string]interface{}{
 		"called": true,
 		"url":    url,
 		"method": method,
 		"status": "success",
-	}
-
-	return nil
+	}, nil
 }
 
 // processDelayStep procesa un paso de delay
-func (p *StepProcessor) processDelayStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, execution *models.StepExecution, logger *zap.Logger) error {
+func (p *StepProcessor) processDelayStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, logger *zap.Logger) (map[string]interface{}, error) {
 	delaySeconds, ok := step.Config["delay_seconds"].(float64)
 	if !ok {
 		delaySeconds = 1.0
@@ -233,24 +207,22 @@ func (p *StepProcessor) processDelayStep(ctx context.Context, step models.Workfl
 	// Esperar con posibilidad de cancelación
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	case <-time.After(duration):
 		// Continuar
 	}
 
-	execution.Output = map[string]interface{}{
+	return map[string]interface{}{
 		"delayed_seconds": delaySeconds,
 		"completed_at":    time.Now(),
-	}
-
-	return nil
+	}, nil
 }
 
 // processConditionStep procesa un paso condicional
-func (p *StepProcessor) processConditionStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, execution *models.StepExecution, logger *zap.Logger) error {
+func (p *StepProcessor) processConditionStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, logger *zap.Logger) (map[string]interface{}, error) {
 	condition, ok := step.Config["condition"].(string)
 	if !ok {
-		return fmt.Errorf("missing condition in condition step config")
+		return nil, fmt.Errorf("missing condition in condition step config")
 	}
 
 	variable, _ := step.Config["variable"].(string)
@@ -263,22 +235,20 @@ func (p *StepProcessor) processConditionStep(ctx context.Context, step models.Wo
 	// Evaluar condición
 	result := p.evaluateCondition(condition, variable, operator, value, context)
 
-	execution.Output = map[string]interface{}{
+	return map[string]interface{}{
 		"condition": condition,
 		"variable":  variable,
 		"operator":  operator,
 		"value":     value,
 		"result":    result,
-	}
-
-	return nil
+	}, nil
 }
 
 // processTransformStep procesa un paso de transformación
-func (p *StepProcessor) processTransformStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, execution *models.StepExecution, logger *zap.Logger) error {
+func (p *StepProcessor) processTransformStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, logger *zap.Logger) (map[string]interface{}, error) {
 	transform, ok := step.Config["transform"].(string)
 	if !ok {
-		return fmt.Errorf("missing transform in transform step config")
+		return nil, fmt.Errorf("missing transform in transform step config")
 	}
 
 	inputField, _ := step.Config["input_field"].(string)
@@ -290,21 +260,19 @@ func (p *StepProcessor) processTransformStep(ctx context.Context, step models.Wo
 	// Ejecutar transformación
 	result := p.executeTransformation(transform, inputField, outputField, context)
 
-	execution.Output = map[string]interface{}{
+	return map[string]interface{}{
 		"transform":    transform,
 		"input_field":  inputField,
 		"output_field": outputField,
 		"result":       result,
-	}
-
-	return nil
+	}, nil
 }
 
 // processDatabaseStep procesa un paso de base de datos
-func (p *StepProcessor) processDatabaseStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, execution *models.StepExecution, logger *zap.Logger) error {
+func (p *StepProcessor) processDatabaseStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, logger *zap.Logger) (map[string]interface{}, error) {
 	operation, ok := step.Config["operation"].(string)
 	if !ok {
-		return fmt.Errorf("missing operation in database step config")
+		return nil, fmt.Errorf("missing operation in database step config")
 	}
 
 	table, _ := step.Config["table"].(string)
@@ -316,21 +284,19 @@ func (p *StepProcessor) processDatabaseStep(ctx context.Context, step models.Wor
 	// Simular operación de base de datos
 	time.Sleep(50 * time.Millisecond)
 
-	execution.Output = map[string]interface{}{
+	return map[string]interface{}{
 		"operation":     operation,
 		"table":         table,
 		"success":       true,
 		"rows_affected": 1,
-	}
-
-	return nil
+	}, nil
 }
 
 // processNotificationStep procesa un paso de notificación
-func (p *StepProcessor) processNotificationStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, execution *models.StepExecution, logger *zap.Logger) error {
+func (p *StepProcessor) processNotificationStep(ctx context.Context, step models.WorkflowStep, context map[string]interface{}, logger *zap.Logger) (map[string]interface{}, error) {
 	notificationType, ok := step.Config["type"].(string)
 	if !ok {
-		return fmt.Errorf("missing type in notification step config")
+		return nil, fmt.Errorf("missing type in notification step config")
 	}
 
 	recipient, _ := step.Config["recipient"].(string)
@@ -342,14 +308,12 @@ func (p *StepProcessor) processNotificationStep(ctx context.Context, step models
 	// Simular envío de notificación
 	time.Sleep(100 * time.Millisecond)
 
-	execution.Output = map[string]interface{}{
+	return map[string]interface{}{
 		"type":      notificationType,
 		"recipient": recipient,
 		"message":   message,
 		"sent":      true,
-	}
-
-	return nil
+	}, nil
 }
 
 // evaluateCondition evalúa una condición simple

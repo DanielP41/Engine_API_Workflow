@@ -51,6 +51,7 @@ type TaskData struct {
 }
 
 // NewWorkerEngine crea una nueva instancia del worker engine
+// CORREGIDO: Cambiar WorkferEngine por WorkerEngine
 func NewWorkerEngine(
 	queueRepo repository.QueueRepository,
 	workflowRepo repository.WorkflowRepository,
@@ -59,7 +60,7 @@ func NewWorkerEngine(
 	logService services.LogService,
 	logger *zap.Logger,
 	config WorkerConfig,
-) *WorkferEngine {
+) *WorkerEngine {
 	if config.Workers <= 0 {
 		config.Workers = 3
 	}
@@ -221,8 +222,7 @@ func (e *WorkerEngine) executeWorkflowTask(ctx context.Context, task *models.Que
 		return fmt.Errorf("invalid user ID: %w", err)
 	}
 
-	// CORREGIDO: Eliminar variable workflowLog no utilizada
-	// Solo obtener el log si realmente lo necesitamos
+	// Verificar que el log existe
 	_, err = e.logService.GetLogByID(ctx, logID)
 	if err != nil {
 		return fmt.Errorf("failed to get workflow log: %w", err)
@@ -347,9 +347,8 @@ func (e *WorkerEngine) cleanupStaleTasks(ctx context.Context) error {
 	return nil
 }
 
-// CORREGIDO: Cambiar firma para coincidir con la interfaz
+// GetStats obtiene estadísticas del worker engine
 func (e *WorkerEngine) GetStats(ctx context.Context) (map[string]interface{}, error) {
-	// CORREGIDO: Pasar queueName como parámetro
 	queueStats, err := e.queueRepo.GetQueueStats(ctx, "workflow:queue")
 	if err != nil {
 		return nil, err
