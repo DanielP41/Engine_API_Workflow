@@ -1,188 +1,154 @@
-.PHONY: help run build test clean docker-up docker-down docker-rebuild install deps fmt lint vet
+.PHONY: run build test clean docker-up docker-down worker-test
 
 # Variables
-APP_NAME=engine-api-workflow
+APP_NAME=workflow-engine
 DOCKER_COMPOSE=docker-compose
-GO_VERSION=1.23
-BINARY_PATH=bin/$(APP_NAME)
-
-# Default target
-help: ## Show this help message
-	@echo "Engine API Workflow - Available commands:"
-	@echo "==========================================="
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+WORKER_PORT=8082
 
 # Development commands
-run: deps ## Run the application locally
-	@echo "🚀 Starting Engine API Workflow..."
-	@if [ ! -f .env ]; then cp .env.example .env; echo "📋 Created .env file"; fi
-	go run cmd/api/main.go
+run:
+	@powershell -Command "& { . .\.env; go run cmd/api/main.go }"
 
-build: deps ## Build the application
-	@echo "🔨 Building $(APP_NAME)..."
-	@mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o $(BINARY_PATH) cmd/api/main.go
-	@echo "✅ Build completed: $(BINARY_PATH)"
+dev:
+	@echo "Starting development mode with hot reload..."
+	@powershell -Command "& { . .\.env; air }" || go run cmd/api/main.go
 
-build-local: deps ## Build for local OS
-	@echo "🔨 Building $(APP_NAME) for local system..."
-	@mkdir -p bin
-	go build -o $(BINARY_PATH) cmd/api/main.go
-	@echo "✅ Build completed: $(BINARY_PATH)"
+build:
+	go build -o bin/$(APP_NAME) cmd/api/main.go
 
-install: ## Install the application globally
-	go install cmd/api/main.go
-
-# Testing
-test: ## Run tests
-	@echo "🧪 Running tests..."
+# Testing commands
+test:
 	go test -v ./...
 
-test-coverage: ## Run tests with coverage
-	@echo "🧪 Running tests with coverage..."
+test-coverage:
 	go test -v -coverprofile=coverage.out ./...
-	go tool cover -html=coverage.out -o coverage.html
-	@echo "📊 Coverage report generated: coverage.html"
+	go tool cover -html=coverage.out
 
-test-race: ## Run tests with race detector
-	@echo "🧪 Running tests with race detector..."
-	go test -race -v ./...
+test-workers:
+	@echo "Testing worker functionality..."
+	@echo "1. Checking worker health..."
+	curl -s http://localhost:$(WORKER_PORT)/health || echo "Worker stats server not running"
+	@echo "\n2. Checking worker stats..."
+	curl -s http://localhost:$(WORKER_PORT)/stats || echo "Worker stats not available"
 
 # Docker commands
-docker-up: ## Start all services with Docker
-	@echo "🐳 Starting Docker services..."
+docker-up:
 	$(DOCKER_COMPOSE) up -d
-	@echo "✅ Docker services started"
 
-docker-down: ## Stop all Docker services
-	@echo "🐳 Stopping Docker services..."
+docker-down:
 	$(DOCKER_COMPOSE) down
-	@echo "✅ Docker services stopped"
 
-docker-logs: ## Show Docker logs
+docker-logs:
 	$(DOCKER_COMPOSE) logs -f
 
-docker-rebuild: ## Rebuild and start Docker services
-	@echo "🐳 Rebuilding Docker services..."
-	$(DOCKER_COMPOSE) up -d --build
-	@echo "✅ Docker services rebuilt and started"
+docker-logs-api:
+	$(DOCKER_COMPOSE) logs -f api
 
-docker-clean: ## Clean Docker containers and volumes
-	@echo "🧹 Cleaning Docker resources..."
-	$(DOCKER_COMPOSE) down -v --remove-orphans
-	docker system prune -f
-	@echo "✅ Docker cleanup completed"
+docker-rebuild:
+	$(DOCKER_COMPOSE) up -d --build
+
+# API Testing commands
+test-api:
+	@echo "Testing API endpoints..."
+	@echo "1. Health check:"
+	curl -s http://localhost:8081/api/v1/health | jq . || echo "API not responding"
+	@echo "\n2. Worker health:"
+	curl -s http://localhost:8081/api/v1/workers/health | jq . || echo "Workers not available"
+
+test-auth:
+	@echo "Testing authentication..."
+	@echo "1. Register test user:"
+	curl -X POST http://localhost:8081/api/v1/auth/register \
+		-H "Content-Type: application/json" \
+		-d '{"name":"Test User","email":"test@example.com","password":"password123","role":"user"}' \
+		| jq . || echo "Registration failed"
+
+test-workflow:
+	@echo "Testing workflow creation (requires auth token)..."
+	@echo "Please get auth token first with 'make test-auth'"
+
+# Queue testing
+test-queue:
+	@echo "Testing queue operations..."
+	curl -s http://localhost:8081/api/v1/workers/queue/stats | jq . || echo "Queue stats not available"
 
 # Database commands
-db-up: ## Start only database services
-	@echo "🗄️ Starting database services..."
-	$(DOCKER_COMPOSE) up -d mongodb redis
-	@echo "✅ Database services started"
+db-migrate:
+	@echo "Running database migrations..."
+	# Agregar comandos de migración aquí
 
-db-down: ## Stop database services
-	@echo "🗄️ Stopping database services..."
-	$(DOCKER_COMPOSE) stop mongodb redis
-	@echo "✅ Database services stopped"
-
-db-reset: ## Reset database (WARNING: This will delete all data)
-	@echo "⚠️  Resetting database - all data will be lost!"
-	@read -p "Are you sure? [y/N]: " confirm && [ "$$confirm" = "y" ]
-	$(DOCKER_COMPOSE) down mongodb redis
-	docker volume rm $$(docker volume ls -q | grep workflow) 2>/dev/null || true
-	$(DOCKER_COMPOSE) up -d mongodb redis
-	@echo "✅ Database reset completed"
-
-# Code quality
-deps: ## Download and tidy dependencies
-	@echo "📦 Installing dependencies..."
-	go mod download
-	go mod tidy
-	@echo "✅ Dependencies installed"
-
-fmt: ## Format Go code
-	@echo "🎨 Formatting code..."
-	go fmt ./...
-	@echo "✅ Code formatted"
-
-lint: ## Run golangci-lint
-	@echo "🔍 Running linter..."
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run; \
-	else \
-		echo "⚠️  golangci-lint not installed. Install with: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $$(go env GOPATH)/bin v1.54.2"; \
-	fi
-
-vet: ## Run go vet
-	@echo "🔍 Running go vet..."
-	go vet ./...
-	@echo "✅ Vet completed"
-
-security: ## Run gosec security scanner
-	@echo "🔒 Running security scan..."
-	@if command -v gosec >/dev/null 2>&1; then \
-		gosec ./...; \
-	else \
-		echo "⚠️  gosec not installed. Install with: go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest"; \
-	fi
+db-seed:
+	@echo "Seeding database with test data..."
+	# Agregar comandos para datos de prueba
 
 # Cleanup
-clean: ## Clean build artifacts and dependencies
-	@echo "🧹 Cleaning up..."
+clean:
+	go mod tidy
 	go clean
-	rm -rf bin/
-	rm -f coverage.out coverage.html
-	rm -f app.log app.pid
-	@echo "✅ Cleanup completed"
+	rm -f bin/$(APP_NAME)
+	rm -f coverage.out
 
-clean-all: clean docker-clean ## Clean everything including Docker resources
+clean-docker:
+	docker-compose down -v
+	docker system prune -f
 
-# Environment setup
-setup: ## Initial project setup
-	@echo "🚀 Setting up Engine API Workflow..."
-	@if [ ! -f .env ]; then cp .env.example .env; echo "📋 Created .env file"; fi
-	@chmod +x scripts/*.sh 2>/dev/null || true
-	$(MAKE) deps
-	$(MAKE) fmt
-	@echo "✅ Setup completed"
+# Install dependencies
+deps:
+	go mod download
+	go mod tidy
 
-# Development helpers
-dev: db-up ## Start development environment
-	@echo "🛠️ Starting development environment..."
-	@sleep 5  # Wait for databases to be ready
-	$(MAKE) run
+# Development tools
+install-air:
+	go install github.com/cosmtrek/air@latest
 
-dev-reset: db-reset ## Reset development environment
-	@echo "🔄 Resetting development environment..."
-	$(MAKE) clean
-	$(MAKE) deps
-	@echo "✅ Development environment reset"
+install-tools: install-air
+	@echo "Development tools installed"
 
-# Production helpers
-prod-build: ## Build production binary
-	@echo "🏭 Building production binary..."
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-		-ldflags="-w -s -X main.version=$$(git describe --tags --always --dirty)" \
-		-o $(BINARY_PATH) cmd/api/main.go
-	@echo "✅ Production build completed"
+# Generate swagger docs
+swagger:
+	swag init -g cmd/api/main.go -o docs/api
 
-# Health checks
-health: ## Check application health
-	@echo "🏥 Checking application health..."
-	@curl -f http://localhost:8081/api/v1/health || echo "❌ Application is not responding"
+# Monitoring and logs
+logs-live:
+	$(DOCKER_COMPOSE) logs -f api
 
-check-deps: ## Verify system dependencies
-	@echo "🔍 Checking system dependencies..."
-	@echo "Go version: $$(go version)"
-	@docker --version 2>/dev/null || echo "⚠️  Docker not found"
-	@docker-compose --version 2>/dev/null || docker compose version 2>/dev/null || echo "⚠️  Docker Compose not found"
-	@echo "✅ Dependency check completed"
+logs-workers:
+	curl -s http://localhost:$(WORKER_PORT)/stats | jq .
 
-# Show application info
-info: ## Show application information
-	@echo "Engine API Workflow Information"
-	@echo "==============================="
-	@echo "App Name: $(APP_NAME)"
-	@echo "Go Version: $(GO_VERSION)"
-	@echo "Binary Path: $(BINARY_PATH)"
-	@echo "Docker Compose: $(DOCKER_COMPOSE)"
-	@if [ -f $(BINARY_PATH) ]; then echo "Binary Size: $$(du -h $(BINARY_PATH) | cut -f1)"; fi
+logs-queue:
+	curl -s http://localhost:8081/api/v1/workers/queue/stats | jq .
+
+# Performance testing
+benchmark:
+	@echo "Running performance tests..."
+	go test -bench=. -benchmem ./...
+
+load-test:
+	@echo "Running load test on health endpoint..."
+	@for i in {1..10}; do \
+		curl -s http://localhost:8081/api/v1/health > /dev/null && echo "Request $$i: OK" || echo "Request $$i: FAILED"; \
+	done
+
+# Production commands
+build-prod:
+	CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o bin/$(APP_NAME) cmd/api/main.go
+
+docker-prod:
+	$(DOCKER_COMPOSE) -f docker-compose.prod.yml up -d
+
+# Help
+help:
+	@echo "Available commands:"
+	@echo "  run              - Run the application locally"
+	@echo "  dev              - Run with hot reload (requires air)"
+	@echo "  build            - Build the application"
+	@echo "  test             - Run all tests"
+	@echo "  test-workers     - Test worker functionality"
+	@echo "  test-api         - Test API endpoints"
+	@echo "  test-auth        - Test authentication"
+	@echo "  docker-up        - Start Docker containers"
+	@echo "  docker-down      - Stop Docker containers"
+	@echo "  docker-rebuild   - Rebuild and start containers"
+	@echo "  clean            - Clean build artifacts"
+	@echo "  swagger          - Generate API documentation"
+	@echo "  help             - Show this help message"

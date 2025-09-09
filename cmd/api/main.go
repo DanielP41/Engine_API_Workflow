@@ -14,6 +14,10 @@ import (
 
 	"Engine_API_Workflow/internal/api/routes"
 	"Engine_API_Workflow/internal/config"
+	"Engine_API_Workflow/internal/repository/mongodb"
+	"Engine_API_Workflow/internal/repository/redis"
+	"Engine_API_Workflow/internal/services"
+	"Engine_API_Workflow/internal/worker"
 	"Engine_API_Workflow/pkg/database"
 	"Engine_API_Workflow/pkg/jwt"
 	"Engine_API_Workflow/pkg/logger"
@@ -94,6 +98,36 @@ func main() {
 		"refresh_ttl", jwtConfig.RefreshTokenTTL,
 		"issuer", jwtConfig.Issuer)
 
+	// ✅ Inicializar repositorios para workers
+	db := mongoClient.Database(cfg.MongoDatabase)
+	userRepo := mongodb.NewUserRepository(db)
+	workflowRepo := mongodb.NewWorkflowRepository(db)
+	logRepo := mongodb.NewLogRepository(db)
+	queueRepo := redis.NewQueueRepository(redisClient)
+
+	// ✅ Inicializar servicios de negocio para workers
+	logService := services.NewLogService(logRepo, workflowRepo, userRepo)
+	queueService := services.NewQueueService(redisClient, appLogger.Zap())
+
+	// ✅ Configurar Worker Engine
+	workerConfig := worker.WorkerConfig{
+		Workers:           getWorkerCount(cfg), // Número de workers según entorno
+		PollInterval:      5 * time.Second,     // Intervalo de polling
+		MaxRetries:        3,                   // Máximo reintentos
+		RetryDelay:        30 * time.Second,    // Delay entre reintentos
+		ProcessingTimeout: 30 * time.Minute,    // Timeout máximo por workflow
+	}
+
+	workerEngine := worker.NewWorkerEngine(
+		queueRepo,
+		workflowRepo,
+		logRepo,
+		userRepo,
+		logService,
+		appLogger.Zap(),
+		workerConfig,
+	)
+
 	// ✅ Configurar Fiber con configuraciones de seguridad de config
 	app := fiber.New(fiber.Config{
 		ServerHeader:            "Engine-API-Workflow",
@@ -108,27 +142,28 @@ func main() {
 		ProxyHeader:             fiber.HeaderXForwardedFor, // ✅ Header de proxy confiable
 	})
 
-	// Obtener base de datos
-	db := mongoClient.Database(cfg.MongoDatabase)
-
-	// ✅ Configurar rutas con configuración completa
+	// ✅ Configurar rutas con configuración completa incluyendo workers
 	routeConfig := &routes.RouteConfig{
 		DB:             db,
 		JWTService:     jwtService,
 		TokenBlacklist: tokenBlacklist, // Puede ser nil si está deshabilitado
 		Logger:         appLogger,
 		Config:         cfg,
+		// ✅ Agregar dependencias para workers
+		WorkerEngine: workerEngine,
+		QueueRepo:    queueRepo,
+		QueueService: queueService,
 	}
 	routes.SetupSecureRoutes(app, routeConfig)
 
-	// ✅ Health check mejorado con más verificaciones
+	// ✅ Health check mejorado con verificación de workers
 	app.Get("/health", func(c *fiber.Ctx) error {
-		return healthCheckHandler(c, mongoClient, redisClient, tokenBlacklist, cfg)
+		return healthCheckHandler(c, mongoClient, redisClient, tokenBlacklist, workerEngine, cfg)
 	})
 
-	// ✅ Endpoint de métricas mejorado
+	// ✅ Endpoint de métricas mejorado con stats de workers
 	app.Get("/metrics", func(c *fiber.Ctx) error {
-		return metricsHandler(c, tokenBlacklist, cfg)
+		return metricsHandler(c, tokenBlacklist, workerEngine, cfg)
 	})
 
 	// ✅ Endpoint de configuración (solo en desarrollo)
@@ -137,6 +172,17 @@ func main() {
 			return configDebugHandler(c, cfg)
 		})
 	}
+
+	// Crear contexto principal con cancelación para workers
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// ✅ Iniciar Worker Engine
+	appLogger.Info("Starting Worker Engine...", "workers", workerConfig.Workers)
+	if err := workerEngine.Start(ctx); err != nil {
+		appLogger.Fatal("Failed to start Worker Engine", "error", err)
+	}
+	appLogger.Info("Worker Engine started successfully")
 
 	// Canal para manejar señales del sistema
 	sigChan := make(chan os.Signal, 1)
@@ -147,7 +193,65 @@ func main() {
 		go startBackgroundTasks(tokenBlacklist, appLogger)
 	}
 
-	// Iniciar el servidor en una goroutine
+	// ✅ Iniciar servidor de estadísticas de workers en puerto separado
+	go func() {
+		statsAddr := fmt.Sprintf(":%d", getStatsPort(cfg))
+		statsApp := fiber.New(fiber.Config{
+			AppName:               "Worker Stats API",
+			DisableStartupMessage: true,
+		})
+
+		// Endpoint de estadísticas de workers
+		statsApp.Get("/stats", func(c *fiber.Ctx) error {
+			stats, err := workerEngine.GetStats(ctx)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			}
+			return c.JSON(stats)
+		})
+
+		// Health check específico para workers
+		statsApp.Get("/health", func(c *fiber.Ctx) error {
+			stats, err := workerEngine.GetStats(ctx)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{
+					"status": "error",
+					"error":  err.Error(),
+				})
+			}
+
+			isRunning, ok := stats["is_running"].(bool)
+			if !ok || !isRunning {
+				return c.Status(500).JSON(fiber.Map{
+					"status": "error",
+					"error":  "workers not running",
+				})
+			}
+
+			return c.JSON(fiber.Map{
+				"status":  "ok",
+				"service": "worker-engine",
+				"time":    time.Now(),
+				"stats":   stats,
+			})
+		})
+
+		// Endpoint de cola stats
+		statsApp.Get("/queue", func(c *fiber.Ctx) error {
+			queueStats, err := queueRepo.GetQueueStats(ctx)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			}
+			return c.JSON(queueStats)
+		})
+
+		appLogger.Info("Starting Worker Stats server", "address", statsAddr)
+		if err := statsApp.Listen(statsAddr); err != nil {
+			appLogger.Error("Worker Stats server failed", "error", err)
+		}
+	}()
+
+	// Iniciar el servidor principal en una goroutine
 	go func() {
 		addr := fmt.Sprintf(":%s", cfg.ServerPort)
 		appLogger.Info("Starting HTTP server",
@@ -155,10 +259,13 @@ func main() {
 			"environment", cfg.Environment,
 			"jwt_access_ttl", cfg.JWTAccessTTL,
 			"jwt_refresh_ttl", cfg.JWTRefreshTTL,
+			"workers_enabled", true,
+			"workers_count", workerConfig.Workers,
 			"features_enabled", map[string]bool{
 				"blacklist":  cfg.EnableTokenBlacklist,
 				"rate_limit": cfg.EnableRateLimit,
 				"cors":       cfg.EnableCORS,
+				"workers":    true,
 			},
 		)
 
@@ -171,20 +278,47 @@ func main() {
 	<-sigChan
 	appLogger.Info("Shutting down server...")
 
-	// ✅ Graceful shutdown con cleanup de recursos
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	// ✅ Graceful shutdown - Detener Worker Engine primero
+	appLogger.Info("Stopping Worker Engine...")
+	if err := workerEngine.Stop(); err != nil {
+		appLogger.Error("Error stopping Worker Engine", "error", err)
+	} else {
+		appLogger.Info("Worker Engine stopped successfully")
+	}
+
+	// ✅ Cancelar contexto para detener todas las goroutines de workers
+	cancel()
+
+	// ✅ Graceful shutdown del servidor HTTP
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
 
 	// Cerrar servidor HTTP
-	if err := app.ShutdownWithContext(ctx); err != nil {
+	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
 		appLogger.Error("Server forced to shutdown", "error", err)
 	}
 
 	appLogger.Info("Server exited successfully")
 }
 
-// ✅ healthCheckHandler maneja el endpoint de health check
-func healthCheckHandler(c *fiber.Ctx, mongoClient *mongo.Client, redisClient *redis.Client, tokenBlacklist *jwt.TokenBlacklist, cfg *config.Config) error {
+// ✅ getWorkerCount devuelve el número de workers según el entorno
+func getWorkerCount(cfg *config.Config) int {
+	if cfg.IsProduction() {
+		return 5 // Más workers en producción
+	}
+	return 3 // Workers en desarrollo/testing
+}
+
+// ✅ getStatsPort devuelve el puerto para el servidor de estadísticas
+func getStatsPort(cfg *config.Config) int {
+	if cfg.IsProduction() {
+		return 8083 // Puerto diferente en producción
+	}
+	return 8082 // Puerto para desarrollo
+}
+
+// ✅ healthCheckHandler mejorado con verificación de workers
+func healthCheckHandler(c *fiber.Ctx, mongoClient *mongo.Client, redisClient *redis.Client, tokenBlacklist *jwt.TokenBlacklist, workerEngine *worker.WorkerEngine, cfg *config.Config) error {
 	healthStatus := map[string]interface{}{
 		"status":      "ok",
 		"timestamp":   time.Now().UTC(),
@@ -223,6 +357,30 @@ func healthCheckHandler(c *fiber.Ctx, mongoClient *mongo.Client, redisClient *re
 		}
 	}
 
+	// ✅ Check Workers
+	if workerStats, err := workerEngine.GetStats(context.Background()); err != nil {
+		healthStatus["workers"] = map[string]interface{}{
+			"status": "error",
+			"error":  err.Error(),
+		}
+		healthStatus["status"] = "degraded"
+	} else {
+		isRunning, ok := workerStats["is_running"].(bool)
+		if !ok || !isRunning {
+			healthStatus["workers"] = map[string]interface{}{
+				"status": "error",
+				"error":  "workers not running",
+			}
+			healthStatus["status"] = "degraded"
+		} else {
+			healthStatus["workers"] = map[string]interface{}{
+				"status":          "ok",
+				"workers_running": workerStats["workers_running"],
+				"queue_stats":     workerStats["queue_stats"],
+			}
+		}
+	}
+
 	// Check Token Blacklist (si está habilitado)
 	if tokenBlacklist != nil {
 		if err := tokenBlacklist.HealthCheck(context.Background()); err != nil {
@@ -249,6 +407,7 @@ func healthCheckHandler(c *fiber.Ctx, mongoClient *mongo.Client, redisClient *re
 		"token_blacklist": cfg.EnableTokenBlacklist,
 		"rate_limit":      cfg.EnableRateLimit,
 		"cors":            cfg.EnableCORS,
+		"workers":         true, // ✅ Workers siempre habilitados
 	}
 
 	statusCode := fiber.StatusOK
@@ -259,13 +418,22 @@ func healthCheckHandler(c *fiber.Ctx, mongoClient *mongo.Client, redisClient *re
 	return c.Status(statusCode).JSON(healthStatus)
 }
 
-// ✅ metricsHandler maneja el endpoint de métricas
-func metricsHandler(c *fiber.Ctx, tokenBlacklist *jwt.TokenBlacklist, cfg *config.Config) error {
+// ✅ metricsHandler mejorado con métricas de workers
+func metricsHandler(c *fiber.Ctx, tokenBlacklist *jwt.TokenBlacklist, workerEngine *worker.WorkerEngine, cfg *config.Config) error {
 	metrics := map[string]interface{}{
 		"uptime_seconds": time.Since(startTime).Seconds(),
 		"environment":    cfg.Environment,
-		"go_version":     "1.21+",
+		"go_version":     "1.23+",
 		"timestamp":      time.Now().UTC(),
+	}
+
+	// ✅ Métricas de Workers
+	if workerStats, err := workerEngine.GetStats(context.Background()); err == nil {
+		metrics["workers"] = workerStats
+	} else {
+		metrics["workers"] = map[string]interface{}{
+			"error": err.Error(),
+		}
 	}
 
 	// Métricas de JWT blacklist (si está habilitado)
@@ -291,6 +459,7 @@ func metricsHandler(c *fiber.Ctx, tokenBlacklist *jwt.TokenBlacklist, cfg *confi
 			"blacklist":  cfg.EnableTokenBlacklist,
 			"rate_limit": cfg.EnableRateLimit,
 			"cors":       cfg.EnableCORS,
+			"workers":    true,
 		},
 	}
 
@@ -323,10 +492,15 @@ func configDebugHandler(c *fiber.Ctx, cfg *config.Config) error {
 			"token_blacklist": cfg.EnableTokenBlacklist,
 			"rate_limit":      cfg.EnableRateLimit,
 			"cors":            cfg.EnableCORS,
+			"workers":         true, // ✅ Workers siempre habilitados
 		},
 		"rate_limit": map[string]interface{}{
 			"requests": cfg.RateLimitRequests,
 			"window":   cfg.RateLimitWindow.String(),
+		},
+		"workers": map[string]interface{}{
+			"count":      getWorkerCount(cfg),
+			"stats_port": getStatsPort(cfg),
 		},
 	}
 
