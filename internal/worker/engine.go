@@ -59,7 +59,7 @@ func NewWorkerEngine(
 	logService services.LogService,
 	logger *zap.Logger,
 	config WorkerConfig,
-) *WorkerEngine {
+) *WorkferEngine {
 	if config.Workers <= 0 {
 		config.Workers = 3
 	}
@@ -221,8 +221,9 @@ func (e *WorkerEngine) executeWorkflowTask(ctx context.Context, task *models.Que
 		return fmt.Errorf("invalid user ID: %w", err)
 	}
 
-	// Obtener el log existente
-	workflowLog, err := e.logService.GetLogByID(ctx, logID)
+	// CORREGIDO: Eliminar variable workflowLog no utilizada
+	// Solo obtener el log si realmente lo necesitamos
+	_, err = e.logService.GetLogByID(ctx, logID)
 	if err != nil {
 		return fmt.Errorf("failed to get workflow log: %w", err)
 	}
@@ -346,9 +347,10 @@ func (e *WorkerEngine) cleanupStaleTasks(ctx context.Context) error {
 	return nil
 }
 
-// GetStats devuelve estadísticas del worker engine
+// CORREGIDO: Cambiar firma para coincidir con la interfaz
 func (e *WorkerEngine) GetStats(ctx context.Context) (map[string]interface{}, error) {
-	queueStats, err := e.queueRepo.GetQueueStats(ctx)
+	// CORREGIDO: Pasar queueName como parámetro
+	queueStats, err := e.queueRepo.GetQueueStats(ctx, "workflow:queue")
 	if err != nil {
 		return nil, err
 	}
