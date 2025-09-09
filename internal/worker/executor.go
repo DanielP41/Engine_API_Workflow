@@ -14,9 +14,8 @@ import (
 
 // WorkflowExecutor ejecuta workflows paso a paso
 type WorkflowExecutor struct {
-	logService    services.LogService
-	stepProcessor *StepProcessor
-	logger        *zap.Logger
+	logService services.LogService
+	logger     *zap.Logger
 }
 
 // ExecutionContext contexto de ejecución del workflow
@@ -51,12 +50,9 @@ type StepResult struct {
 
 // NewWorkflowExecutor crea un nuevo ejecutor de workflows
 func NewWorkflowExecutor(logService services.LogService, logger *zap.Logger) *WorkflowExecutor {
-	stepProcessor := NewStepProcessor(logger)
-
 	return &WorkflowExecutor{
-		logService:    logService,
-		stepProcessor: stepProcessor,
-		logger:        logger,
+		logService: logService,
+		logger:     logger,
 	}
 }
 
@@ -152,7 +148,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 			zap.String("step_name", currentStep.Name),
 			zap.String("step_type", currentStep.Type))
 
-		// CORREGIDO: Cambiar firma para coincidir con StepProcessor.ProcessStep
+		// Ejecutar el paso
 		stepResult, err := e.executeStep(ctx, currentStep, execCtx)
 		if err != nil {
 			result.Success = false
@@ -227,38 +223,211 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 	return result, nil
 }
 
-// executeStep ejecuta un paso individual
+// executeStep ejecuta un paso individual del workflow
 func (e *WorkflowExecutor) executeStep(ctx context.Context, step *models.WorkflowStep, execCtx *ExecutionContext) (*StepResult, error) {
 	startTime := time.Now()
+
+	stepResult := &StepResult{
+		Success:      true,
+		Output:       make(map[string]interface{}),
+		ErrorMessage: "",
+		Duration:     0,
+	}
 
 	// Verificar timeout del paso (máximo 10 minutos por paso)
 	stepCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	// CORREGIDO: Pasar *step como valor y execCtx.Variables como map[string]interface{}
-	result, err := e.stepProcessor.ProcessStep(stepCtx, *step, execCtx.Variables)
-	if err != nil {
-		return &StepResult{
-			Success:      false,
-			ErrorMessage: err.Error(),
-			Duration:     time.Since(startTime),
-		}, err
+	// Ejecutar según el tipo de paso
+	var err error
+	switch models.ActionType(step.Type) {
+	case models.ActionTypeHTTP:
+		err = e.executeHTTPAction(stepCtx, step, stepResult, execCtx)
+	case models.ActionTypeEmail:
+		err = e.executeEmailAction(stepCtx, step, stepResult, execCtx)
+	case models.ActionTypeSlack:
+		err = e.executeSlackAction(stepCtx, step, stepResult, execCtx)
+	case models.ActionTypeWebhook:
+		err = e.executeWebhookAction(stepCtx, step, stepResult, execCtx)
+	case models.ActionTypeCondition:
+		err = e.executeConditionAction(stepCtx, step, stepResult, execCtx)
+	case models.ActionTypeDelay:
+		err = e.executeDelayAction(stepCtx, step, stepResult, execCtx)
+	case models.ActionTypeTransform:
+		err = e.executeTransformAction(stepCtx, step, stepResult, execCtx)
+	case models.ActionTypeDatabase:
+		err = e.executeDatabaseAction(stepCtx, step, stepResult, execCtx)
+	case models.ActionTypeIntegration:
+		err = e.executeIntegrationAction(stepCtx, step, stepResult, execCtx)
+	case models.ActionTypeNotification:
+		err = e.executeNotificationAction(stepCtx, step, stepResult, execCtx)
+	default:
+		err = fmt.Errorf("unsupported action type: %s", step.Type)
 	}
 
-	// CORREGIDO: Crear StepResult desde el output del procesador
-	stepResult := &StepResult{
-		Success:  true,
-		Output:   result,
-		Duration: time.Since(startTime),
+	stepResult.Duration = time.Since(startTime)
+
+	if err != nil {
+		stepResult.Success = false
+		stepResult.ErrorMessage = err.Error()
+		return stepResult, err
 	}
 
 	return stepResult, nil
 }
 
+// executeHTTPAction ejecuta una acción HTTP
+func (e *WorkflowExecutor) executeHTTPAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	// TODO: Implementar llamada HTTP real
+	// Por ahora, simulamos una ejecución exitosa
+
+	e.logger.Info("Executing HTTP action", zap.String("step_id", step.ID))
+
+	// Simular tiempo de procesamiento
+	time.Sleep(100 * time.Millisecond)
+
+	result.Output["http_response"] = map[string]interface{}{
+		"status":      "success",
+		"status_code": 200,
+		"message":     "HTTP action simulated successfully",
+		"timestamp":   time.Now(),
+	}
+
+	return nil
+}
+
+// executeEmailAction ejecuta una acción de email
+func (e *WorkflowExecutor) executeEmailAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	e.logger.Info("Executing Email action", zap.String("step_id", step.ID))
+
+	time.Sleep(50 * time.Millisecond)
+
+	result.Output["email_sent"] = true
+	result.Output["message"] = "Email action simulated successfully"
+	result.Output["timestamp"] = time.Now()
+
+	return nil
+}
+
+// executeSlackAction ejecuta una acción de Slack
+func (e *WorkflowExecutor) executeSlackAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	e.logger.Info("Executing Slack action", zap.String("step_id", step.ID))
+
+	time.Sleep(75 * time.Millisecond)
+
+	result.Output["slack_sent"] = true
+	result.Output["message"] = "Slack action simulated successfully"
+	result.Output["timestamp"] = time.Now()
+
+	return nil
+}
+
+// executeWebhookAction ejecuta una acción de webhook
+func (e *WorkflowExecutor) executeWebhookAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	e.logger.Info("Executing Webhook action", zap.String("step_id", step.ID))
+
+	time.Sleep(150 * time.Millisecond)
+
+	result.Output["webhook_called"] = true
+	result.Output["message"] = "Webhook action simulated successfully"
+	result.Output["timestamp"] = time.Now()
+
+	return nil
+}
+
+// executeConditionAction ejecuta una acción condicional
+func (e *WorkflowExecutor) executeConditionAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	e.logger.Info("Executing Condition action", zap.String("step_id", step.ID))
+
+	// Evaluar condiciones y determinar siguiente paso
+	if len(step.Conditions) > 0 {
+		nextStep := e.evaluateConditions(step.Conditions, execCtx.Variables)
+		if nextStep != "" {
+			result.NextStepID = nextStep
+		}
+	}
+
+	result.Output["condition_evaluated"] = true
+	result.Output["next_step"] = result.NextStepID
+	result.Output["message"] = "Condition action evaluated successfully"
+
+	return nil
+}
+
+// executeDelayAction ejecuta una acción de delay
+func (e *WorkflowExecutor) executeDelayAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	// Obtener duración del delay de la configuración
+	delayMs, ok := step.Config["delay_ms"]
+	if !ok {
+		delayMs = float64(1000) // Default 1 segundo
+	}
+
+	delay := time.Duration(delayMs.(float64)) * time.Millisecond
+
+	e.logger.Info("Executing delay", zap.Duration("delay", delay))
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(delay):
+		result.Output["delay_completed"] = true
+		result.Output["delay_duration_ms"] = delayMs
+		result.Output["message"] = "Delay action completed successfully"
+		return nil
+	}
+}
+
+// executeTransformAction ejecuta una acción de transformación de datos
+func (e *WorkflowExecutor) executeTransformAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	e.logger.Info("Executing Transform action", zap.String("step_id", step.ID))
+
+	// TODO: Implementar transformación de datos real
+	result.Output["transform_completed"] = true
+	result.Output["message"] = "Transform action simulated successfully"
+	result.Output["input_variables"] = len(execCtx.Variables)
+
+	return nil
+}
+
+// executeDatabaseAction ejecuta una acción de base de datos
+func (e *WorkflowExecutor) executeDatabaseAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	e.logger.Info("Executing Database action", zap.String("step_id", step.ID))
+
+	time.Sleep(200 * time.Millisecond)
+
+	result.Output["database_operation"] = "completed"
+	result.Output["message"] = "Database action simulated successfully"
+
+	return nil
+}
+
+// executeIntegrationAction ejecuta una acción de integración
+func (e *WorkflowExecutor) executeIntegrationAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	e.logger.Info("Executing Integration action", zap.String("step_id", step.ID))
+
+	time.Sleep(300 * time.Millisecond)
+
+	result.Output["integration_completed"] = true
+	result.Output["message"] = "Integration action simulated successfully"
+
+	return nil
+}
+
+// executeNotificationAction ejecuta una acción de notificación
+func (e *WorkflowExecutor) executeNotificationAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	e.logger.Info("Executing Notification action", zap.String("step_id", step.ID))
+
+	time.Sleep(100 * time.Millisecond)
+
+	result.Output["notification_sent"] = true
+	result.Output["message"] = "Notification action simulated successfully"
+
+	return nil
+}
+
 // createStepExecution crea un registro de ejecución de paso
 func (e *WorkflowExecutor) createStepExecution(step *models.WorkflowStep, result *StepResult, err error) models.StepExecution {
 	now := time.Now()
-	// CORREGIDO: Convertir Duration a int64 milliseconds
 	duration := int64(result.Duration.Milliseconds())
 
 	status := models.WorkflowStatus("completed")
@@ -289,6 +458,8 @@ func (e *WorkflowExecutor) createStepExecution(step *models.WorkflowStep, result
 
 	if result.Output != nil {
 		stepExec.Output = result.Output
+	} else {
+		stepExec.Output = make(map[string]interface{})
 	}
 
 	return stepExec
@@ -314,9 +485,6 @@ func (e *WorkflowExecutor) getNextStepID(currentStep *models.WorkflowStep) strin
 
 // evaluateConditions evalúa las condiciones de un paso
 func (e *WorkflowExecutor) evaluateConditions(conditions []models.WorkflowCondition, variables map[string]interface{}) string {
-	// TODO: Implementar evaluación de condiciones más robusta
-	// Por ahora, implementación básica
-
 	for _, condition := range conditions {
 		value, exists := variables[condition.Field]
 		if !exists {
@@ -338,9 +506,21 @@ func (e *WorkflowExecutor) evaluateConditions(conditions []models.WorkflowCondit
 					return condition.NextStep
 				}
 			}
+		case "gte":
+			if v, ok := value.(float64); ok {
+				if target, ok := condition.Value.(float64); ok && v >= target {
+					return condition.NextStep
+				}
+			}
 		case "lt":
 			if v, ok := value.(float64); ok {
 				if target, ok := condition.Value.(float64); ok && v < target {
+					return condition.NextStep
+				}
+			}
+		case "lte":
+			if v, ok := value.(float64); ok {
+				if target, ok := condition.Value.(float64); ok && v <= target {
 					return condition.NextStep
 				}
 			}
@@ -348,7 +528,26 @@ func (e *WorkflowExecutor) evaluateConditions(conditions []models.WorkflowCondit
 			if str, ok := value.(string); ok {
 				if target, ok := condition.Value.(string); ok {
 					if len(str) > 0 && len(target) > 0 {
-						// Implementar contains básico
+						// Implementación básica de contains
+						for i := 0; i <= len(str)-len(target); i++ {
+							if str[i:i+len(target)] == target {
+								return condition.NextStep
+							}
+						}
+					}
+				}
+			}
+		case "not_contains":
+			if str, ok := value.(string); ok {
+				if target, ok := condition.Value.(string); ok {
+					found := false
+					for i := 0; i <= len(str)-len(target); i++ {
+						if str[i:i+len(target)] == target {
+							found = true
+							break
+						}
+					}
+					if !found {
 						return condition.NextStep
 					}
 				}

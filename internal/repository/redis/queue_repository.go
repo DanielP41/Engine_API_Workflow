@@ -197,13 +197,14 @@ func (r *queueRepository) GetJobStatus(ctx context.Context, jobID string) (strin
 func (r *queueRepository) GetQueueStats(ctx context.Context, queueName string) (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
 
-	// Get basic queue length
-	length, err := r.client.LLen(ctx, queueName).Result()
-	if err != nil {
-		return nil, err
+	// Get basic queue length if queueName provided
+	if queueName != "" {
+		length, err := r.client.LLen(ctx, queueName).Result()
+		if err == nil {
+			stats["length"] = length
+			stats["queue_name"] = queueName
+		}
 	}
-	stats["length"] = length
-	stats["queue_name"] = queueName
 
 	// Get additional stats from hash
 	hashStats := r.client.HGetAll(ctx, StatsKey)
@@ -242,7 +243,6 @@ func (r *queueRepository) Ping(ctx context.Context) error {
 	return r.client.Ping(ctx).Err()
 }
 
-// AGREGADO: Método faltante GetProcessingTasks
 func (r *queueRepository) GetProcessingTasks(ctx context.Context) ([]*models.QueueTask, error) {
 	members := r.client.SMembers(ctx, ProcessingSet)
 	if members.Err() != nil {
@@ -277,6 +277,494 @@ func (r *queueRepository) GetProcessingTasks(ctx context.Context) ([]*models.Que
 	}
 
 	return tasks, nil
+}
+
+// MÉTODOS REQUERIDOS POR WORKER ENGINE - AGREGADOS
+
+// Dequeue implementa el método requerido por worker engine
+func (r *queueRepository) Dequeue(ctx context.Context) (*models.QueueTask, error) {
+	// First, move any ready delayed items to main queue
+	if err := r.moveDelayedToQueue(ctx); err != nil {
+		// Log error but don't fail the dequeue
+		fmt.Printf("Warning: failed to move delayed items: %v\n", err)
+	}
+
+	// Get highest priority item from main queue
+	result := r.client.ZPopMin(ctx, WorkflowQueue, 1)
+	if result.Err() != nil {
+		if result.Err() == redis.Nil {
+			return nil, repository.ErrQueueEmpty
+		}
+		return nil, result.Err()
+	}
+
+	items := result.Val()
+	if len(items) == 0 {
+		return nil, repository.ErrQueueEmpty
+	}
+
+	var item QueueItem
+	if err := json.Unmarshal([]byte(items[0].Member.(string)), &item); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal queue item: %w", err)
+	}
+
+	// Move to processing set
+	item.Status = "processing"
+	item.ProcessedAt = timePtr(time.Now())
+
+	processedData, err := json.Marshal(item)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal processing item: %w", err)
+	}
+
+	pipe := r.client.Pipeline()
+	pipe.SAdd(ctx, ProcessingSet, string(processedData))
+	pipe.HIncrBy(ctx, StatsKey, "queued", -1)
+	pipe.HIncrBy(ctx, StatsKey, "processing", 1)
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, fmt.Errorf("failed to move item to processing: %w", err)
+	}
+
+	// Convert to QueueTask
+	task := &models.QueueTask{
+		ID:          item.ID,
+		WorkflowID:  item.WorkflowID,
+		ExecutionID: item.ExecutionID,
+		UserID:      item.UserID,
+		Payload:     item.Payload,
+		Priority:    item.Priority,
+		RetryCount:  item.RetryCount,
+		MaxRetries:  item.MaxRetries,
+		CreatedAt:   item.CreatedAt,
+		ProcessedAt: item.ProcessedAt,
+	}
+
+	return task, nil
+}
+
+// MarkCompleted implementa el método requerido por worker engine
+func (r *queueRepository) MarkCompleted(ctx context.Context, taskID string) error {
+	return r.moveFromProcessing(ctx, taskID, CompletedSet, "completed")
+}
+
+// MarkFailed implementa el método requerido por worker engine
+func (r *queueRepository) MarkFailed(ctx context.Context, taskID string, err error) error {
+	// First get the item from processing
+	members := r.client.SMembers(ctx, ProcessingSet)
+	if members.Err() != nil {
+		return members.Err()
+	}
+
+	var targetItem *QueueItem
+	var targetData string
+
+	for _, member := range members.Val() {
+		var item QueueItem
+		if jsonErr := json.Unmarshal([]byte(member), &item); jsonErr != nil {
+			continue
+		}
+
+		if item.ID == taskID {
+			targetItem = &item
+			targetData = member
+			break
+		}
+	}
+
+	if targetItem == nil {
+		return repository.ErrTaskNotFound
+	}
+
+	// Check if we should retry
+	if targetItem.RetryCount < targetItem.MaxRetries {
+		return r.requeueForRetry(ctx, targetItem, targetData, err.Error())
+	}
+
+	// Mark as permanently failed
+	targetItem.Status = "failed"
+	targetItem.FailedAt = timePtr(time.Now())
+	targetItem.Error = err.Error()
+
+	failedData, marshalErr := json.Marshal(targetItem)
+	if marshalErr != nil {
+		return fmt.Errorf("failed to marshal failed item: %w", marshalErr)
+	}
+
+	pipe := r.client.Pipeline()
+	pipe.SRem(ctx, ProcessingSet, targetData)
+	pipe.SAdd(ctx, FailedSet, string(failedData))
+	pipe.HIncrBy(ctx, StatsKey, "processing", -1)
+	pipe.HIncrBy(ctx, StatsKey, "failed", 1)
+
+	_, execErr := pipe.Exec(ctx)
+	return execErr
+}
+
+// WORKFLOW-SPECIFIC QUEUE OPERATIONS - AGREGADOS
+
+func (r *queueRepository) Enqueue(ctx context.Context, workflowID primitive.ObjectID, executionID string, userID primitive.ObjectID, payload map[string]interface{}, priority int) error {
+	item := QueueItem{
+		ID:          primitive.NewObjectID().Hex(),
+		WorkflowID:  workflowID,
+		ExecutionID: executionID,
+		UserID:      userID,
+		Payload:     payload,
+		Priority:    priority,
+		MaxRetries:  3, // Default max retries
+		RetryCount:  0,
+		CreatedAt:   time.Now(),
+		Status:      "queued",
+	}
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		return fmt.Errorf("failed to marshal queue item: %w", err)
+	}
+
+	// Use sorted set for priority queue (higher priority = lower score for Redis)
+	score := float64(-priority) // Negative for higher priority first
+
+	pipe := r.client.Pipeline()
+	pipe.ZAdd(ctx, WorkflowQueue, redis.Z{
+		Score:  score,
+		Member: string(data),
+	})
+
+	// Update stats
+	pipe.HIncrBy(ctx, StatsKey, "queued", 1)
+	pipe.HIncrBy(ctx, StatsKey, "total", 1)
+
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+func (r *queueRepository) EnqueueDelayed(ctx context.Context, workflowID primitive.ObjectID, executionID string, userID primitive.ObjectID, payload map[string]interface{}, priority int, delay time.Duration) error {
+	item := QueueItem{
+		ID:          primitive.NewObjectID().Hex(),
+		WorkflowID:  workflowID,
+		ExecutionID: executionID,
+		UserID:      userID,
+		Payload:     payload,
+		Priority:    priority,
+		MaxRetries:  3,
+		RetryCount:  0,
+		CreatedAt:   time.Now(),
+		Status:      "delayed",
+		DelayUntil:  timePtr(time.Now().Add(delay)),
+	}
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		return fmt.Errorf("failed to marshal delayed queue item: %w", err)
+	}
+
+	// Use sorted set with timestamp as score for delayed processing
+	score := float64(time.Now().Add(delay).Unix())
+
+	pipe := r.client.Pipeline()
+	pipe.ZAdd(ctx, DelayedQueue, redis.Z{
+		Score:  score,
+		Member: string(data),
+	})
+
+	// Update stats
+	pipe.HIncrBy(ctx, StatsKey, "delayed", 1)
+	pipe.HIncrBy(ctx, StatsKey, "total", 1)
+
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+func (r *queueRepository) CleanupStaleProcessing(ctx context.Context, timeout time.Duration) error {
+	members := r.client.SMembers(ctx, ProcessingSet)
+	if members.Err() != nil {
+		return members.Err()
+	}
+
+	staleThreshold := time.Now().Add(-timeout)
+	pipe := r.client.Pipeline()
+	staleCount := 0
+
+	for _, member := range members.Val() {
+		var item QueueItem
+		if err := json.Unmarshal([]byte(member), &item); err != nil {
+			continue
+		}
+
+		// Check if processing started too long ago
+		if item.ProcessedAt != nil && item.ProcessedAt.Before(staleThreshold) {
+			// Move back to queue for retry
+			item.Status = "queued"
+			item.ProcessedAt = nil
+			item.RetryCount++
+
+			requeueData, err := json.Marshal(item)
+			if err != nil {
+				continue
+			}
+
+			pipe.SRem(ctx, ProcessingSet, member)
+
+			if item.RetryCount < item.MaxRetries {
+				// Add back to queue
+				score := float64(-item.Priority)
+				pipe.ZAdd(ctx, WorkflowQueue, redis.Z{
+					Score:  score,
+					Member: string(requeueData),
+				})
+				pipe.HIncrBy(ctx, StatsKey, "queued", 1)
+			} else {
+				// Mark as failed
+				item.Status = "failed"
+				item.FailedAt = timePtr(time.Now())
+				item.Error = "Processing timeout - maximum retries exceeded"
+
+				failedData, err := json.Marshal(item)
+				if err != nil {
+					continue
+				}
+
+				pipe.SAdd(ctx, FailedSet, string(failedData))
+				pipe.HIncrBy(ctx, StatsKey, "failed", 1)
+			}
+
+			pipe.HIncrBy(ctx, StatsKey, "processing", -1)
+			staleCount++
+		}
+	}
+
+	if staleCount > 0 {
+		_, err := pipe.Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to cleanup %d stale tasks: %w", staleCount, err)
+		}
+	}
+
+	return nil
+}
+
+func (r *queueRepository) GetFailedTasks(ctx context.Context, limit int64) ([]*models.QueueTask, error) {
+	members := r.client.SMembers(ctx, FailedSet)
+	if members.Err() != nil {
+		return nil, members.Err()
+	}
+
+	var tasks []*models.QueueTask
+	count := int64(0)
+
+	for _, member := range members.Val() {
+		if limit > 0 && count >= limit {
+			break
+		}
+
+		var item QueueItem
+		if err := json.Unmarshal([]byte(member), &item); err != nil {
+			continue
+		}
+
+		task := &models.QueueTask{
+			ID:          item.ID,
+			WorkflowID:  item.WorkflowID,
+			ExecutionID: item.ExecutionID,
+			UserID:      item.UserID,
+			Payload:     item.Payload,
+			Priority:    item.Priority,
+			RetryCount:  item.RetryCount,
+			MaxRetries:  item.MaxRetries,
+			CreatedAt:   item.CreatedAt,
+			ProcessedAt: item.ProcessedAt,
+			CompletedAt: item.CompletedAt,
+			FailedAt:    item.FailedAt,
+			Error:       item.Error,
+		}
+
+		tasks = append(tasks, task)
+		count++
+	}
+
+	return tasks, nil
+}
+
+func (r *queueRepository) RequeueFailedTask(ctx context.Context, taskID string) error {
+	// Find the failed task
+	members := r.client.SMembers(ctx, FailedSet)
+	if members.Err() != nil {
+		return members.Err()
+	}
+
+	for _, member := range members.Val() {
+		var item QueueItem
+		if err := json.Unmarshal([]byte(member), &item); err != nil {
+			continue
+		}
+
+		if item.ID == taskID {
+			// Reset retry count and error
+			item.RetryCount = 0
+			item.Error = ""
+			item.Status = "queued"
+			item.ProcessedAt = nil
+			item.FailedAt = nil
+
+			requeueData, err := json.Marshal(item)
+			if err != nil {
+				return fmt.Errorf("failed to marshal requeue item: %w", err)
+			}
+
+			pipe := r.client.Pipeline()
+			pipe.SRem(ctx, FailedSet, member)
+
+			// Add back to main queue
+			score := float64(-item.Priority)
+			pipe.ZAdd(ctx, WorkflowQueue, redis.Z{
+				Score:  score,
+				Member: string(requeueData),
+			})
+
+			pipe.HIncrBy(ctx, StatsKey, "failed", -1)
+			pipe.HIncrBy(ctx, StatsKey, "queued", 1)
+
+			_, execErr := pipe.Exec(ctx)
+			return execErr
+		}
+	}
+
+	return repository.ErrTaskNotFound
+}
+
+// HELPER METHODS
+
+func (r *queueRepository) moveDelayedToQueue(ctx context.Context) error {
+	now := time.Now().Unix()
+
+	// Get items that are ready to be processed
+	items := r.client.ZRangeByScore(ctx, DelayedQueue, &redis.ZRangeBy{
+		Min: "0",
+		Max: fmt.Sprintf("%d", now),
+	})
+
+	if items.Err() != nil || len(items.Val()) == 0 {
+		return items.Err()
+	}
+
+	pipe := r.client.Pipeline()
+
+	for _, member := range items.Val() {
+		var item QueueItem
+		if err := json.Unmarshal([]byte(member), &item); err != nil {
+			continue // Skip malformed items
+		}
+
+		// Remove from delayed queue
+		pipe.ZRem(ctx, DelayedQueue, member)
+
+		// Update status and add to main queue
+		item.Status = "queued"
+		item.DelayUntil = nil
+
+		updatedData, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+
+		// Add to main queue with original priority
+		score := float64(-item.Priority)
+		pipe.ZAdd(ctx, WorkflowQueue, redis.Z{
+			Score:  score,
+			Member: string(updatedData),
+		})
+
+		// Update stats
+		pipe.HIncrBy(ctx, StatsKey, "delayed", -1)
+		pipe.HIncrBy(ctx, StatsKey, "queued", 1)
+	}
+
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (r *queueRepository) moveFromProcessing(ctx context.Context, taskID string, targetSet string, status string) error {
+	// Get all processing items
+	members := r.client.SMembers(ctx, ProcessingSet)
+	if members.Err() != nil {
+		return members.Err()
+	}
+
+	for _, member := range members.Val() {
+		var item QueueItem
+		if err := json.Unmarshal([]byte(member), &item); err != nil {
+			continue
+		}
+
+		if item.ID == taskID {
+			// Update item status
+			item.Status = status
+			if status == "completed" {
+				item.CompletedAt = timePtr(time.Now())
+			} else if status == "failed" {
+				item.FailedAt = timePtr(time.Now())
+			}
+
+			updatedData, err := json.Marshal(item)
+			if err != nil {
+				return fmt.Errorf("failed to marshal updated item: %w", err)
+			}
+
+			pipe := r.client.Pipeline()
+			pipe.SRem(ctx, ProcessingSet, member)
+			pipe.SAdd(ctx, targetSet, string(updatedData))
+			pipe.HIncrBy(ctx, StatsKey, "processing", -1)
+			pipe.HIncrBy(ctx, StatsKey, status, 1)
+
+			_, execErr := pipe.Exec(ctx)
+			return execErr
+		}
+	}
+
+	return repository.ErrTaskNotFound
+}
+
+func (r *queueRepository) requeueForRetry(ctx context.Context, item *QueueItem, originalData string, errorMsg string) error {
+	item.RetryCount++
+	item.Status = "queued"
+	item.Error = errorMsg
+	item.ProcessedAt = nil
+
+	retryData, err := json.Marshal(item)
+	if err != nil {
+		return fmt.Errorf("failed to marshal retry item: %w", err)
+	}
+
+	// Calculate delay for retry (exponential backoff)
+	retryDelay := time.Duration(item.RetryCount*item.RetryCount) * time.Second
+
+	pipe := r.client.Pipeline()
+	pipe.SRem(ctx, ProcessingSet, originalData)
+
+	if retryDelay > 0 {
+		// Add to delayed queue with retry delay
+		score := float64(time.Now().Add(retryDelay).Unix())
+		pipe.ZAdd(ctx, DelayedQueue, redis.Z{
+			Score:  score,
+			Member: string(retryData),
+		})
+		pipe.HIncrBy(ctx, StatsKey, "delayed", 1)
+	} else {
+		// Add back to main queue
+		score := float64(-item.Priority)
+		pipe.ZAdd(ctx, WorkflowQueue, redis.Z{
+			Score:  score,
+			Member: string(retryData),
+		})
+		pipe.HIncrBy(ctx, StatsKey, "queued", 1)
+	}
+
+	pipe.HIncrBy(ctx, StatsKey, "processing", -1)
+	pipe.HIncrBy(ctx, StatsKey, "retries", 1)
+
+	_, execErr := pipe.Exec(ctx)
+	return execErr
 }
 
 // Helper functions

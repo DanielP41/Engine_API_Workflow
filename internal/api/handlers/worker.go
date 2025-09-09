@@ -40,10 +40,10 @@ func (h *WorkerHandler) GetWorkerStats(c *fiber.Ctx) error {
 	stats, err := h.workerEngine.GetStats(c.Context())
 	if err != nil {
 		h.logger.Error("Failed to get worker stats", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get worker statistics", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get worker statistics", err.Error())
 	}
 
-	return c.JSON(utils.SuccessResponse("Worker statistics retrieved successfully", stats))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Worker statistics retrieved successfully", stats)
 }
 
 // GetQueueStats obtiene estadísticas detalladas de las colas
@@ -58,13 +58,13 @@ func (h *WorkerHandler) GetWorkerStats(c *fiber.Ctx) error {
 // @Failure 500 {object} utils.ErrorResponse
 // @Router /api/v1/workers/queue/stats [get]
 func (h *WorkerHandler) GetQueueStats(c *fiber.Ctx) error {
-	stats, err := h.queueRepo.GetQueueStats(c.Context())
+	stats, err := h.queueRepo.GetQueueStats(c.Context(), "workflow:queue")
 	if err != nil {
 		h.logger.Error("Failed to get queue stats", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get queue statistics", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get queue statistics", err.Error())
 	}
 
-	return c.JSON(utils.SuccessResponse("Queue statistics retrieved successfully", stats))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Queue statistics retrieved successfully", stats)
 }
 
 // GetProcessingTasks obtiene las tareas actualmente en procesamiento
@@ -82,13 +82,13 @@ func (h *WorkerHandler) GetProcessingTasks(c *fiber.Ctx) error {
 	tasks, err := h.queueRepo.GetProcessingTasks(c.Context())
 	if err != nil {
 		h.logger.Error("Failed to get processing tasks", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get processing tasks", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get processing tasks", err.Error())
 	}
 
-	return c.JSON(utils.SuccessResponse("Processing tasks retrieved successfully", map[string]interface{}{
+	return utils.SuccessResponse(c, fiber.StatusOK, "Processing tasks retrieved successfully", map[string]interface{}{
 		"tasks": tasks,
 		"count": len(tasks),
-	}))
+	})
 }
 
 // GetFailedTasks obtiene las tareas fallidas
@@ -113,14 +113,14 @@ func (h *WorkerHandler) GetFailedTasks(c *fiber.Ctx) error {
 	tasks, err := h.queueRepo.GetFailedTasks(c.Context(), int64(limit))
 	if err != nil {
 		h.logger.Error("Failed to get failed tasks", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get failed tasks", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get failed tasks", err.Error())
 	}
 
-	return c.JSON(utils.SuccessResponse("Failed tasks retrieved successfully", map[string]interface{}{
+	return utils.SuccessResponse(c, fiber.StatusOK, "Failed tasks retrieved successfully", map[string]interface{}{
 		"tasks": tasks,
 		"count": len(tasks),
 		"limit": limit,
-	}))
+	})
 }
 
 // RetryFailedTask reintenta una tarea fallida específica
@@ -140,24 +140,24 @@ func (h *WorkerHandler) GetFailedTasks(c *fiber.Ctx) error {
 func (h *WorkerHandler) RetryFailedTask(c *fiber.Ctx) error {
 	taskID := c.Params("task_id")
 	if taskID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.ErrorResponse("Task ID is required", ""))
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Task ID is required", "")
 	}
 
 	err := h.queueRepo.RequeueFailedTask(c.Context(), taskID)
 	if err != nil {
 		if err == repository.ErrTaskNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(utils.ErrorResponse("Task not found", ""))
+			return utils.ErrorResponse(c, fiber.StatusNotFound, "Task not found", "")
 		}
 		h.logger.Error("Failed to retry task", zap.Error(err), zap.String("task_id", taskID))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to retry task", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to retry task", err.Error())
 	}
 
 	h.logger.Info("Task queued for retry", zap.String("task_id", taskID))
 
-	return c.JSON(utils.SuccessResponse("Task queued for retry successfully", map[string]interface{}{
+	return utils.SuccessResponse(c, fiber.StatusOK, "Task queued for retry successfully", map[string]interface{}{
 		"task_id": taskID,
 		"status":  "queued_for_retry",
-	}))
+	})
 }
 
 // ClearQueue limpia una cola específica (solo admin)
@@ -176,18 +176,18 @@ func (h *WorkerHandler) ClearQueue(c *fiber.Ctx) error {
 	// Verificar que el usuario sea admin (esto debería manejarse en middleware)
 	// Por ahora, asumimos que el middleware ya verificó los permisos
 
-	err := h.queueRepo.ClearQueue(c.Context())
+	err := h.queueRepo.Clear(c.Context(), "workflow:queue")
 	if err != nil {
 		h.logger.Error("Failed to clear queue", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to clear queue", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to clear queue", err.Error())
 	}
 
 	h.logger.Info("Queue cleared by admin")
 
-	return c.JSON(utils.SuccessResponse("Queue cleared successfully", map[string]interface{}{
+	return utils.SuccessResponse(c, fiber.StatusOK, "Queue cleared successfully", map[string]interface{}{
 		"message": "All queues have been cleared",
 		"time":    c.Context().Value("timestamp"),
-	}))
+	})
 }
 
 // HealthCheck verifica el estado de los workers
@@ -202,17 +202,17 @@ func (h *WorkerHandler) ClearQueue(c *fiber.Ctx) error {
 func (h *WorkerHandler) HealthCheck(c *fiber.Ctx) error {
 	stats, err := h.workerEngine.GetStats(c.Context())
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Workers unhealthy", err.Error()))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Workers unhealthy", err.Error())
 	}
 
 	isRunning, ok := stats["is_running"].(bool)
 	if !ok || !isRunning {
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Workers not running", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Workers not running", "")
 	}
 
-	return c.JSON(utils.SuccessResponse("Workers are healthy", map[string]interface{}{
+	return utils.SuccessResponse(c, fiber.StatusOK, "Workers are healthy", map[string]interface{}{
 		"status":     "healthy",
 		"is_running": isRunning,
 		"stats":      stats,
-	}))
+	})
 }

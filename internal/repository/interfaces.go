@@ -156,6 +156,19 @@ type QueueRepository interface {
 	PushDelayed(ctx context.Context, queueName string, data interface{}, delay int64) error
 	ProcessDelayedJobs(ctx context.Context, queueName string) error
 
+	// MÉTODOS REQUERIDOS POR WORKER ENGINE - AGREGADOS
+	Dequeue(ctx context.Context) (*models.QueueTask, error)
+	MarkCompleted(ctx context.Context, taskID string) error
+	MarkFailed(ctx context.Context, taskID string, err error) error
+
+	// Workflow-specific queue operations
+	Enqueue(ctx context.Context, workflowID primitive.ObjectID, executionID string, userID primitive.ObjectID, payload map[string]interface{}, priority int) error
+	EnqueueDelayed(ctx context.Context, workflowID primitive.ObjectID, executionID string, userID primitive.ObjectID, payload map[string]interface{}, priority int, delay time.Duration) error
+	GetProcessingTasks(ctx context.Context) ([]*models.QueueTask, error)
+	CleanupStaleProcessing(ctx context.Context, timeout time.Duration) error
+	GetFailedTasks(ctx context.Context, limit int64) ([]*models.QueueTask, error)
+	RequeueFailedTask(ctx context.Context, taskID string) error
+
 	// Job tracking
 	SetJobStatus(ctx context.Context, jobID string, status string) error
 	GetJobStatus(ctx context.Context, jobID string) (string, error)
@@ -166,9 +179,6 @@ type QueueRepository interface {
 
 	// Health check
 	Ping(ctx context.Context) error
-
-	// AGREGADO: Método faltante que causaba el error de compilación
-	GetProcessingTasks(ctx context.Context) ([]*models.QueueTask, error)
 }
 
 // PaginationOptions for consistent pagination
