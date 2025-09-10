@@ -1,4 +1,4 @@
-// cmd/api/main.go - VERSIÓN ACTUALIZADA CON DASHBOARD
+// ACTUALIZADo CON DASHBOARD
 package main
 
 import (

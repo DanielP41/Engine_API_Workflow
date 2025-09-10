@@ -247,3 +247,26 @@ var (
 	ErrLogNotFound   = errors.New("log not found")
 	ErrInvalidFilter = errors.New("invalid search filter")
 )
+
+// MetricsRepository define las operaciones específicas para métricas del dashboard
+type MetricsRepository interface {
+	// Estadísticas de ejecuciones
+	GetExecutionStats(ctx context.Context, filter LogSearchFilter) (*models.LogStats, error)
+
+	// Datos de series temporales para gráficos
+	GetTimeSeriesData(ctx context.Context, metric string, timeRange time.Duration, intervals int) ([]models.TimeSeriesPoint, error)
+
+	// Distribuciones para gráficos de pie/donut
+	GetWorkflowDistribution(ctx context.Context, timeRange time.Duration) ([]models.WorkflowCount, error)
+	GetTriggerDistribution(ctx context.Context, timeRange time.Duration) ([]models.TriggerCount, error)
+	GetErrorDistribution(ctx context.Context, timeRange time.Duration) ([]models.ErrorCount, error)
+
+	// Estadísticas por tiempo
+	GetHourlyStats(ctx context.Context, timeRange time.Duration) ([]models.HourlyStats, error)
+
+	// Métricas de sistema
+	GetSystemMetrics(ctx context.Context) (map[string]interface{}, error)
+
+	// Health checks
+	CheckDatabaseHealth(ctx context.Context) error
+}
