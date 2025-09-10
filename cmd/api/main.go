@@ -1,3 +1,4 @@
+// cmd/api/main.go - VERSIÓN ACTUALIZADA CON DASHBOARD
 package main
 
 import (
@@ -9,9 +10,8 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	redis_client "github.com/redis/go-redis/v9"
-	"go.mongodb.org/mongo-driver/mongo"
 
+	"Engine_API_Workflow/internal/api/handlers"
 	"Engine_API_Workflow/internal/api/routes"
 	"Engine_API_Workflow/internal/config"
 	"Engine_API_Workflow/internal/repository/mongodb"
@@ -22,18 +22,13 @@ import (
 	"Engine_API_Workflow/pkg/logger"
 )
 
-var startTime = time.Now() // Para calcular uptime correctamente
-
 func main() {
-	// Cargar configuración (ya incluye validación completa)
+	// Cargar configuración
 	cfg := config.Load()
 
 	// Inicializar logger
 	appLogger := logger.New(cfg.LogLevel, cfg.Environment)
 	appLogger.Info("Starting Engine API Workflow", "version", "1.0.0", "environment", cfg.Environment)
-
-	// Log de configuración cargada (sin secrets) - ADAPTADO: usar método que existe
-	appLogger.Info("Configuration loaded", "environment", cfg.Environment)
 
 	// Conectar a MongoDB
 	appLogger.Info("Connecting to MongoDB...")
@@ -63,161 +58,94 @@ func main() {
 	}()
 	appLogger.Info("Connected to Redis successfully")
 
-	// ADAPTADO: Inicializar Token Blacklist si está configurado
-	var tokenBlacklist *jwt.TokenBlacklist
-	enableTokenBlacklist := true // TEMPORAL: hasta implementar cfg.EnableTokenBlacklist
-	if enableTokenBlacklist {
-		appLogger.Info("Initializing JWT Token Blacklist...")
-		blacklistConfig := jwt.BlacklistConfig{
-			RedisClient: redisClient,
-			KeyPrefix:   "jwt_blacklist:",
-		}
-		tokenBlacklist = jwt.NewTokenBlacklist(blacklistConfig)
-
-		// Verificar que el blacklist funcione - ADAPTADO: manejar si método no existe
-		appLogger.Info("Token blacklist initialized successfully")
-	} else {
-		appLogger.Info("Token blacklist disabled by configuration")
-	}
-
-	// ADAPTADO: Usar configuración JWT compatible
-	jwtService := jwt.NewJWTService(jwt.Config{
-		SecretKey:       cfg.JWTSecret,
-		AccessTokenTTL:  15 * time.Minute,   // TEMPORAL: valores por defecto
-		RefreshTokenTTL: 7 * 24 * time.Hour, // TEMPORAL: hasta implementar cfg.GetJWTConfig()
-		Issuer:          "engine-api-workflow",
-	})
-	appLogger.Info("JWT service initialized with secure configuration")
-
-	// Inicializar repositorios para workers
+	// Inicializar base de datos
 	db := mongoClient.Database(cfg.MongoDatabase)
+
+	// Inicializar servicios JWT
+	jwtService := jwt.NewService(cfg.JWTSecret, "engine-api-workflow")
+
+	// Inicializar repositorios
 	userRepo := mongodb.NewUserRepository(db)
 	workflowRepo := mongodb.NewWorkflowRepository(db)
 	logRepo := mongodb.NewLogRepository(db)
-	queueRepo := redis.NewQueueRepository(redisClient)
+	queueRepo := redis.NewQueueRepository(redisClient) // 🆕 Repository de cola
 
-	// Inicializar servicios de negocio para workers
+	// Inicializar servicios
+	authService := services.NewAuthService(jwtService)
+	workflowService := services.NewWorkflowService(workflowRepo, userRepo)
 	logService := services.NewLogService(logRepo, workflowRepo, userRepo)
+	queueService := services.NewQueueService(redisClient, appLogger.Logger) // 🆕 Servicio de cola
 
-	// TEMPORAL: comentar hasta resolver la interfaz de logger
-	// queueService := services.NewQueueService(redisClient, zapLogger)
+	// 🆕 Inicializar servicios del dashboard
+	metricsService := services.NewMetricsService(userRepo, workflowRepo, logRepo, queueRepo)
+	dashboardService := services.NewDashboardService(metricsService, workflowRepo, logRepo, userRepo, queueRepo)
 
-	// ADAPTADO: Configurar Worker Engine - crear config simplificado si no existe
-	workerConfig := createWorkerConfig(cfg)
+	// Inicializar handlers
+	authHandler := handlers.NewAuthHandler(userRepo, authService)
+	workflowHandler := handlers.NewWorkflowHandler(workflowService, logService, appLogger)
+	logHandler := handlers.NewLogHandler(logRepo, appLogger.Logger)
+	triggerHandler := handlers.NewTriggerHandler(workflowRepo, logRepo, queueService, appLogger.Logger)
 
-	// Usar las variables para evitar errores de "not used"
-	_ = queueRepo    // TEMPORAL: hasta implementar workers completos
-	_ = logService   // TEMPORAL: hasta implementar workers completos
-	_ = workerConfig // TEMPORAL: hasta implementar workers completos
+	// 🆕 Inicializar handler del dashboard
+	dashboardHandler := handlers.NewDashboardHandler(dashboardService, appLogger.Logger)
 
-	// TEMPORAL: crear WorkerEngine simplificado hasta implementar completamente
-	appLogger.Info("Worker Engine configuration prepared", "workers", getWorkerCount(cfg))
-
-	// Configurar Fiber con configuraciones de seguridad
-	app := fiber.New(fiber.Config{
-		ServerHeader:            "Engine-API-Workflow",
-		AppName:                 "Engine API Workflow v1.0.0",
-		ErrorHandler:            customErrorHandler(appLogger, cfg),
-		ReadTimeout:             time.Second * 30,
-		WriteTimeout:            time.Second * 30,
-		IdleTimeout:             time.Second * 30,
-		DisableStartupMessage:   cfg.Environment == "production", // ADAPTADO: usar comparación directa
-		EnableTrustedProxyCheck: true,
-		ProxyHeader:             fiber.HeaderXForwardedFor,
-	})
-
-	// ADAPTADO: Configurar rutas con configuración compatible
-	routes.SetupRoutesFromDatabase(app, db, jwtService, appLogger)
-
-	// Health check mejorado con verificación de componentes
-	app.Get("/health", func(c *fiber.Ctx) error {
-		return healthCheckHandler(c, mongoClient, redisClient, tokenBlacklist, cfg)
-	})
-
-	// Endpoint de métricas mejorado
-	app.Get("/metrics", func(c *fiber.Ctx) error {
-		return metricsHandler(c, tokenBlacklist, cfg)
-	})
-
-	// Endpoint de configuración (solo en desarrollo)
-	if cfg.Environment == "development" {
-		app.Get("/debug/config", func(c *fiber.Ctx) error {
-			return configDebugHandler(c, cfg)
-		})
+	// Verificar que el directorio web existe
+	if err := ensureWebDirectoryExists(); err != nil {
+		appLogger.Warn("Web directory not found, dashboard UI will not be available", "error", err)
 	}
 
-	// Crear contexto principal con cancelación para workers
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// Configurar Fiber
+	app := fiber.New(fiber.Config{
+		ServerHeader: "Engine-API-Workflow",
+		AppName:      "Engine API Workflow v1.0.0",
+		ErrorHandler: customErrorHandler(appLogger),
+		ReadTimeout:  time.Second * 30,
+		WriteTimeout: time.Second * 30,
+		IdleTimeout:  time.Second * 30,
+	})
 
-	_ = ctx // TEMPORAL: evitar error de variable no usada
+	// Configurar rutas con todos los handlers
+	routeConfig := &routes.RouteConfig{
+		AuthHandler:      authHandler,
+		WorkflowHandler:  workflowHandler,
+		LogHandler:       logHandler,
+		TriggerHandler:   triggerHandler,
+		DashboardHandler: dashboardHandler, // 🆕 Handler del dashboard
+		JWTService:       jwtService,
+		Logger:           appLogger.Logger,
+	}
 
-	// ADAPTADO: Log de inicio de workers sin inicializar worker engine aún
-	appLogger.Info("Worker system prepared", "workers", getWorkerCount(cfg))
+	// Validar configuración de rutas
+	if err := routes.ValidateRouteConfig(routeConfig); err != nil {
+		appLogger.Fatal("Invalid route configuration", "error", err)
+	}
+
+	// Configurar middlewares adicionales
+	routes.SetupMiddlewares(app, routeConfig)
+
+	// Configurar health checks
+	routes.SetupHealthChecks(app, routeConfig)
+
+	// Configurar todas las rutas
+	routes.SetupRoutes(app, routeConfig)
+
+	// Log de rutas configuradas
+	routeInfo := routes.GetRouteInfo()
+	appLogger.Info("Routes configured", "info", routeInfo)
+
+	// 🆕 Inicializar servicios en background (opcional)
+	go startBackgroundServices(dashboardService, appLogger)
 
 	// Canal para manejar señales del sistema
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
-	// ADAPTADO: Iniciar tareas de background si están habilitadas
-	if tokenBlacklist != nil {
-		go startBackgroundTasks(tokenBlacklist, appLogger)
-	}
-
-	// ADAPTADO: Iniciar servidor de estadísticas en puerto separado
-	go func() {
-		statsAddr := fmt.Sprintf(":%d", getStatsPort(cfg))
-		statsApp := fiber.New(fiber.Config{
-			AppName:               "Worker Stats API",
-			DisableStartupMessage: true,
-		})
-
-		// Endpoint de estadísticas básicas
-		statsApp.Get("/stats", func(c *fiber.Ctx) error {
-			stats := map[string]interface{}{
-				"workers_configured": getWorkerCount(cfg),
-				"uptime":             time.Since(startTime).String(),
-				"status":             "ready",
-			}
-			return c.JSON(stats)
-		})
-
-		// Health check específico para workers
-		statsApp.Get("/health", func(c *fiber.Ctx) error {
-			return c.JSON(fiber.Map{
-				"status":  "ok",
-				"service": "worker-engine",
-				"time":    time.Now(),
-			})
-		})
-
-		// Endpoint de cola stats usando implementación temporal
-		statsApp.Get("/queue", func(c *fiber.Ctx) error {
-			queueStats := map[string]interface{}{
-				"status":  "not_implemented_yet",
-				"message": "Queue service temporarily disabled",
-			}
-			return c.JSON(queueStats)
-		})
-
-		appLogger.Info("Starting Worker Stats server", "address", statsAddr)
-		if err := statsApp.Listen(statsAddr); err != nil {
-			appLogger.Error("Worker Stats server failed", "error", err)
-		}
-	}()
-
-	// Iniciar el servidor principal en una goroutine
+	// Iniciar el servidor en una goroutine
 	go func() {
 		addr := fmt.Sprintf(":%s", cfg.ServerPort)
-		appLogger.Info("Starting HTTP server",
-			"address", addr,
-			"environment", cfg.Environment,
-			"workers_count", getWorkerCount(cfg),
-			"features_enabled", map[string]bool{
-				"blacklist": enableTokenBlacklist,
-				"workers":   true,
-			},
-		)
+		appLogger.Info("Starting HTTP server", "address", addr)
+		appLogger.Info("Dashboard available at", "url", fmt.Sprintf("http://localhost:%s", cfg.ServerPort))
+		appLogger.Info("API documentation at", "url", fmt.Sprintf("http://localhost:%s/api/v1/health", cfg.ServerPort))
 
 		if err := app.Listen(addr); err != nil {
 			appLogger.Fatal("Server failed to start", "error", err)
@@ -225,196 +153,22 @@ func main() {
 	}()
 
 	// Esperar señal de interrupción
-	<-sigChan
+	<-c
 	appLogger.Info("Shutting down server...")
 
-	// ADAPTADO: Graceful shutdown - detener componentes en orden
-	appLogger.Info("Stopping system components...")
+	// Apagar el servidor gracefully
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
-	// Cancelar contexto para detener todas las goroutines
-	cancel()
-
-	// Graceful shutdown del servidor HTTP
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer shutdownCancel()
-
-	// Cerrar servidor HTTP
-	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
+	if err := app.ShutdownWithContext(ctx); err != nil {
 		appLogger.Error("Server forced to shutdown", "error", err)
 	}
 
-	appLogger.Info("Server exited successfully")
+	appLogger.Info("Server exited")
 }
 
-// createWorkerConfig crea configuración de workers adaptada
-func createWorkerConfig(cfg *config.Config) map[string]interface{} {
-	return map[string]interface{}{
-		"workers":            getWorkerCount(cfg),
-		"poll_interval":      5 * time.Second,
-		"max_retries":        3,
-		"retry_delay":        30 * time.Second,
-		"processing_timeout": 30 * time.Minute,
-	}
-}
-
-// getWorkerCount devuelve el número de workers según el entorno
-func getWorkerCount(cfg *config.Config) int {
-	if cfg.Environment == "production" {
-		return 5
-	}
-	return 3
-}
-
-// getStatsPort devuelve el puerto para el servidor de estadísticas
-func getStatsPort(cfg *config.Config) int {
-	if cfg.Environment == "production" {
-		return 8083
-	}
-	return 8082
-}
-
-// healthCheckHandler mejorado con verificación de componentes
-func healthCheckHandler(c *fiber.Ctx, mongoClient *mongo.Client, redisClient *redis_client.Client, tokenBlacklist *jwt.TokenBlacklist, cfg *config.Config) error {
-	healthStatus := map[string]interface{}{
-		"status":      "ok",
-		"timestamp":   time.Now().UTC(),
-		"version":     "1.0.0",
-		"environment": cfg.Environment,
-		"uptime":      time.Since(startTime).String(),
-	}
-
-	// Check MongoDB
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := mongoClient.Ping(ctx, nil); err != nil {
-		healthStatus["mongodb"] = map[string]interface{}{
-			"status": "error",
-			"error":  err.Error(),
-		}
-		healthStatus["status"] = "degraded"
-	} else {
-		healthStatus["mongodb"] = map[string]interface{}{
-			"status":   "ok",
-			"database": cfg.MongoDatabase,
-		}
-	}
-
-	// Check Redis
-	if err := redisClient.Ping(context.Background()).Err(); err != nil {
-		healthStatus["redis"] = map[string]interface{}{
-			"status": "error",
-			"error":  err.Error(),
-		}
-		healthStatus["status"] = "degraded"
-	} else {
-		healthStatus["redis"] = map[string]interface{}{
-			"status": "ok",
-			"db":     cfg.RedisDB,
-		}
-	}
-
-	// Check Workers status
-	healthStatus["workers"] = map[string]interface{}{
-		"status":          "ok",
-		"workers_running": getWorkerCount(cfg),
-		"configured":      true,
-	}
-
-	// Check Token Blacklist (si está habilitado)
-	if tokenBlacklist != nil {
-		healthStatus["blacklist"] = map[string]interface{}{
-			"status":  "ok",
-			"enabled": true,
-		}
-	} else {
-		healthStatus["blacklist"] = map[string]interface{}{
-			"status":  "disabled",
-			"enabled": false,
-		}
-	}
-
-	statusCode := fiber.StatusOK
-	if healthStatus["status"] == "degraded" {
-		statusCode = fiber.StatusServiceUnavailable
-	}
-
-	return c.Status(statusCode).JSON(healthStatus)
-}
-
-// metricsHandler mejorado con métricas del sistema
-func metricsHandler(c *fiber.Ctx, tokenBlacklist *jwt.TokenBlacklist, cfg *config.Config) error {
-	metrics := map[string]interface{}{
-		"uptime_seconds": time.Since(startTime).Seconds(),
-		"environment":    cfg.Environment,
-		"go_version":     "1.23+",
-		"timestamp":      time.Now().UTC(),
-	}
-
-	// Métricas de Workers
-	metrics["workers"] = map[string]interface{}{
-		"configured": getWorkerCount(cfg),
-		"status":     "ready",
-	}
-
-	// Métricas de JWT blacklist (si está habilitado)
-	if tokenBlacklist != nil {
-		metrics["jwt_blacklist"] = map[string]interface{}{
-			"enabled": true,
-			"status":  "active",
-		}
-	} else {
-		metrics["jwt_blacklist"] = map[string]interface{}{
-			"enabled": false,
-		}
-	}
-
-	return c.JSON(metrics)
-}
-
-// configDebugHandler muestra configuración (solo en desarrollo)
-func configDebugHandler(c *fiber.Ctx, cfg *config.Config) error {
-	if cfg.Environment == "production" {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error": "Not found",
-		})
-	}
-
-	debugInfo := map[string]interface{}{
-		"environment":    cfg.Environment,
-		"server_port":    cfg.ServerPort,
-		"log_level":      cfg.LogLevel,
-		"mongo_database": cfg.MongoDatabase,
-		"redis_host":     cfg.RedisHost,
-		"redis_port":     cfg.RedisPort,
-		"redis_db":       cfg.RedisDB,
-		"workers": map[string]interface{}{
-			"count":      getWorkerCount(cfg),
-			"stats_port": getStatsPort(cfg),
-		},
-	}
-
-	return c.JSON(debugInfo)
-}
-
-// startBackgroundTasks inicia tareas de limpieza en background
-func startBackgroundTasks(blacklist *jwt.TokenBlacklist, logger *logger.Logger) {
-	logger.Info("Starting background cleanup tasks")
-
-	// Cleanup de tokens expirados cada hora
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			// ADAPTADO: implementar cleanup básico
-			logger.Info("Running background cleanup task")
-		}
-	}
-}
-
-// customErrorHandler mejorado con configuración
-func customErrorHandler(log *logger.Logger, cfg *config.Config) fiber.ErrorHandler {
+// customErrorHandler maneja los errores de la aplicación
+func customErrorHandler(log *logger.Logger) fiber.ErrorHandler {
 	return func(c *fiber.Ctx, err error) error {
 		// Código de estado por defecto
 		code := fiber.StatusInternalServerError
@@ -424,7 +178,7 @@ func customErrorHandler(log *logger.Logger, cfg *config.Config) fiber.ErrorHandl
 			code = e.Code
 		}
 
-		// Log mejorado con más contexto
+		// Log del error
 		log.Error("HTTP Error",
 			"status", code,
 			"method", c.Method(),
@@ -434,27 +188,14 @@ func customErrorHandler(log *logger.Logger, cfg *config.Config) fiber.ErrorHandl
 			"user_agent", c.Get("User-Agent"),
 		)
 
-		// Response estructurada
-		errorResponse := fiber.Map{
-			"success":   false,
+		// Enviar respuesta de error personalizada
+		return c.Status(code).JSON(fiber.Map{
+			"status":    "error",
 			"message":   getErrorMessage(code),
+			"error":     err.Error(),
 			"timestamp": time.Now().UTC(),
 			"path":      c.Path(),
-		}
-
-		// Solo incluir detalles del error en desarrollo
-		if cfg.Environment == "development" {
-			errorResponse["error"] = err.Error()
-			errorResponse["method"] = c.Method()
-		}
-
-		// Headers de seguridad adicionales
-		c.Set("X-Content-Type-Options", "nosniff")
-		c.Set("X-Frame-Options", "DENY")
-		c.Set("X-XSS-Protection", "1; mode=block")
-		c.Set("Referrer-Policy", "strict-origin-when-cross-origin")
-
-		return c.Status(code).JSON(errorResponse)
+		})
 	}
 }
 
@@ -479,5 +220,94 @@ func getErrorMessage(code int) string {
 		return "Service Unavailable"
 	default:
 		return "Unknown Error"
+	}
+}
+
+// ensureWebDirectoryExists verifica que el directorio web exista
+func ensureWebDirectoryExists() error {
+	webDirs := []string{
+		"./web",
+		"./web/static",
+		"./web/templates",
+		"./web/static/css",
+		"./web/static/js",
+		"./web/static/images",
+	}
+
+	for _, dir := range webDirs {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return fmt.Errorf("failed to create directory %s: %w", dir, err)
+			}
+		}
+	}
+
+	// Crear archivo index básico si no existe
+	indexPath := "./web/templates/dashboard.html"
+	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+		basicHTML := `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Engine API Workflow - Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; text-align: center; }
+        .status { background: #e8f5e8; padding: 20px; border-radius: 4px; margin: 20px 0; }
+        .api-links { margin: 20px 0; }
+        .api-links a { display: block; margin: 5px 0; color: #007bff; text-decoration: none; }
+        .api-links a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Engine API Workflow</h1>
+        <div class="status">
+            <h3>✅ Sistema Activo</h3>
+            <p>El dashboard del sistema está funcionando correctamente.</p>
+            <p><strong>Versión:</strong> 1.0.0</p>
+            <p><strong>Estado:</strong> Operacional</p>
+        </div>
+        
+        <h3>📊 API Endpoints Disponibles:</h3>
+        <div class="api-links">
+            <a href="/api/v1/health">🔍 Health Check</a>
+            <a href="/api/v1/dashboard/summary">📈 Dashboard Summary</a>
+            <a href="/api/v1/dashboard/health">💚 System Health</a>
+            <a href="/api/v1/dashboard/stats">📊 Quick Stats</a>
+        </div>
+        
+        <p><em>Dashboard UI completo próximamente...</em></p>
+    </div>
+</body>
+</html>`
+		if err := os.WriteFile(indexPath, []byte(basicHTML), 0644); err != nil {
+			return fmt.Errorf("failed to create basic HTML file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// startBackgroundServices inicia servicios en background para el dashboard
+func startBackgroundServices(dashboardService services.DashboardService, appLogger *logger.Logger) {
+	appLogger.Info("Starting background services for dashboard")
+
+	// Ticker para refrescar datos del dashboard cada 30 segundos
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Refrescar datos del dashboard en background
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := dashboardService.RefreshDashboardData(ctx); err != nil {
+				appLogger.Error("Failed to refresh dashboard data in background", "error", err)
+			}
+			cancel()
+		}
 	}
 }
