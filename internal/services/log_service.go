@@ -271,8 +271,6 @@ func (s *logService) GetSystemStats(ctx context.Context) (*models.LogStatistics,
 		}
 	}
 
-	// VERIFICADO: Esta línea está correcta - usa HourlyStats que es el campo correcto
-	stats.HourlyStats = s.generateHourlyStats()
 	return stats, nil
 }
 
