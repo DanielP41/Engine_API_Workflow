@@ -73,10 +73,19 @@ type LogFilter struct {
 type LogStats struct {
 	TotalExecutions      int64          `json:"total_executions"`
 	SuccessfulRuns       int64          `json:"successful_runs"`
+	SuccessfulExecutions int64          `json:"successful_executions"` // Alias para compatibilidad
 	FailedRuns           int64          `json:"failed_runs"`
+	FailedExecutions     int64          `json:"failed_executions"` // Alias para compatibilidad
 	AverageExecutionTime float64        `json:"average_execution_time"`
 	TotalExecutionTime   int64          `json:"total_execution_time"`
 	SuccessRate          float64        `json:"success_rate"`
+	ExecutionsToday      int64          `json:"executions_today"`
+	ExecutionsThisWeek   int64          `json:"executions_this_week"`
+	ExecutionsThisMonth  int64          `json:"executions_this_month"`
+	ErrorsLast24h        int64          `json:"errors_last_24h"`
+	LastExecutedAt       *time.Time     `json:"last_executed_at,omitempty"`
+	LastSuccess          *time.Time     `json:"last_success,omitempty"`
+	LastFailure          *time.Time     `json:"last_failure,omitempty"`
 	MostUsedTriggers     []TriggerStats `json:"most_used_triggers"`
 	ErrorDistribution    []ErrorStats   `json:"error_distribution"`
 }
@@ -92,8 +101,6 @@ type ErrorStats struct {
 	Error string `json:"error"`
 	Count int64  `json:"count"`
 }
-
-// AGREGADO: Tipos adicionales faltantes para compatibilidad completa
 
 // Log alias para WorkflowLog (compatibilidad con log_repository.go)
 type Log = WorkflowLog
@@ -114,7 +121,6 @@ type LogStatistics struct {
 	FailureRate          float64               `json:"failure_rate"`
 	TriggerDistribution  []TriggerDistribution `json:"trigger_distribution"`
 	ErrorDistribution    []ErrorDistribution   `json:"error_distribution"`
-	HourlyDistribution   []HourlyStats         `json:"hourly_distribution"`
 	LastUpdated          time.Time             `json:"last_updated"`
 	DataPeriod           string                `json:"data_period"`
 }
@@ -133,15 +139,6 @@ type ErrorDistribution struct {
 	Count        int64     `json:"count"`
 	Percentage   float64   `json:"percentage"`
 	LastOccurred time.Time `json:"last_occurred"`
-}
-
-// HourlyStats para estadísticas por hora
-type HourlyStats struct {
-	Hour           int     `json:"hour"`
-	ExecutionCount int64   `json:"execution_count"`
-	SuccessCount   int64   `json:"success_count"`
-	FailureCount   int64   `json:"failure_count"`
-	AverageTime    float64 `json:"average_time"`
 }
 
 // LogQueryRequest para consultas de logs

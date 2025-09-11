@@ -481,3 +481,34 @@ func (m *AuthMiddleware) CreateLogoutHandler() fiber.Handler {
 		return utils.SuccessResponse(c, fiber.StatusOK, "Logged out successfully", nil)
 	}
 }
+
+// AdminRequiredMiddleware función standalone para requerir admin
+func AdminRequiredMiddleware() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userRole := c.Locals("userRole")
+		if userRole == nil {
+			return utils.UnauthorizedResponse(c, "Authentication required")
+		}
+
+		role, ok := userRole.(string)
+		if !ok || role != string(models.RoleAdmin) {
+			return utils.ForbiddenResponse(c, "Admin access required")
+		}
+
+		return c.Next()
+	}
+}
+
+// GetCurrentUserRole extrae el rol del usuario del contexto
+func GetCurrentUserRole(c *fiber.Ctx) (string, error) {
+	userRole := c.Locals("userRole")
+	if userRole == nil {
+		return "", errors.New("no user role in context")
+	}
+
+	if role, ok := userRole.(string); ok {
+		return role, nil
+	}
+
+	return "", errors.New("invalid user role format")
+}
