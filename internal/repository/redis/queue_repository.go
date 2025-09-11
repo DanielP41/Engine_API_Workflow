@@ -771,3 +771,19 @@ func (r *queueRepository) requeueForRetry(ctx context.Context, item *QueueItem, 
 func timePtr(t time.Time) *time.Time {
 	return &t
 }
+
+// GetQueueLength obtiene la longitud de una cola específica
+func (r *queueRepository) GetQueueLength(ctx context.Context, queueName string) (int64, error) {
+	// Si no se especifica nombre de cola, usar cola por defecto
+	if queueName == "" {
+		queueName = "default"
+	}
+
+	// Obtener longitud de la cola en Redis
+	length, err := r.client.LLen(ctx, queueName).Result()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get queue length for %s: %w", queueName, err)
+	}
+
+	return length, nil
+}

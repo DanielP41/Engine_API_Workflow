@@ -160,7 +160,7 @@ func (r *workflowRepository) GetByID(ctx context.Context, id primitive.ObjectID)
 	return &workflow, nil
 }
 
-// Update - CORREGIDO: Usar map[string]interface{} como esperado por la interfaz
+// Update actualiza un workflow
 func (r *workflowRepository) Update(ctx context.Context, id primitive.ObjectID, updates map[string]interface{}) error {
 	if id.IsZero() {
 		return fmt.Errorf("invalid workflow ID")
@@ -213,8 +213,6 @@ func (r *workflowRepository) Delete(ctx context.Context, id primitive.ObjectID) 
 
 	return nil
 }
-
-// MÉTODOS FALTANTES IMPLEMENTADOS:
 
 // List retrieves a paginated list of workflows
 func (r *workflowRepository) List(ctx context.Context, page, pageSize int) (*models.WorkflowListResponse, error) {
@@ -616,7 +614,7 @@ func (r *workflowRepository) ListByTags(ctx context.Context, tags []string, page
 	}, nil
 }
 
-// GetAllTags - MÉTODO FALTANTE IMPLEMENTADO
+// GetAllTags obtiene todos los tags únicos
 func (r *workflowRepository) GetAllTags(ctx context.Context) ([]string, error) {
 	pipeline := mongo.Pipeline{
 		bson.D{{Key: "$match", Value: bson.M{"deleted_at": nil}}},
@@ -666,6 +664,31 @@ func (r *workflowRepository) CountByStatus(ctx context.Context, status models.Wo
 		"deleted_at": nil,
 	}
 	return r.collection.CountDocuments(ctx, filter)
+}
+
+// CountWorkflows cuenta el total de workflows
+func (r *workflowRepository) CountWorkflows(ctx context.Context) (int64, error) {
+	count, err := r.collection.CountDocuments(ctx, bson.M{"deleted_at": nil})
+	if err != nil {
+		return 0, fmt.Errorf("failed to count workflows: %w", err)
+	}
+	return count, nil
+}
+
+// CountActiveWorkflows cuenta los workflows activos
+func (r *workflowRepository) CountActiveWorkflows(ctx context.Context) (int64, error) {
+	filter := bson.M{
+		"is_active": true,
+		"status": bson.M{
+			"$in": []string{"active", "published"},
+		},
+		"deleted_at": nil,
+	}
+	count, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count active workflows: %w", err)
+	}
+	return count, nil
 }
 
 // NameExistsForUser verifica si existe un workflow con ese nombre para el usuario

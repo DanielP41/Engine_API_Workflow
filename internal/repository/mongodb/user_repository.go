@@ -492,3 +492,12 @@ func (r *userRepository) UpdateLastLoginString(ctx context.Context, id string) e
 	}
 	return r.UpdateLastLogin(ctx, objectID)
 }
+
+// CountUsers cuenta el total de usuarios
+func (r *userRepository) CountUsers(ctx context.Context) (int64, error) {
+	count, err := r.collection.CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return 0, fmt.Errorf("failed to count users: %w", err)
+	}
+	return count, nil
+}

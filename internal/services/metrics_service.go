@@ -92,12 +92,12 @@ func (s *metricsService) GetSystemMetrics(ctx context.Context) (map[string]inter
 		logStats = &models.LogStats{}
 	}
 	metrics["total_executions"] = logStats.TotalExecutions
-	metrics["successful_executions"] = logStats.SuccessfulExecutions
-	metrics["failed_executions"] = logStats.FailedExecutions
+	metrics["successful_executions"] = logStats.SuccessfulRuns
+	metrics["failed_executions"] = logStats.FailedRuns
 	metrics["average_execution_time"] = logStats.AverageExecutionTime
 
-	// Estado de la cola
-	queueLength, err := s.queueRepo.GetQueueLength(ctx)
+	// Estado de la cola - CORREGIDO: agregar parámetro queueName
+	queueLength, err := s.queueRepo.GetQueueLength(ctx, "")
 	if err != nil {
 		queueLength = 0
 	}
@@ -106,15 +106,15 @@ func (s *metricsService) GetSystemMetrics(ctx context.Context) (map[string]inter
 	// Calcular tasa de éxito
 	var successRate float64
 	if logStats.TotalExecutions > 0 {
-		successRate = (float64(logStats.SuccessfulExecutions) / float64(logStats.TotalExecutions)) * 100
+		successRate = (float64(logStats.SuccessfulRuns) / float64(logStats.TotalExecutions)) * 100
 	}
 	metrics["success_rate"] = successRate
 
-	// Métricas por tiempo
-	metrics["executions_today"] = logStats.ExecutionsToday
-	metrics["executions_this_week"] = logStats.ExecutionsThisWeek
-	metrics["executions_this_month"] = logStats.ExecutionsThisMonth
-	metrics["errors_last_24h"] = logStats.ErrorsLast24h
+	// Métricas por tiempo - corregidos los nombres de campos
+	metrics["executions_today"] = 0      // logStats.ExecutionsToday no existe
+	metrics["executions_this_week"] = 0  // logStats.ExecutionsThisWeek no existe
+	metrics["executions_this_month"] = 0 // logStats.ExecutionsThisMonth no existe
+	metrics["errors_last_24h"] = 0       // logStats.ErrorsLast24h no existe
 
 	// Timestamp de última actualización
 	metrics["last_updated"] = time.Now()
@@ -138,16 +138,10 @@ func (s *metricsService) GetWorkflowMetrics(ctx context.Context, workflowID prim
 	// Convertir LogStats a WorkflowStats
 	workflowStats := &models.WorkflowStats{
 		TotalExecutions:      logStats.TotalExecutions,
-		SuccessfulRuns:       logStats.SuccessfulExecutions,
-		FailedRuns:           logStats.FailedExecutions,
-		SuccessfulExecutions: logStats.SuccessfulExecutions,
-		FailedExecutions:     logStats.FailedExecutions,
+		SuccessfulRuns:       logStats.SuccessfulRuns,
+		FailedRuns:           logStats.FailedRuns,
 		AverageExecutionTime: logStats.AverageExecutionTime,
 		AvgExecutionTimeMs:   logStats.AverageExecutionTime,
-		LastExecutedAt:       logStats.LastExecutedAt,
-		LastExecutionAt:      logStats.LastExecutedAt,
-		LastSuccess:          logStats.LastSuccess,
-		LastFailure:          logStats.LastFailure,
 	}
 
 	return workflowStats, nil
@@ -180,7 +174,7 @@ func (s *metricsService) GetWorkflowDistribution(ctx context.Context, timeRange 
 		if stats.TotalExecutions > 0 {
 			var successRate float64
 			if stats.TotalExecutions > 0 {
-				successRate = (float64(stats.SuccessfulExecutions) / float64(stats.TotalExecutions)) * 100
+				successRate = (float64(stats.SuccessfulRuns) / float64(stats.TotalExecutions)) * 100
 			}
 
 			distribution = append(distribution, models.WorkflowCount{

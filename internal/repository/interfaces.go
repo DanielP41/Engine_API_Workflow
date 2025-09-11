@@ -38,7 +38,7 @@ type UserRepository interface {
 	// Statistics
 	Count(ctx context.Context) (int64, error)
 	CountByRole(ctx context.Context, role models.Role) (int64, error)
-	CountUsers(ctx context.Context) (int64, error) // AGREGADO
+	CountUsers(ctx context.Context) (int64, error)
 
 	// Validation
 	EmailExists(ctx context.Context, email string) (bool, error)
@@ -78,8 +78,8 @@ type WorkflowRepository interface {
 	Count(ctx context.Context) (int64, error)
 	CountByUser(ctx context.Context, userID primitive.ObjectID) (int64, error)
 	CountByStatus(ctx context.Context, status models.WorkflowStatus) (int64, error)
-	CountWorkflows(ctx context.Context) (int64, error)       // AGREGADO
-	CountActiveWorkflows(ctx context.Context) (int64, error) // AGREGADO
+	CountWorkflows(ctx context.Context) (int64, error)
+	CountActiveWorkflows(ctx context.Context) (int64, error)
 
 	// Validation
 	NameExistsForUser(ctx context.Context, name string, userID primitive.ObjectID) (bool, error)
@@ -100,7 +100,7 @@ type LogRepository interface {
 	GetByUserID(ctx context.Context, userID primitive.ObjectID, opts PaginationOptions) ([]models.WorkflowLog, int64, error)
 	GetStats(ctx context.Context, filter LogSearchFilter) (*models.LogStats, error)
 	Search(ctx context.Context, filter LogSearchFilter, opts PaginationOptions) ([]models.WorkflowLog, int64, error)
-	GetWorkflowStats(ctx context.Context, workflowID primitive.ObjectID, days int) (*models.LogStats, error) // AGREGADO
+	GetWorkflowStats(ctx context.Context, workflowID primitive.ObjectID, days int) (*models.LogStats, error)
 
 	// Query operations
 	Query(ctx context.Context, req *models.LogQueryRequest) (*models.LogListResponse, error)
@@ -151,8 +151,8 @@ type QueueRepository interface {
 	Length(ctx context.Context, queueName string) (int64, error)
 	Peek(ctx context.Context, queueName string) (interface{}, error)
 	Clear(ctx context.Context, queueName string) error
-	GetQueueLength(ctx context.Context) (int64, error) // AGREGADO
-	Ping(ctx context.Context) error                    // AGREGADO
+	GetQueueLength(ctx context.Context, queueName string) (int64, error)
+	Ping(ctx context.Context) error
 
 	// Priority queues
 	PushPriority(ctx context.Context, queueName string, data interface{}, priority int64) error
@@ -162,7 +162,7 @@ type QueueRepository interface {
 	PushDelayed(ctx context.Context, queueName string, data interface{}, delay int64) error
 	ProcessDelayedJobs(ctx context.Context, queueName string) error
 
-	// MÉTODOS REQUERIDOS POR WORKER ENGINE - AGREGADOS
+	// MÉTODOS REQUERIDOS POR WORKER ENGINE
 	Dequeue(ctx context.Context) (*models.QueueTask, error)
 	MarkCompleted(ctx context.Context, taskID string) error
 	MarkFailed(ctx context.Context, taskID string, err error) error
@@ -182,8 +182,6 @@ type QueueRepository interface {
 	// Statistics
 	GetQueueStats(ctx context.Context, queueName string) (map[string]interface{}, error)
 	GetAllQueueNames(ctx context.Context) ([]string, error)
-
-	// Health check - ya existe Ping arriba
 }
 
 // PaginationOptions for consistent pagination

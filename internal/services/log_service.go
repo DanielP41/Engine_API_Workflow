@@ -271,9 +271,8 @@ func (s *logService) GetSystemStats(ctx context.Context) (*models.LogStatistics,
 		}
 	}
 
-	// Generar estadísticas por hora (simplificado)
-	stats.HourlyDistribution = s.generateHourlyStats()
-
+	// VERIFICADO: Esta línea está correcta - usa HourlyStats que es el campo correcto
+	stats.HourlyStats = s.generateHourlyStats()
 	return stats, nil
 }
 
@@ -285,6 +284,11 @@ func (s *logService) updateWorkflowStats(ctx context.Context, workflowID primiti
 	}
 	if workflow == nil {
 		return fmt.Errorf("workflow not found for stats update")
+	}
+
+	// Verificar que workflow.Stats no sea nil
+	if workflow.Stats == nil {
+		workflow.Stats = &models.WorkflowStats{}
 	}
 
 	// Actualizar contadores

@@ -505,6 +505,64 @@ func (r *metricsRepository) GetHourlyStats(ctx context.Context, timeRange time.D
 	return stats, nil
 }
 
+// GetSystemMetrics obtiene métricas del sistema
+func (r *metricsRepository) GetSystemMetrics(ctx context.Context) (map[string]interface{}, error) {
+	metrics := make(map[string]interface{})
+
+	// Obtener estadísticas de la base de datos
+	var dbStats bson.M
+	if err := r.db.RunCommand(ctx, bson.D{{"dbStats", 1}}).Decode(&dbStats); err != nil {
+		return nil, fmt.Errorf("failed to get database stats: %w", err)
+	}
+
+	// Obtener estadísticas del servidor
+	var serverStatus bson.M
+	if err := r.db.RunCommand(ctx, bson.D{{"serverStatus", 1}}).Decode(&serverStatus); err != nil {
+		return nil, fmt.Errorf("failed to get server status: %w", err)
+	}
+
+	metrics["database"] = map[string]interface{}{
+		"collections":  dbStats["collections"],
+		"data_size":    dbStats["dataSize"],
+		"storage_size": dbStats["storageSize"],
+		"index_size":   dbStats["indexSize"],
+		"objects":      dbStats["objects"],
+	}
+
+	if connections, ok := serverStatus["connections"]; ok {
+		metrics["connections"] = connections
+	}
+
+	if mem, ok := serverStatus["mem"]; ok {
+		metrics["memory"] = mem
+	}
+
+	return metrics, nil
+}
+
+// CheckDatabaseHealth verifica la salud de la base de datos
+func (r *metricsRepository) CheckDatabaseHealth(ctx context.Context) error {
+	// Ping la base de datos
+	if err := r.db.Client().Ping(ctx, nil); err != nil {
+		return fmt.Errorf("database ping failed: %w", err)
+	}
+
+	// Verificar que las colecciones principales existan
+	collections := []string{"users", "workflows", "logs", "queue_tasks"}
+
+	for _, collName := range collections {
+		coll := r.db.Collection(collName)
+
+		// Intentar contar documentos para verificar acceso
+		_, err := coll.CountDocuments(ctx, bson.M{})
+		if err != nil {
+			return fmt.Errorf("failed to access collection %s: %w", collName, err)
+		}
+	}
+
+	return nil
+}
+
 // Helper functions para extraer valores de BSON
 func getInt64FromBSON(doc bson.M, key string) int64 {
 	if val, ok := doc[key]; ok {

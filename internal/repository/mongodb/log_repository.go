@@ -2,6 +2,7 @@ package mongodb
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -779,4 +780,110 @@ func (r *logRepository) SearchLogsByWorkflow(ctx context.Context, workflowID pri
 		PageSize:   pageSize,
 		TotalPages: int((total + int64(pageSize) - 1) / int64(pageSize)),
 	}, nil
+}
+
+// GetWorkflowStats obtiene estadísticas de un workflow específico
+func (r *logRepository) GetWorkflowStats(ctx context.Context, workflowID primitive.ObjectID, days int) (*models.LogStats, error) {
+	startDate := time.Now().AddDate(0, 0, -days)
+
+	pipeline := []bson.M{
+		{
+			"$match": bson.M{
+				"workflow_id": workflowID,
+				"created_at": bson.M{
+					"$gte": startDate,
+				},
+			},
+		},
+		{
+			"$group": bson.M{
+				"_id":              nil,
+				"total_executions": bson.M{"$sum": 1},
+				"successful_runs": bson.M{
+					"$sum": bson.M{
+						"$cond": bson.M{
+							"if":   bson.M{"$eq": []interface{}{"$status", "completed"}},
+							"then": 1,
+							"else": 0,
+						},
+					},
+				},
+				"failed_runs": bson.M{
+					"$sum": bson.M{
+						"$cond": bson.M{
+							"if":   bson.M{"$eq": []interface{}{"$status", "failed"}},
+							"then": 1,
+							"else": 0,
+						},
+					},
+				},
+				"avg_execution_time": bson.M{
+					"$avg": "$duration",
+				},
+			},
+		},
+	}
+
+	cursor, err := r.collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate workflow stats: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var results []bson.M
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode workflow stats: %w", err)
+	}
+
+	if len(results) == 0 {
+		return &models.LogStats{
+			TotalExecutions:      0,
+			SuccessfulRuns:       0,
+			FailedRuns:           0,
+			AverageExecutionTime: 0,
+		}, nil
+	}
+
+	result := results[0]
+	return &models.LogStats{
+		TotalExecutions:      r.getInt64FromBSON(result, "total_executions"),
+		SuccessfulRuns:       r.getInt64FromBSON(result, "successful_runs"),
+		FailedRuns:           r.getInt64FromBSON(result, "failed_runs"),
+		AverageExecutionTime: r.getFloat64FromBSON(result, "avg_execution_time"),
+	}, nil
+}
+
+// Helper functions para el log repository
+func (r *logRepository) getInt64FromBSON(doc bson.M, key string) int64 {
+	if val, ok := doc[key]; ok {
+		switch v := val.(type) {
+		case int32:
+			return int64(v)
+		case int64:
+			return v
+		case int:
+			return int64(v)
+		case float64:
+			return int64(v)
+		}
+	}
+	return 0
+}
+
+func (r *logRepository) getFloat64FromBSON(doc bson.M, key string) float64 {
+	if val, ok := doc[key]; ok {
+		switch v := val.(type) {
+		case float64:
+			return v
+		case float32:
+			return float64(v)
+		case int32:
+			return float64(v)
+		case int64:
+			return float64(v)
+		case int:
+			return float64(v)
+		}
+	}
+	return 0
 }
