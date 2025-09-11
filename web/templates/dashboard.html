@@ -1,0 +1,333 @@
+{{template "layout.html" .}}
+
+{{define "content"}}
+<div class="container-fluid py-4">
+    <!-- Page Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="h3 mb-0">Dashboard</h1>
+            <p class="text-muted">Welcome back, {{.User.Name}}!</p>
+        </div>
+        <div>
+            <a href="/workflows/create" class="btn btn-primary">
+                <i class="bi bi-plus-circle me-2"></i>
+                Create Workflow
+            </a>
+        </div>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="row mb-4">
+        {{if .SystemStats}}
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card border-left-primary shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">
+                                Total Executions
+                            </div>
+                            <div class="h5 mb-0 font-weight-bold text-gray-800">
+                                {{.SystemStats.TotalExecutions}}
+                            </div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="bi bi-play-circle text-primary" style="font-size: 2rem;"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card border-left-success shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs font-weight-bold text-success text-uppercase mb-1">
+                                Success Rate
+                            </div>
+                            <div class="h5 mb-0 font-weight-bold text-gray-800">
+                                {{printf "%.1f" .SystemStats.SuccessRate}}%
+                            </div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="bi bi-check-circle text-success" style="font-size: 2rem;"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card border-left-info shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs font-weight-bold text-info text-uppercase mb-1">
+                                Executions Today
+                            </div>
+                            <div class="h5 mb-0 font-weight-bold text-gray-800">
+                                {{.SystemStats.ExecutionsToday}}
+                            </div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="bi bi-calendar-day text-info" style="font-size: 2rem;"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card border-left-warning shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="row no-gutters align-items-center">
+                        <div class="col mr-2">
+                            <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">
+                                Avg Execution Time
+                            </div>
+                            <div class="h5 mb-0 font-weight-bold text-gray-800">
+                                {{printf "%.2f" .SystemStats.AverageExecutionTime}}s
+                            </div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="bi bi-stopwatch text-warning" style="font-size: 2rem;"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="row">
+        <!-- Workflows Section -->
+        <div class="col-xl-8 col-lg-7">
+            <div class="card shadow mb-4">
+                <div class="card-header py-3 d-flex flex-row align-items-center justify-content-between">
+                    <h6 class="m-0 font-weight-bold text-primary">Recent Workflows</h6>
+                    <a href="/workflows" class="btn btn-sm btn-outline-primary">View All</a>
+                </div>
+                <div class="card-body">
+                    {{if .Workflows}}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Status</th>
+                                    <th>Last Updated</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {{range .Workflows}}
+                                <tr>
+                                    <td>
+                                        <div class="d-flex align-items-center">
+                                            <div class="me-3">
+                                                {{if eq .Status "active"}}
+                                                    <span class="badge bg-success">Active</span>
+                                                {{else if eq .Status "draft"}}
+                                                    <span class="badge bg-secondary">Draft</span>
+                                                {{else if eq .Status "inactive"}}
+                                                    <span class="badge bg-warning">Inactive</span>
+                                                {{else}}
+                                                    <span class="badge bg-dark">{{.Status}}</span>
+                                                {{end}}
+                                            </div>
+                                            <div>
+                                                <div class="fw-bold">{{.Name}}</div>
+                                                <div class="text-muted small">{{.Description}}</div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        {{if .Stats}}
+                                        <div class="small">
+                                            <div>Executions: {{.Stats.TotalExecutions}}</div>
+                                            <div class="text-success">Success: {{.Stats.SuccessfulRuns}}</div>
+                                        </div>
+                                        {{end}}
+                                    </td>
+                                    <td>
+                                        <div class="small text-muted">
+                                            {{.UpdatedAt.Format "Jan 2, 2006 15:04"}}
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="btn-group" role="group">
+                                            <a href="/workflows/{{.ID.Hex}}" class="btn btn-sm btn-outline-primary">
+                                                <i class="bi bi-eye"></i>
+                                            </a>
+                                            {{if eq .Status "active"}}
+                                            <button class="btn btn-sm btn-outline-success" onclick="triggerWorkflow('{{.ID.Hex}}')">
+                                                <i class="bi bi-play"></i>
+                                            </button>
+                                            {{end}}
+                                        </div>
+                                    </td>
+                                </tr>
+                                {{end}}
+                            </tbody>
+                        </table>
+                    </div>
+                    {{else}}
+                    <div class="text-center py-4">
+                        <i class="bi bi-diagram-3" style="font-size: 3rem; color: #6c757d;"></i>
+                        <h5 class="mt-3">No workflows yet</h5>
+                        <p class="text-muted">Create your first workflow to get started</p>
+                        <a href="/workflows/create" class="btn btn-primary">
+                            <i class="bi bi-plus-circle me-2"></i>
+                            Create Workflow
+                        </a>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Logs Sidebar -->
+        <div class="col-xl-4 col-lg-5">
+            <div class="card shadow mb-4">
+                <div class="card-header py-3 d-flex flex-row align-items-center justify-content-between">
+                    <h6 class="m-0 font-weight-bold text-primary">Recent Activity</h6>
+                    <a href="/logs" class="btn btn-sm btn-outline-primary">View All</a>
+                </div>
+                <div class="card-body">
+                    {{if .RecentLogs}}
+                    <div class="timeline">
+                        {{range .RecentLogs}}
+                        <div class="timeline-item">
+                            <div class="timeline-marker">
+                                {{if eq .Status "completed"}}
+                                    <i class="bi bi-check-circle-fill text-success"></i>
+                                {{else if eq .Status "failed"}}
+                                    <i class="bi bi-x-circle-fill text-danger"></i>
+                                {{else if eq .Status "running"}}
+                                    <i class="bi bi-arrow-clockwise text-primary"></i>
+                                {{else}}
+                                    <i class="bi bi-clock text-warning"></i>
+                                {{end}}
+                            </div>
+                            <div class="timeline-content">
+                                <div class="fw-bold">{{.WorkflowName}}</div>
+                                <div class="text-muted small">
+                                    {{.TriggerType}} trigger • {{.CreatedAt.Format "15:04"}}
+                                </div>
+                                {{if .ErrorMessage}}
+                                <div class="text-danger small mt-1">{{.ErrorMessage}}</div>
+                                {{end}}
+                            </div>
+                        </div>
+                        {{end}}
+                    </div>
+                    {{else}}
+                    <div class="text-center py-3">
+                        <i class="bi bi-clock-history" style="font-size: 2rem; color: #6c757d;"></i>
+                        <p class="text-muted mt-2 mb-0">No recent activity</p>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.border-left-primary {
+    border-left: 4px solid #4e73df !important;
+}
+.border-left-success {
+    border-left: 4px solid #1cc88a !important;
+}
+.border-left-info {
+    border-left: 4px solid #36b9cc !important;
+}
+.border-left-warning {
+    border-left: 4px solid #f6c23e !important;
+}
+
+.timeline {
+    position: relative;
+}
+
+.timeline-item {
+    display: flex;
+    margin-bottom: 1rem;
+    position: relative;
+}
+
+.timeline-marker {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 0.75rem;
+}
+
+.timeline-content {
+    flex-grow: 1;
+    padding-top: 2px;
+}
+
+.timeline-item:not(:last-child) .timeline-marker::after {
+    content: '';
+    position: absolute;
+    top: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: 1rem;
+    background-color: #dee2e6;
+}
+</style>
+{{end}}
+
+{{define "scripts"}}
+<script>
+async function triggerWorkflow(workflowId) {
+    try {
+        const response = await fetch(`/api/v1/triggers/workflow`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                workflow_id: workflowId,
+                trigger_by: 'manual',
+                data: {}
+            })
+        });
+
+        if (response.ok) {
+            showAlert('Workflow triggered successfully!', 'success');
+            setTimeout(() => location.reload(), 2000);
+        } else {
+            showAlert('Failed to trigger workflow', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error triggering workflow', 'danger');
+    }
+}
+
+function showAlert(message, type) {
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+    alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    document.body.appendChild(alertDiv);
+    
+    setTimeout(() => {
+        alertDiv.remove();
+    }, 5000);
+}
+</script>
+{{end}}
