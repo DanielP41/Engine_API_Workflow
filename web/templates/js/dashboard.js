@@ -7,7 +7,43 @@
 const config = {
     apiBaseUrl: '/api/v1',
     toastDuration: 5000,
-    animationDuration: 300
+    animationDuration: 300,
+    dashboardRefreshInterval: 30000, // 30 seconds
+    authTokenKey: 'auth_token'
+};
+
+// Authentication manager
+const authManager = {
+    getToken() {
+        // Try to get token from cookie first, then localStorage
+        const cookies = document.cookie.split(';');
+        for (let cookie of cookies) {
+            const [name, value] = cookie.trim().split('=');
+            if (name === config.authTokenKey) {
+                return value;
+            }
+        }
+        return localStorage.getItem(config.authTokenKey);
+    },
+
+    setToken(token) {
+        localStorage.setItem(config.authTokenKey, token);
+    },
+
+    removeToken() {
+        localStorage.removeItem(config.authTokenKey);
+        // Also remove from cookie
+        document.cookie = `${config.authTokenKey}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
+    },
+
+    isAuthenticated() {
+        return !!this.getToken();
+    },
+
+    logout() {
+        this.removeToken();
+        window.location.href = '/login';
+    }
 };
 
 // Utility functions
@@ -82,8 +118,12 @@ const utils = {
         });
     },
 
-    // Format duration in seconds to human readable
-    formatDuration(seconds) {
+    // Format duration in milliseconds to human readable
+    formatDuration(ms) {
+        if (ms < 1000) {
+            return `${ms}ms`;
+        }
+        const seconds = ms / 1000;
         if (seconds < 60) {
             return `${seconds.toFixed(1)}s`;
         } else if (seconds < 3600) {
@@ -91,6 +131,16 @@ const utils = {
         } else {
             return `${(seconds / 3600).toFixed(1)}h`;
         }
+    },
+
+    // Format numbers with commas
+    formatNumber(num) {
+        return new Intl.NumberFormat().format(num);
+    },
+
+    // Format percentage
+    formatPercentage(num) {
+        return `${num.toFixed(1)}%`;
     },
 
     // Debounce function
@@ -123,22 +173,66 @@ const utils = {
     hideLoading(element, originalText) {
         element.innerHTML = originalText;
         element.disabled = false;
+    },
+
+    // Show page loading overlay
+    showPageLoading() {
+        let overlay = document.getElementById('page-loading-overlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = 'page-loading-overlay';
+            overlay.className = 'position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center';
+            overlay.style.backgroundColor = 'rgba(255, 255, 255, 0.8)';
+            overlay.style.zIndex = '9998';
+            overlay.innerHTML = `
+                <div class="text-center">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <div class="mt-2">Loading dashboard...</div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+        }
+        overlay.style.display = 'flex';
+    },
+
+    // Hide page loading overlay
+    hidePageLoading() {
+        const overlay = document.getElementById('page-loading-overlay');
+        if (overlay) {
+            overlay.style.display = 'none';
+        }
     }
 };
 
 // API helper functions
 const api = {
-    // Generic API request
+    // Generic API request with authentication
     async request(endpoint, options = {}) {
         const url = config.apiBaseUrl + endpoint;
+        const token = authManager.getToken();
+        
         const defaultOptions = {
             headers: {
                 'Content-Type': 'application/json',
             },
         };
 
+        // Add authentication header if token exists
+        if (token) {
+            defaultOptions.headers['Authorization'] = `Bearer ${token}`;
+        }
+
         try {
             const response = await fetch(url, { ...defaultOptions, ...options });
+            
+            // Handle authentication errors
+            if (response.status === 401) {
+                authManager.logout();
+                return;
+            }
+            
             const data = await response.json();
             
             if (!response.ok) {
@@ -149,6 +243,38 @@ const api = {
         } catch (error) {
             console.error('API request failed:', error);
             throw error;
+        }
+    },
+
+    // Dashboard API methods
+    dashboard: {
+        async getComplete(filters = {}) {
+            const params = new URLSearchParams(filters);
+            return api.request(`/dashboard?${params}`);
+        },
+
+        async getSummary() {
+            return api.request('/dashboard/summary');
+        },
+
+        async getHealth() {
+            return api.request('/dashboard/health');
+        },
+
+        async getAlerts() {
+            return api.request('/dashboard/alerts');
+        },
+
+        async getMetrics(metrics, timeRange = '24h') {
+            const params = new URLSearchParams({ 
+                metrics: Array.isArray(metrics) ? metrics.join(',') : metrics,
+                time_range: timeRange 
+            });
+            return api.request(`/dashboard/metrics?${params}`);
+        },
+
+        async refresh() {
+            return api.request('/dashboard/refresh', { method: 'POST' });
         }
     },
 
@@ -221,7 +347,327 @@ const api = {
     }
 };
 
-// Workflow management functions
+// Dashboard data manager
+const dashboardManager = {
+    data: null,
+    lastUpdate: null,
+    updateInterval: null,
+
+    async init() {
+        if (!this.isDashboardPage()) return;
+
+        try {
+            utils.showPageLoading();
+            await this.loadDashboardData();
+            this.renderDashboard();
+            this.startAutoRefresh();
+        } catch (error) {
+            console.error('Failed to initialize dashboard:', error);
+            utils.showToast('Failed to load dashboard data', 'error');
+        } finally {
+            utils.hidePageLoading();
+        }
+    },
+
+    isDashboardPage() {
+        return document.querySelector('[data-page="dashboard"]') || 
+               window.location.pathname === '/' || 
+               window.location.pathname === '/dashboard';
+    },
+
+    async loadDashboardData() {
+        try {
+            const [dashboardData, summary, health, alerts] = await Promise.all([
+                api.dashboard.getComplete(),
+                api.dashboard.getSummary(),
+                api.dashboard.getHealth(),
+                api.dashboard.getAlerts()
+            ]);
+
+            this.data = {
+                dashboard: dashboardData.data,
+                summary: summary.data,
+                health: health.data,
+                alerts: alerts.data
+            };
+
+            this.lastUpdate = new Date();
+        } catch (error) {
+            console.error('Failed to load dashboard data:', error);
+            throw error;
+        }
+    },
+
+    renderDashboard() {
+        if (!this.data) return;
+
+        this.renderQuickStats();
+        this.renderSystemHealth();
+        this.renderRecentActivity();
+        this.renderWorkflowStatus();
+        this.renderAlerts();
+        this.updateLastRefreshTime();
+    },
+
+    renderQuickStats() {
+        const stats = this.data.dashboard?.quick_stats || this.data.summary;
+        if (!stats) return;
+
+        const statElements = {
+            'active-workflows': stats.active_workflows || stats.activeWorkflows,
+            'total-executions': stats.total_executions || stats.totalExecutions,
+            'success-rate': stats.success_rate_24h || stats.successRate,
+            'executions-today': stats.executions_today || stats.executionsToday,
+            'avg-execution-time': stats.avg_execution_time || stats.averageExecutionTime,
+            'queue-length': stats.queue_length || stats.currentQueueLength,
+            'total-users': stats.total_users || stats.totalUsers,
+            'errors-last-24h': stats.errors_last_24h || 0
+        };
+
+        Object.entries(statElements).forEach(([id, value]) => {
+            const element = document.getElementById(id);
+            if (element && value !== undefined) {
+                let formattedValue = value;
+                
+                // Format based on the stat type
+                if (id.includes('rate')) {
+                    formattedValue = utils.formatPercentage(value);
+                } else if (id.includes('time')) {
+                    formattedValue = utils.formatDuration(value);
+                } else if (typeof value === 'number' && value > 999) {
+                    formattedValue = utils.formatNumber(value);
+                }
+                
+                element.textContent = formattedValue;
+                element.classList.add('pulse');
+                setTimeout(() => element.classList.remove('pulse'), 1000);
+            }
+        });
+    },
+
+    renderSystemHealth() {
+        const health = this.data.health;
+        if (!health) return;
+
+        const healthElement = document.getElementById('system-health-status');
+        const uptimeElement = document.getElementById('system-uptime');
+        const versionElement = document.getElementById('system-version');
+
+        if (healthElement) {
+            healthElement.textContent = health.status;
+            healthElement.className = `badge bg-${this.getHealthColor(health.status)}`;
+        }
+
+        if (uptimeElement) {
+            uptimeElement.textContent = health.uptime || 'N/A';
+        }
+
+        if (versionElement) {
+            versionElement.textContent = health.version || '1.0.0';
+        }
+
+        // Update health indicators
+        const indicators = document.querySelectorAll('.health-indicator');
+        indicators.forEach(indicator => {
+            const metric = indicator.dataset.metric;
+            if (health[metric] !== undefined) {
+                const value = health[metric];
+                const isHealthy = this.isMetricHealthy(metric, value);
+                indicator.className = `health-indicator ${isHealthy ? 'text-success' : 'text-danger'}`;
+                indicator.querySelector('.health-value').textContent = this.formatHealthMetric(metric, value);
+            }
+        });
+    },
+
+    renderRecentActivity() {
+        const activity = this.data.dashboard?.recent_activity;
+        if (!activity?.length) return;
+
+        const container = document.querySelector('.recent-activity .timeline');
+        if (!container) return;
+
+        container.innerHTML = activity.slice(0, 10).map(item => `
+            <div class="timeline-item fade-in">
+                <div class="timeline-marker">
+                    ${this.getActivityIcon(item.type, item.status)}
+                </div>
+                <div class="timeline-content">
+                    <div class="fw-bold">${item.workflow_name || item.message}</div>
+                    <div class="text-muted small">
+                        ${item.user_name ? `by ${item.user_name} • ` : ''}
+                        ${utils.formatDate(item.timestamp)}
+                    </div>
+                    ${item.duration ? `<div class="text-info small">Duration: ${utils.formatDuration(item.duration)}</div>` : ''}
+                </div>
+            </div>
+        `).join('');
+    },
+
+    renderWorkflowStatus() {
+        const workflows = this.data.dashboard?.workflow_status;
+        if (!workflows?.length) return;
+
+        const container = document.querySelector('.workflow-status-list');
+        if (!container) return;
+
+        container.innerHTML = workflows.slice(0, 5).map(workflow => `
+            <div class="list-group-item">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="mb-1">${workflow.name}</h6>
+                        <small class="text-muted">
+                            Success Rate: ${utils.formatPercentage(workflow.success_rate)} • 
+                            Runs: ${workflow.total_runs}
+                        </small>
+                    </div>
+                    <div class="text-end">
+                        <span class="badge bg-${this.getWorkflowStatusColor(workflow.status)}">${workflow.status}</span>
+                        ${workflow.last_execution ? `<br><small class="text-muted">${utils.formatDate(workflow.last_execution)}</small>` : ''}
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    },
+
+    renderAlerts() {
+        const alerts = this.data.alerts;
+        if (!alerts?.length) return;
+
+        const container = document.querySelector('.alerts-container');
+        if (!container) return;
+
+        const activeAlerts = alerts.filter(alert => alert.is_active);
+        
+        if (activeAlerts.length === 0) {
+            container.innerHTML = '<div class="alert alert-success">No active alerts</div>';
+            return;
+        }
+
+        container.innerHTML = activeAlerts.slice(0, 5).map(alert => `
+            <div class="alert alert-${this.getAlertColor(alert.severity)} alert-dismissible">
+                <strong>${alert.title}</strong>
+                <p class="mb-1">${alert.message}</p>
+                <small class="text-muted">${utils.formatDate(alert.timestamp)}</small>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+        `).join('');
+    },
+
+    updateLastRefreshTime() {
+        const element = document.getElementById('last-refresh-time');
+        if (element && this.lastUpdate) {
+            element.textContent = utils.formatDate(this.lastUpdate);
+        }
+    },
+
+    startAutoRefresh() {
+        this.updateInterval = setInterval(async () => {
+            try {
+                await this.loadDashboardData();
+                this.renderDashboard();
+            } catch (error) {
+                console.warn('Auto-refresh failed:', error);
+            }
+        }, config.dashboardRefreshInterval);
+
+        // Stop refresh when page is hidden
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                this.stopAutoRefresh();
+            } else {
+                this.startAutoRefresh();
+            }
+        });
+    },
+
+    stopAutoRefresh() {
+        if (this.updateInterval) {
+            clearInterval(this.updateInterval);
+            this.updateInterval = null;
+        }
+    },
+
+    // Helper methods
+    getHealthColor(status) {
+        const colors = {
+            'healthy': 'success',
+            'warning': 'warning',
+            'critical': 'danger'
+        };
+        return colors[status] || 'secondary';
+    },
+
+    getWorkflowStatusColor(status) {
+        const colors = {
+            'active': 'success',
+            'inactive': 'secondary',
+            'error': 'danger',
+            'warning': 'warning'
+        };
+        return colors[status] || 'secondary';
+    },
+
+    getAlertColor(severity) {
+        const colors = {
+            'critical': 'danger',
+            'warning': 'warning',
+            'info': 'info'
+        };
+        return colors[severity] || 'info';
+    },
+
+    getActivityIcon(type, status) {
+        if (type === 'execution') {
+            const icons = {
+                'success': '<i class="bi bi-check-circle-fill text-success"></i>',
+                'failed': '<i class="bi bi-x-circle-fill text-danger"></i>',
+                'running': '<i class="bi bi-arrow-clockwise text-primary"></i>',
+                'pending': '<i class="bi bi-clock text-warning"></i>'
+            };
+            return icons[status] || icons.pending;
+        }
+        
+        const typeIcons = {
+            'error': '<i class="bi bi-exclamation-triangle-fill text-danger"></i>',
+            'warning': '<i class="bi bi-exclamation-triangle-fill text-warning"></i>',
+            'info': '<i class="bi bi-info-circle-fill text-info"></i>',
+            'workflow_created': '<i class="bi bi-plus-circle-fill text-success"></i>'
+        };
+        return typeIcons[type] || typeIcons.info;
+    },
+
+    isMetricHealthy(metric, value) {
+        const thresholds = {
+            'cpu_usage': 80,
+            'memory_usage': 85,
+            'api_response_time': 1000,
+            'db_connections': 100
+        };
+        
+        if (metric === 'redis_connected') return value === true;
+        
+        const threshold = thresholds[metric];
+        return threshold ? value < threshold : true;
+    },
+
+    formatHealthMetric(metric, value) {
+        if (metric === 'redis_connected') {
+            return value ? 'Connected' : 'Disconnected';
+        }
+        
+        if (metric.includes('usage') || metric.includes('cpu')) {
+            return utils.formatPercentage(value);
+        }
+        
+        if (metric.includes('time')) {
+            return utils.formatDuration(value);
+        }
+        
+        return value.toString();
+    }
+};
+
+// Workflow management functions (preserved from original)
 const workflowManager = {
     async triggerWorkflow(workflowId, buttonElement = null) {
         if (!confirm('Are you sure you want to run this workflow?')) return;
@@ -323,7 +769,7 @@ const workflowManager = {
     }
 };
 
-// Search and filter functionality
+// Search and filter functionality (preserved from original)
 const searchManager = {
     init() {
         this.setupSearchInputs();
@@ -355,7 +801,7 @@ const searchManager = {
         } else {
             url.searchParams.delete('search');
         }
-        url.searchParams.set('page', '1'); // Reset to first page
+        url.searchParams.set('page', '1');
         window.location.href = url.toString();
     },
 
@@ -366,130 +812,12 @@ const searchManager = {
         } else {
             url.searchParams.delete(filterName);
         }
-        url.searchParams.set('page', '1'); // Reset to first page
+        url.searchParams.set('page', '1');
         window.location.href = url.toString();
     }
 };
 
-// Dashboard real-time updates
-const dashboardUpdates = {
-    updateInterval: 30000, // 30 seconds
-    intervalId: null,
-
-    init() {
-        this.startUpdates();
-        this.setupVisibilityHandling();
-    },
-
-    startUpdates() {
-        this.intervalId = setInterval(() => {
-            this.updateStats();
-            this.updateRecentActivity();
-        }, this.updateInterval);
-    },
-
-    stopUpdates() {
-        if (this.intervalId) {
-            clearInterval(this.intervalId);
-            this.intervalId = null;
-        }
-    },
-
-    setupVisibilityHandling() {
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                this.stopUpdates();
-            } else {
-                this.startUpdates();
-            }
-        });
-    },
-
-    async updateStats() {
-        try {
-            // Only update if we're on the dashboard page
-            if (!document.querySelector('.stats-cards')) return;
-
-            // Update stats without full page reload
-            const response = await fetch('/api/v1/dashboard/stats');
-            const data = await response.json();
-            
-            if (data.success) {
-                this.renderStats(data.data);
-            }
-        } catch (error) {
-            console.warn('Failed to update stats:', error);
-        }
-    },
-
-    async updateRecentActivity() {
-        try {
-            // Only update if we're on the dashboard page
-            if (!document.querySelector('.recent-activity')) return;
-
-            const response = await fetch('/api/v1/dashboard/activity');
-            const data = await response.json();
-            
-            if (data.success) {
-                this.renderActivity(data.data);
-            }
-        } catch (error) {
-            console.warn('Failed to update activity:', error);
-        }
-    },
-
-    renderStats(stats) {
-        // Update stat cards with new data
-        const statElements = {
-            'total-executions': stats.totalExecutions,
-            'success-rate': stats.successRate?.toFixed(1) + '%',
-            'executions-today': stats.executionsToday,
-            'avg-execution-time': stats.averageExecutionTime?.toFixed(2) + 's'
-        };
-
-        Object.entries(statElements).forEach(([id, value]) => {
-            const element = document.getElementById(id);
-            if (element) {
-                element.textContent = value;
-                element.classList.add('pulse');
-                setTimeout(() => element.classList.remove('pulse'), 1000);
-            }
-        });
-    },
-
-    renderActivity(activity) {
-        const container = document.querySelector('.recent-activity .timeline');
-        if (!container || !activity?.length) return;
-
-        // Update recent activity timeline
-        container.innerHTML = activity.map(log => `
-            <div class="timeline-item fade-in">
-                <div class="timeline-marker">
-                    ${this.getStatusIcon(log.status)}
-                </div>
-                <div class="timeline-content">
-                    <div class="fw-bold">${log.workflowName}</div>
-                    <div class="text-muted small">
-                        ${log.triggerType} trigger • ${utils.formatDate(log.createdAt)}
-                    </div>
-                    ${log.errorMessage ? `<div class="text-danger small mt-1">${log.errorMessage}</div>` : ''}
-                </div>
-            </div>
-        `).join('');
-    },
-
-    getStatusIcon(status) {
-        const icons = {
-            completed: '<i class="bi bi-check-circle-fill text-success"></i>',
-            failed: '<i class="bi bi-x-circle-fill text-danger"></i>',
-            running: '<i class="bi bi-arrow-clockwise text-primary"></i>',
-            pending: '<i class="bi bi-clock text-warning"></i>'
-        };
-        return icons[status] || icons.pending;
-    }
-};
-
-// Form validation and enhancement
+// Form validation and enhancement (preserved from original)
 const formManager = {
     init() {
         this.setupFormValidation();
@@ -594,10 +922,8 @@ document.addEventListener('DOMContentLoaded', function() {
     searchManager.init();
     formManager.init();
     
-    // Initialize dashboard updates only on dashboard page
-    if (document.querySelector('[data-page="dashboard"]')) {
-        dashboardUpdates.init();
-    }
+    // Initialize dashboard if on dashboard page
+    dashboardManager.init();
     
     // Setup global event listeners
     setupGlobalEventListeners();
@@ -637,6 +963,12 @@ function setupGlobalEventListeners() {
             const workflowName = e.target.dataset.workflowName;
             workflowManager.deleteWorkflow(workflowId, workflowName, e.target);
         }
+        
+        // Handle dashboard refresh button
+        if (e.target.matches('[data-action="refresh-dashboard"]')) {
+            e.preventDefault();
+            dashboardManager.refresh();
+        }
     });
 
     // Handle keyboard shortcuts
@@ -659,8 +991,31 @@ function setupGlobalEventListeners() {
                 searchInput.blur();
             }
         }
+        
+        // F5 or Ctrl+R to refresh dashboard
+        if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) {
+            if (dashboardManager.isDashboardPage()) {
+                e.preventDefault();
+                dashboardManager.refresh();
+            }
+        }
     });
 }
+
+// Dashboard refresh method
+dashboardManager.refresh = async function() {
+    try {
+        utils.showPageLoading();
+        await this.loadDashboardData();
+        this.renderDashboard();
+        utils.showToast('Dashboard refreshed successfully', 'success');
+    } catch (error) {
+        console.error('Failed to refresh dashboard:', error);
+        utils.showToast('Failed to refresh dashboard', 'error');
+    } finally {
+        utils.hidePageLoading();
+    }
+};
 
 // Setup Bootstrap tooltips
 function setupTooltips() {
@@ -679,8 +1034,9 @@ window.toggleWorkflow = workflowManager.toggleWorkflow.bind(workflowManager);
 window.cloneWorkflow = workflowManager.cloneWorkflow.bind(workflowManager);
 window.deleteWorkflow = workflowManager.deleteWorkflow.bind(workflowManager);
 window.showAlert = utils.showToast.bind(utils);
+window.refreshDashboard = dashboardManager.refresh.bind(dashboardManager);
 
-// Utility function for templates
+// Utility functions for templates
 window.seq = function(start, end) {
     const result = [];
     for (let i = start; i <= end; i++) {
@@ -693,3 +1049,27 @@ window.sub = (a, b) => a - b;
 window.add = (a, b) => a + b;
 window.mul = (a, b) => a * b;
 window.div = (a, b) => b !== 0 ? a / b : 0;
+
+// Error boundary for uncaught errors
+window.addEventListener('error', function(e) {
+    console.error('Global error:', e.error);
+    utils.showToast('An unexpected error occurred', 'error');
+});
+
+// Handle promise rejections
+window.addEventListener('unhandledrejection', function(e) {
+    console.error('Unhandled promise rejection:', e.reason);
+    utils.showToast('An unexpected error occurred', 'error');
+    e.preventDefault();
+});
+
+// Development helpers (only in development)
+if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    window.dashboardDebug = {
+        api,
+        dashboardManager,
+        utils,
+        authManager
+    };
+    console.log('Dashboard debug tools available at window.dashboardDebug');
+}
