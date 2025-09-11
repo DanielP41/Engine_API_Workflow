@@ -1,14 +1,19 @@
 {{template "layout.html" .}}
 
 {{define "content"}}
-<div class="container-fluid py-4">
+<div class="container-fluid py-4" data-page="dashboard">
     <!-- Page Header -->
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h1 class="h3 mb-0">Dashboard</h1>
-            <p class="text-muted">Welcome back, {{.User.Name}}!</p>
+            <p class="text-muted">Welcome back, {{if .User}}{{.User.Name}}{{else}}User{{end}}!</p>
+            <small class="text-muted">Last updated: <span id="last-refresh-time">Loading...</span></small>
         </div>
         <div>
+            <button type="button" class="btn btn-outline-secondary me-2" data-action="refresh-dashboard" title="Refresh Dashboard">
+                <i class="bi bi-arrow-clockwise"></i>
+                Refresh
+            </button>
             <a href="/workflows/create" class="btn btn-primary">
                 <i class="bi bi-plus-circle me-2"></i>
                 Create Workflow
@@ -16,23 +21,36 @@
         </div>
     </div>
 
-    <!-- Stats Cards -->
-    <div class="row mb-4">
-        {{if .SystemStats}}
+    <!-- System Health Alert -->
+    <div class="row mb-3">
+        <div class="col-12">
+            <div class="alert alert-info d-flex align-items-center" role="alert">
+                <i class="bi bi-info-circle-fill me-2"></i>
+                <div>
+                    System Status: <span id="system-health-status" class="badge bg-success">Loading...</span>
+                    | Uptime: <span id="system-uptime">Loading...</span>
+                    | Version: <span id="system-version">1.0.0</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Stats Cards -->
+    <div class="row mb-4 stats-cards">
         <div class="col-xl-3 col-md-6 mb-4">
             <div class="card border-left-primary shadow h-100 py-2">
                 <div class="card-body">
                     <div class="row no-gutters align-items-center">
                         <div class="col mr-2">
                             <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">
-                                Total Executions
+                                Active Workflows
                             </div>
                             <div class="h5 mb-0 font-weight-bold text-gray-800">
-                                {{.SystemStats.TotalExecutions}}
+                                <span id="active-workflows">{{if .SystemStats}}{{.SystemStats.ActiveWorkflows}}{{else}}Loading...{{end}}</span>
                             </div>
                         </div>
                         <div class="col-auto">
-                            <i class="bi bi-play-circle text-primary" style="font-size: 2rem;"></i>
+                            <i class="bi bi-diagram-3 text-primary" style="font-size: 2rem;"></i>
                         </div>
                     </div>
                 </div>
@@ -45,14 +63,14 @@
                     <div class="row no-gutters align-items-center">
                         <div class="col mr-2">
                             <div class="text-xs font-weight-bold text-success text-uppercase mb-1">
-                                Success Rate
+                                Total Executions
                             </div>
                             <div class="h5 mb-0 font-weight-bold text-gray-800">
-                                {{printf "%.1f" .SystemStats.SuccessRate}}%
+                                <span id="total-executions">{{if .SystemStats}}{{.SystemStats.TotalExecutions}}{{else}}Loading...{{end}}</span>
                             </div>
                         </div>
                         <div class="col-auto">
-                            <i class="bi bi-check-circle text-success" style="font-size: 2rem;"></i>
+                            <i class="bi bi-play-circle text-success" style="font-size: 2rem;"></i>
                         </div>
                     </div>
                 </div>
@@ -65,14 +83,14 @@
                     <div class="row no-gutters align-items-center">
                         <div class="col mr-2">
                             <div class="text-xs font-weight-bold text-info text-uppercase mb-1">
-                                Executions Today
+                                Success Rate (24h)
                             </div>
                             <div class="h5 mb-0 font-weight-bold text-gray-800">
-                                {{.SystemStats.ExecutionsToday}}
+                                <span id="success-rate">{{if .SystemStats}}{{printf "%.1f" .SystemStats.SuccessRate}}%{{else}}Loading...{{end}}</span>
                             </div>
                         </div>
                         <div class="col-auto">
-                            <i class="bi bi-calendar-day text-info" style="font-size: 2rem;"></i>
+                            <i class="bi bi-check-circle text-info" style="font-size: 2rem;"></i>
                         </div>
                     </div>
                 </div>
@@ -85,23 +103,75 @@
                     <div class="row no-gutters align-items-center">
                         <div class="col mr-2">
                             <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">
-                                Avg Execution Time
+                                Queue Length
                             </div>
                             <div class="h5 mb-0 font-weight-bold text-gray-800">
-                                {{printf "%.2f" .SystemStats.AverageExecutionTime}}s
+                                <span id="queue-length">{{if .SystemStats}}{{.SystemStats.QueueLength}}{{else}}Loading...{{end}}</span>
                             </div>
                         </div>
                         <div class="col-auto">
-                            <i class="bi bi-stopwatch text-warning" style="font-size: 2rem;"></i>
+                            <i class="bi bi-list-task text-warning" style="font-size: 2rem;"></i>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
-        {{end}}
     </div>
 
-    <!-- Recent Activity -->
+    <!-- Secondary Stats Row -->
+    <div class="row mb-4">
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card border-left-info shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Executions Today</div>
+                    <div class="h6 mb-0 font-weight-bold text-gray-800">
+                        <span id="executions-today">{{if .SystemStats}}{{.SystemStats.ExecutionsToday}}{{else}}Loading...{{end}}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card border-left-warning shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Avg Execution Time</div>
+                    <div class="h6 mb-0 font-weight-bold text-gray-800">
+                        <span id="avg-execution-time">{{if .SystemStats}}{{printf "%.2f" .SystemStats.AverageExecutionTime}}s{{else}}Loading...{{end}}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card border-left-success shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="text-xs font-weight-bold text-success text-uppercase mb-1">Total Users</div>
+                    <div class="h6 mb-0 font-weight-bold text-gray-800">
+                        <span id="total-users">{{if .SystemStats}}{{.SystemStats.TotalUsers}}{{else}}Loading...{{end}}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card border-left-danger shadow h-100 py-2">
+                <div class="card-body">
+                    <div class="text-xs font-weight-bold text-danger text-uppercase mb-1">Errors (24h)</div>
+                    <div class="h6 mb-0 font-weight-bold text-gray-800">
+                        <span id="errors-last-24h">{{if .SystemStats}}{{.SystemStats.ErrorsLast24h}}{{else}}Loading...{{end}}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alerts Section -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="alerts-container">
+                <!-- Dynamic alerts will be inserted here by JavaScript -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content Row -->
     <div class="row">
         <!-- Workflows Section -->
         <div class="col-xl-8 col-lg-7">
@@ -159,11 +229,14 @@
                                     </td>
                                     <td>
                                         <div class="btn-group" role="group">
-                                            <a href="/workflows/{{.ID.Hex}}" class="btn btn-sm btn-outline-primary">
+                                            <a href="/workflows/{{.ID.Hex}}" class="btn btn-sm btn-outline-primary" title="View Details">
                                                 <i class="bi bi-eye"></i>
                                             </a>
                                             {{if eq .Status "active"}}
-                                            <button class="btn btn-sm btn-outline-success" onclick="triggerWorkflow('{{.ID.Hex}}')">
+                                            <button class="btn btn-sm btn-outline-success" 
+                                                    data-action="trigger-workflow" 
+                                                    data-workflow-id="{{.ID.Hex}}"
+                                                    title="Trigger Workflow">
                                                 <i class="bi bi-play"></i>
                                             </button>
                                             {{end}}
@@ -185,18 +258,23 @@
                         </a>
                     </div>
                     {{end}}
+
+                    <!-- Workflow Status List (for dynamic updates) -->
+                    <div class="workflow-status-list mt-3" style="display: none;">
+                        <!-- Dynamic workflow status will be inserted here by JavaScript -->
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- Recent Logs Sidebar -->
+        <!-- Recent Activity Sidebar -->
         <div class="col-xl-4 col-lg-5">
             <div class="card shadow mb-4">
                 <div class="card-header py-3 d-flex flex-row align-items-center justify-content-between">
                     <h6 class="m-0 font-weight-bold text-primary">Recent Activity</h6>
                     <a href="/logs" class="btn btn-sm btn-outline-primary">View All</a>
                 </div>
-                <div class="card-body">
+                <div class="card-body recent-activity">
                     {{if .RecentLogs}}
                     <div class="timeline">
                         {{range .RecentLogs}}
@@ -225,11 +303,52 @@
                         {{end}}
                     </div>
                     {{else}}
-                    <div class="text-center py-3">
-                        <i class="bi bi-clock-history" style="font-size: 2rem; color: #6c757d;"></i>
-                        <p class="text-muted mt-2 mb-0">No recent activity</p>
+                    <div class="timeline">
+                        <div class="text-center py-3">
+                            <i class="bi bi-clock-history" style="font-size: 2rem; color: #6c757d;"></i>
+                            <p class="text-muted mt-2 mb-0">No recent activity</p>
+                        </div>
                     </div>
                     {{end}}
+                </div>
+            </div>
+
+            <!-- System Health Details -->
+            <div class="card shadow mb-4">
+                <div class="card-header py-3">
+                    <h6 class="m-0 font-weight-bold text-primary">System Health</h6>
+                </div>
+                <div class="card-body">
+                    <div class="row text-center">
+                        <div class="col-6 mb-3">
+                            <div class="health-indicator" data-metric="cpu_usage">
+                                <i class="bi bi-cpu text-info" style="font-size: 1.5rem;"></i>
+                                <div class="small mt-1">CPU</div>
+                                <div class="health-value font-weight-bold">Loading...</div>
+                            </div>
+                        </div>
+                        <div class="col-6 mb-3">
+                            <div class="health-indicator" data-metric="memory_usage">
+                                <i class="bi bi-memory text-warning" style="font-size: 1.5rem;"></i>
+                                <div class="small mt-1">Memory</div>
+                                <div class="health-value font-weight-bold">Loading...</div>
+                            </div>
+                        </div>
+                        <div class="col-6 mb-3">
+                            <div class="health-indicator" data-metric="redis_connected">
+                                <i class="bi bi-database text-success" style="font-size: 1.5rem;"></i>
+                                <div class="small mt-1">Redis</div>
+                                <div class="health-value font-weight-bold">Loading...</div>
+                            </div>
+                        </div>
+                        <div class="col-6 mb-3">
+                            <div class="health-indicator" data-metric="api_response_time">
+                                <i class="bi bi-speedometer2 text-primary" style="font-size: 1.5rem;"></i>
+                                <div class="small mt-1">API</div>
+                                <div class="health-value font-weight-bold">Loading...</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -237,6 +356,7 @@
 </div>
 
 <style>
+/* Enhanced Dashboard Styles */
 .border-left-primary {
     border-left: 4px solid #4e73df !important;
 }
@@ -249,7 +369,11 @@
 .border-left-warning {
     border-left: 4px solid #f6c23e !important;
 }
+.border-left-danger {
+    border-left: 4px solid #e74a3b !important;
+}
 
+/* Timeline Styles */
 .timeline {
     position: relative;
 }
@@ -285,12 +409,94 @@
     height: 1rem;
     background-color: #dee2e6;
 }
+
+/* Animation Classes */
+.pulse {
+    animation: pulse 0.8s ease-in-out;
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+    100% { transform: scale(1); }
+}
+
+.fade-in {
+    animation: fadeIn 0.5s ease-in;
+}
+
+@keyframes fadeIn {
+    0% { opacity: 0; transform: translateY(10px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+
+/* Health Indicators */
+.health-indicator {
+    transition: all 0.3s ease;
+}
+
+.health-indicator:hover {
+    transform: translateY(-2px);
+}
+
+/* Loading States */
+.card.loading {
+    opacity: 0.7;
+    pointer-events: none;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .stats-cards .col-xl-3 {
+        margin-bottom: 1rem;
+    }
+    
+    .btn-group {
+        flex-direction: column;
+    }
+    
+    .btn-group .btn {
+        margin-bottom: 0.25rem;
+    }
+}
+
+/* Alert Enhancements */
+.alert {
+    border-radius: 0.5rem;
+    border: none;
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+}
+
+/* Card Hover Effects */
+.card {
+    transition: all 0.3s ease;
+}
+
+.card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+}
+
+/* Button Enhancements */
+.btn {
+    transition: all 0.3s ease;
+}
+
+.btn:hover {
+    transform: translateY(-1px);
+}
 </style>
 {{end}}
 
 {{define "scripts"}}
 <script>
+// Legacy trigger function for backward compatibility
 async function triggerWorkflow(workflowId) {
+    if (window.workflowManager) {
+        return window.workflowManager.triggerWorkflow(workflowId);
+    }
+    
+    // Fallback implementation
     try {
         const response = await fetch(`/api/v1/triggers/workflow`, {
             method: 'POST',
@@ -315,7 +521,13 @@ async function triggerWorkflow(workflowId) {
     }
 }
 
+// Legacy alert function for backward compatibility
 function showAlert(message, type) {
+    if (window.utils && window.utils.showToast) {
+        return window.utils.showToast(message, type);
+    }
+    
+    // Fallback implementation
     const alertDiv = document.createElement('div');
     alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
     alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
@@ -329,5 +541,19 @@ function showAlert(message, type) {
         alertDiv.remove();
     }, 5000);
 }
+
+// Initialize dashboard when DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    // Add loading state to initial stats
+    const statElements = document.querySelectorAll('.stats-cards [id]');
+    statElements.forEach(el => {
+        if (el.textContent === 'Loading...') {
+            el.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div>';
+        }
+    });
+    
+    // Dashboard will be initialized by the main dashboard.js file
+    console.log('Dashboard HTML initialized');
+});
 </script>
 {{end}}
