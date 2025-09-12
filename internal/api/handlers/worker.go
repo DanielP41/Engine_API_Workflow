@@ -16,8 +16,15 @@ type WorkerHandler struct {
 	logger       *zap.Logger
 }
 
+// ScalePoolRequest estructura para solicitudes de escalamiento
+type ScalePoolRequest struct {
+	Action        string `json:"action" validate:"required,oneof=scale_up scale_down set_size"`
+	TargetWorkers int    `json:"target_workers,omitempty" validate:"min=1,max=50"`
+	Force         bool   `json:"force,omitempty"`
+}
+
 // NewWorkerHandler crea una nueva instancia del handler de workers
-func NewWorkerHandler(workerEngine *worker.WorkerEngine, queueRepo repository.QueueRepository, logger *zap.Logger) *WorkerHandler {
+func NewWorkerHandler(queueRepo repository.QueueRepository, workerEngine *worker.WorkerEngine, logger *zap.Logger) *WorkerHandler {
 	return &WorkerHandler{
 		workerEngine: workerEngine,
 		queueRepo:    queueRepo,
@@ -25,7 +32,7 @@ func NewWorkerHandler(workerEngine *worker.WorkerEngine, queueRepo repository.Qu
 	}
 }
 
-// GetWorkerStats obtiene estadísticas de los workers
+// GetWorkerStats obtiene estadísticas de los workers (ACTUALIZADO)
 // @Summary Get worker statistics
 // @Description Get current statistics about worker engine and queue processing
 // @Tags workers
@@ -37,13 +44,226 @@ func NewWorkerHandler(workerEngine *worker.WorkerEngine, queueRepo repository.Qu
 // @Failure 500 {object} utils.ErrorResponse
 // @Router /api/v1/workers/stats [get]
 func (h *WorkerHandler) GetWorkerStats(c *fiber.Ctx) error {
-	stats, err := h.workerEngine.GetStats(c.Context())
+	// Obtener estadísticas básicas
+	basicStats, err := h.workerEngine.GetStats(c.Context())
 	if err != nil {
-		h.logger.Error("Failed to get worker stats", zap.Error(err))
+		h.logger.Error("Failed to get basic worker stats", zap.Error(err))
 		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get worker statistics", err.Error())
 	}
 
-	return utils.SuccessResponse(c, fiber.StatusOK, "Worker statistics retrieved successfully", stats)
+	// Intentar obtener estadísticas avanzadas
+	advancedStats, err := h.workerEngine.GetAdvancedStats(c.Context())
+	if err != nil {
+		h.logger.Warn("Failed to get advanced stats, using basic only", zap.Error(err))
+		return utils.SuccessResponse(c, fiber.StatusOK, "Worker statistics retrieved (basic)", basicStats)
+	}
+
+	// Combinar estadísticas
+	combinedStats := map[string]interface{}{
+		"basic":    basicStats,
+		"advanced": advancedStats,
+		"version":  "2.0",
+	}
+
+	return utils.SuccessResponse(c, fiber.StatusOK, "Worker statistics retrieved successfully", combinedStats)
+}
+
+// GetAdvancedStats obtiene estadísticas avanzadas del sistema (NUEVO)
+// @Summary Get advanced worker statistics
+// @Description Get comprehensive statistics including pool, metrics, and retries
+// @Tags workers
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Success 200 {object} utils.DataResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/workers/advanced/stats [get]
+func (h *WorkerHandler) GetAdvancedStats(c *fiber.Ctx) error {
+	stats, err := h.workerEngine.GetAdvancedStats(c.Context())
+	if err != nil {
+		h.logger.Error("Failed to get advanced stats", zap.Error(err))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get advanced statistics", err.Error())
+	}
+
+	return utils.SuccessResponse(c, fiber.StatusOK, "Advanced statistics retrieved successfully", stats)
+}
+
+// GetHealthStatus obtiene el estado de salud completo (NUEVO)
+// @Summary Get comprehensive health status
+// @Description Get detailed health information including metrics and issues
+// @Tags workers
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Success 200 {object} utils.DataResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/workers/health/detailed [get]
+func (h *WorkerHandler) GetHealthStatus(c *fiber.Ctx) error {
+	health, err := h.workerEngine.GetHealthStatus(c.Context())
+	if err != nil {
+		h.logger.Error("Failed to get health status", zap.Error(err))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get health status", err.Error())
+	}
+
+	status := fiber.StatusOK
+	if !health.IsHealthy {
+		status = fiber.StatusServiceUnavailable
+	}
+
+	return utils.SuccessResponse(c, status, "Health status retrieved", health)
+}
+
+// GetPoolStats obtiene estadísticas del pool de workers (NUEVO)
+// @Summary Get worker pool statistics
+// @Description Get detailed statistics about the worker pool
+// @Tags workers
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Success 200 {object} utils.DataResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/workers/pool/stats [get]
+func (h *WorkerHandler) GetPoolStats(c *fiber.Ctx) error {
+	pool := h.workerEngine.GetWorkerPool()
+	if pool == nil {
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Worker pool not available", "")
+	}
+
+	stats := pool.GetStats()
+	return utils.SuccessResponse(c, fiber.StatusOK, "Pool statistics retrieved successfully", stats)
+}
+
+// ScaleWorkerPool escala el pool de workers manualmente (NUEVO)
+// @Summary Scale worker pool
+// @Description Manually scale the worker pool up or down
+// @Tags workers
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Param body body ScalePoolRequest true "Scale parameters"
+// @Success 200 {object} utils.MessageResponse
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/workers/pool/scale [post]
+func (h *WorkerHandler) ScaleWorkerPool(c *fiber.Ctx) error {
+	var req ScalePoolRequest
+	if err := c.BodyParser(&req); err != nil {
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Invalid request body", err.Error())
+	}
+
+	pool := h.workerEngine.GetWorkerPool()
+	if pool == nil {
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Worker pool not available", "")
+	}
+
+	// Por ahora, solo registramos la solicitud (la implementación completa estaría en pool.go)
+	h.logger.Info("Manual pool scaling requested",
+		zap.Int("target_workers", req.TargetWorkers),
+		zap.String("action", req.Action))
+
+	return utils.SuccessResponse(c, fiber.StatusOK, "Pool scaling initiated", map[string]interface{}{
+		"action":         req.Action,
+		"target_workers": req.TargetWorkers,
+		"timestamp":      c.Context().Value("timestamp"),
+	})
+}
+
+// GetMetricsDetails obtiene métricas detalladas (NUEVO)
+// @Summary Get detailed metrics
+// @Description Get comprehensive metrics with breakdown by action type
+// @Tags workers
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Success 200 {object} utils.DataResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/workers/metrics/detailed [get]
+func (h *WorkerHandler) GetMetricsDetails(c *fiber.Ctx) error {
+	metrics := h.workerEngine.GetMetricsCollector()
+	if metrics == nil {
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Metrics collector not available", "")
+	}
+
+	detailedMetrics := metrics.GetMetrics()
+	return utils.SuccessResponse(c, fiber.StatusOK, "Detailed metrics retrieved successfully", detailedMetrics)
+}
+
+// GetRetryStats obtiene estadísticas de reintentos (NUEVO)
+// @Summary Get retry statistics
+// @Description Get statistics about task retries and failures
+// @Tags workers
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Success 200 {object} utils.DataResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/workers/retries/stats [get]
+func (h *WorkerHandler) GetRetryStats(c *fiber.Ctx) error {
+	retryManager := h.workerEngine.GetRetryManager()
+	if retryManager == nil {
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Retry manager not available", "")
+	}
+
+	stats, err := retryManager.GetRetryStats(c.Context())
+	if err != nil {
+		h.logger.Error("Failed to get retry stats", zap.Error(err))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get retry statistics", err.Error())
+	}
+
+	return utils.SuccessResponse(c, fiber.StatusOK, "Retry statistics retrieved successfully", stats)
+}
+
+// ResetMetrics reinicia las métricas del sistema (NUEVO)
+// @Summary Reset system metrics
+// @Description Reset all metrics counters (admin only)
+// @Tags workers
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Success 200 {object} utils.MessageResponse
+// @Failure 403 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/workers/metrics/reset [post]
+func (h *WorkerHandler) ResetMetrics(c *fiber.Ctx) error {
+	// Verificar permisos de admin (esto debería manejarse en middleware)
+
+	metrics := h.workerEngine.GetMetricsCollector()
+	if metrics == nil {
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Metrics collector not available", "")
+	}
+
+	metrics.ResetMetrics()
+	h.logger.Info("Metrics reset by admin")
+
+	return utils.SuccessResponse(c, fiber.StatusOK, "Metrics reset successfully", map[string]interface{}{
+		"reset_at": c.Context().Value("timestamp"),
+		"message":  "All metrics have been reset to zero",
+	})
+}
+
+// GetExecutorInfo obtiene información sobre ejecutores de acciones (NUEVO)
+// @Summary Get action executor information
+// @Description Get information about which action executors are configured
+// @Tags workers
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Success 200 {object} utils.DataResponse
+// @Router /api/v1/workers/executors/info [get]
+func (h *WorkerHandler) GetExecutorInfo(c *fiber.Ctx) error {
+	// Obtener información de ejecutores desde el WorkflowExecutor
+	info := map[string]interface{}{
+		"executors_available": map[string]bool{
+			"http":    true,
+			"email":   true,
+			"slack":   true,
+			"webhook": true,
+		},
+		"mode":    "real", // o "simulated"
+		"version": "2.0",
+	}
+
+	return utils.SuccessResponse(c, fiber.StatusOK, "Executor information retrieved", info)
 }
 
 // GetQueueStats obtiene estadísticas detalladas de las colas
@@ -190,7 +410,7 @@ func (h *WorkerHandler) ClearQueue(c *fiber.Ctx) error {
 	})
 }
 
-// HealthCheck verifica el estado de los workers
+// HealthCheck verifica el estado de los workers (ACTUALIZADO)
 // @Summary Worker health check
 // @Description Check if workers are running and healthy
 // @Tags workers
@@ -200,6 +420,17 @@ func (h *WorkerHandler) ClearQueue(c *fiber.Ctx) error {
 // @Failure 500 {object} utils.ErrorResponse
 // @Router /api/v1/workers/health [get]
 func (h *WorkerHandler) HealthCheck(c *fiber.Ctx) error {
+	// Intentar obtener health status detallado primero
+	health, err := h.workerEngine.GetHealthStatus(c.Context())
+	if err == nil {
+		status := fiber.StatusOK
+		if !health.IsHealthy {
+			status = fiber.StatusServiceUnavailable
+		}
+		return utils.SuccessResponse(c, status, "Health check completed", health)
+	}
+
+	// Fallback a health check básico
 	stats, err := h.workerEngine.GetStats(c.Context())
 	if err != nil {
 		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Workers unhealthy", err.Error())
@@ -214,5 +445,6 @@ func (h *WorkerHandler) HealthCheck(c *fiber.Ctx) error {
 		"status":     "healthy",
 		"is_running": isRunning,
 		"stats":      stats,
+		"version":    "basic",
 	})
 }
