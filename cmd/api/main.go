@@ -1,4 +1,3 @@
-// ACTUALIZADo CON DASHBOARD
 package main
 
 import (
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"go.uber.org/zap"
 
 	"Engine_API_Workflow/internal/api/handlers"
 	"Engine_API_Workflow/internal/api/routes"
@@ -17,6 +17,7 @@ import (
 	"Engine_API_Workflow/internal/repository/mongodb"
 	"Engine_API_Workflow/internal/repository/redis"
 	"Engine_API_Workflow/internal/services"
+	"Engine_API_Workflow/internal/utils"
 	"Engine_API_Workflow/pkg/database"
 	"Engine_API_Workflow/pkg/jwt"
 	"Engine_API_Workflow/pkg/logger"
@@ -28,6 +29,15 @@ func main() {
 
 	// Inicializar logger
 	appLogger := logger.New(cfg.LogLevel, cfg.Environment)
+
+	// Crear un zap logger directo para servicios que lo requieren
+	var zapLogger *zap.Logger
+	if cfg.Environment == "production" {
+		zapLogger, _ = zap.NewProduction()
+	} else {
+		zapLogger, _ = zap.NewDevelopment()
+	}
+
 	appLogger.Info("Starting Engine API Workflow", "version", "1.0.0", "environment", cfg.Environment)
 
 	// Conectar a MongoDB
@@ -68,26 +78,26 @@ func main() {
 	userRepo := mongodb.NewUserRepository(db)
 	workflowRepo := mongodb.NewWorkflowRepository(db)
 	logRepo := mongodb.NewLogRepository(db)
-	queueRepo := redis.NewQueueRepository(redisClient) // 🆕 Repository de cola
+	queueRepo := redis.NewQueueRepository(redisClient)
 
-	// Inicializar servicios
-	authService := services.NewAuthService(jwtService)
+	// Inicializar servicios - CORREGIDO: usar zapLogger donde se requiere *zap.Logger
+	authService := services.NewAuthService(userRepo)
 	workflowService := services.NewWorkflowService(workflowRepo, userRepo)
 	logService := services.NewLogService(logRepo, workflowRepo, userRepo)
-	queueService := services.NewQueueService(redisClient, appLogger.Logger) // 🆕 Servicio de cola
+	queueService := services.NewQueueService(redisClient, zapLogger) // usar zapLogger
 
-	// 🆕 Inicializar servicios del dashboard
+	// Inicializar servicios del dashboard
 	metricsService := services.NewMetricsService(userRepo, workflowRepo, logRepo, queueRepo)
 	dashboardService := services.NewDashboardService(metricsService, workflowRepo, logRepo, userRepo, queueRepo)
 
-	// Inicializar handlers
-	authHandler := handlers.NewAuthHandler(userRepo, authService)
-	workflowHandler := handlers.NewWorkflowHandler(workflowService, logService, appLogger)
-	logHandler := handlers.NewLogHandler(logRepo, appLogger.Logger)
-	triggerHandler := handlers.NewTriggerHandler(workflowRepo, logRepo, queueService, appLogger.Logger)
+	// Inicializar validator
+	validator := &utils.Validator{}
 
-	// 🆕 Inicializar handler del dashboard
-	dashboardHandler := handlers.NewDashboardHandler(dashboardService, appLogger.Logger)
+	// Inicializar handlers - CORREGIDO: usar zapLogger donde se requiere *zap.Logger
+	authHandler := handlers.NewAuthHandler(authService, jwtService, validator)
+	workflowHandler := handlers.NewWorkflowHandler(workflowService, logService, *validator)
+	triggerHandler := handlers.NewTriggerHandler(workflowRepo, logRepo, queueService, zapLogger) // usar zapLogger
+	dashboardHandler := handlers.NewDashboardHandler(dashboardService, zapLogger)                // usar zapLogger
 
 	// Verificar que el directorio web existe
 	if err := ensureWebDirectoryExists(); err != nil {
@@ -104,27 +114,20 @@ func main() {
 		IdleTimeout:  time.Second * 30,
 	})
 
-	// Configurar rutas con todos los handlers
+	// Configurar rutas con todos los handlers - CORREGIDO: usar zapLogger en RouteConfig
 	routeConfig := &routes.RouteConfig{
 		AuthHandler:      authHandler,
 		WorkflowHandler:  workflowHandler,
-		LogHandler:       logHandler,
 		TriggerHandler:   triggerHandler,
-		DashboardHandler: dashboardHandler, // 🆕 Handler del dashboard
+		DashboardHandler: dashboardHandler,
 		JWTService:       jwtService,
-		Logger:           appLogger.Logger,
+		Logger:           zapLogger, // usar zapLogger en lugar de appLogger
 	}
 
 	// Validar configuración de rutas
 	if err := routes.ValidateRouteConfig(routeConfig); err != nil {
 		appLogger.Fatal("Invalid route configuration", "error", err)
 	}
-
-	// Configurar middlewares adicionales
-	routes.SetupMiddlewares(app, routeConfig)
-
-	// Configurar health checks
-	routes.SetupHealthChecks(app, routeConfig)
 
 	// Configurar todas las rutas
 	routes.SetupRoutes(app, routeConfig)
@@ -133,7 +136,7 @@ func main() {
 	routeInfo := routes.GetRouteInfo()
 	appLogger.Info("Routes configured", "info", routeInfo)
 
-	// 🆕 Inicializar servicios en background (opcional)
+	// Inicializar servicios en background (opcional)
 	go startBackgroundServices(dashboardService, appLogger)
 
 	// Canal para manejar señales del sistema
@@ -180,65 +183,33 @@ func customErrorHandler(log *logger.Logger) fiber.ErrorHandler {
 
 		// Log del error
 		log.Error("HTTP Error",
-			"status", code,
-			"method", c.Method(),
-			"path", c.Path(),
 			"error", err.Error(),
-			"ip", c.IP(),
-			"user_agent", c.Get("User-Agent"),
+			"path", c.Path(),
+			"method", c.Method(),
+			"status", code,
 		)
 
-		// Enviar respuesta de error personalizada
+		// Enviar respuesta de error
 		return c.Status(code).JSON(fiber.Map{
-			"status":    "error",
-			"message":   getErrorMessage(code),
-			"error":     err.Error(),
-			"timestamp": time.Now().UTC(),
-			"path":      c.Path(),
+			"success": false,
+			"error":   err.Error(),
+			"path":    c.Path(),
+			"status":  code,
 		})
 	}
 }
 
-// getErrorMessage devuelve un mensaje apropiado según el código de estado
-func getErrorMessage(code int) string {
-	switch code {
-	case fiber.StatusBadRequest:
-		return "Bad Request"
-	case fiber.StatusUnauthorized:
-		return "Unauthorized"
-	case fiber.StatusForbidden:
-		return "Forbidden"
-	case fiber.StatusNotFound:
-		return "Not Found"
-	case fiber.StatusMethodNotAllowed:
-		return "Method Not Allowed"
-	case fiber.StatusTooManyRequests:
-		return "Too Many Requests"
-	case fiber.StatusInternalServerError:
-		return "Internal Server Error"
-	case fiber.StatusServiceUnavailable:
-		return "Service Unavailable"
-	default:
-		return "Unknown Error"
-	}
-}
-
-// ensureWebDirectoryExists verifica que el directorio web exista
+// ensureWebDirectoryExists verifica y crea el directorio web si no existe
 func ensureWebDirectoryExists() error {
-	webDirs := []string{
-		"./web",
-		"./web/static",
-		"./web/templates",
-		"./web/static/css",
-		"./web/static/js",
-		"./web/static/images",
-	}
+	webDir := "./web"
+	templatesDir := "./web/templates"
+	staticDir := "./web/static"
 
-	for _, dir := range webDirs {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				return fmt.Errorf("failed to create directory %s: %w", dir, err)
-			}
+	// Crear directorios si no existen
+	dirs := []string{webDir, templatesDir, staticDir}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 	}
 
@@ -246,28 +217,27 @@ func ensureWebDirectoryExists() error {
 	indexPath := "./web/templates/dashboard.html"
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
 		basicHTML := `<!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Engine API Workflow - Dashboard</title>
+    <title>Engine API Workflow Dashboard</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
-        .container { max-width: 800px; margin: 0 auto; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h1 { color: #333; text-align: center; }
-        .status { background: #e8f5e8; padding: 20px; border-radius: 4px; margin: 20px 0; }
-        .api-links { margin: 20px 0; }
-        .api-links a { display: block; margin: 5px 0; color: #007bff; text-decoration: none; }
-        .api-links a:hover { text-decoration: underline; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; margin-bottom: 20px; }
+        .status { background: #e8f5e8; padding: 15px; border-radius: 4px; margin: 20px 0; }
+        .api-links { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+        .api-links a { background: #007bff; color: white; padding: 10px 15px; text-decoration: none; border-radius: 4px; }
+        .api-links a:hover { background: #0056b3; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🚀 Engine API Workflow</h1>
+        <h1>🚀 Engine API Workflow Dashboard</h1>
+        
         <div class="status">
-            <h3>✅ Sistema Activo</h3>
-            <p>El dashboard del sistema está funcionando correctamente.</p>
-            <p><strong>Versión:</strong> 1.0.0</p>
+            <h3>✅ Sistema Operacional</h3>
             <p><strong>Estado:</strong> Operacional</p>
         </div>
         

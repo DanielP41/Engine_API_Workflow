@@ -23,6 +23,9 @@ type DashboardService interface {
 	// Estado de salud del sistema
 	GetSystemHealth(ctx context.Context) (*models.SystemHealth, error)
 
+	// Estadísticas rápidas
+	GetQuickStats(ctx context.Context) (*models.QuickStats, error)
+
 	// Métricas específicas
 	GetDashboardMetrics(ctx context.Context, metrics []string, timeRange string) (map[string]interface{}, error)
 
@@ -31,6 +34,18 @@ type DashboardService interface {
 
 	// Salud de workflow específico
 	GetWorkflowHealth(ctx context.Context, workflowID string) (*models.WorkflowStatusItem, error)
+
+	// Actividad reciente
+	GetRecentActivity(ctx context.Context, limit int) ([]models.ActivityItem, error)
+
+	// Estado de workflows
+	GetWorkflowStatus(ctx context.Context, limit int) ([]models.WorkflowStatusItem, error)
+
+	// Estado de la cola
+	GetQueueStatus(ctx context.Context) (*models.QueueStatus, error)
+
+	// Datos de rendimiento
+	GetPerformanceData(ctx context.Context, timeRange string) (*models.PerformanceData, error)
 
 	// Refrescar datos del dashboard
 	RefreshDashboardData(ctx context.Context) error
@@ -73,27 +88,27 @@ func (s *dashboardService) GetCompleteDashboard(ctx context.Context, filter *mod
 		return nil, fmt.Errorf("failed to get system health: %w", err)
 	}
 
-	quickStats, err := s.getQuickStats(ctx, filter)
+	quickStats, err := s.GetQuickStats(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get quick stats: %w", err)
 	}
 
-	recentActivity, err := s.getRecentActivity(ctx, 50)
+	recentActivity, err := s.GetRecentActivity(ctx, 50)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get recent activity: %w", err)
 	}
 
-	workflowStatus, err := s.getWorkflowStatus(ctx, 10)
+	workflowStatus, err := s.GetWorkflowStatus(ctx, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get workflow status: %w", err)
 	}
 
-	queueStatus, err := s.getQueueStatus(ctx)
+	queueStatus, err := s.GetQueueStatus(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get queue status: %w", err)
 	}
 
-	performanceData, err := s.getPerformanceData(ctx, filter)
+	performanceData, err := s.GetPerformanceData(ctx, filter.TimeRange)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get performance data: %w", err)
 	}
@@ -216,6 +231,54 @@ func (s *dashboardService) GetSystemHealth(ctx context.Context) (*models.SystemH
 		APIResponseTime: 50.0, // Placeholder
 		MemoryUsage:     memoryUsage,
 		CPUUsage:        0.0, // Placeholder - requiere bibliotecas adicionales
+	}, nil
+}
+
+// GetQuickStats obtiene estadísticas rápidas
+func (s *dashboardService) GetQuickStats(ctx context.Context) (*models.QuickStats, error) {
+	// Workflows activos
+	activeWorkflows, err := s.workflowRepo.CountActiveWorkflows(ctx)
+	if err != nil {
+		activeWorkflows = 0
+	}
+
+	// Total de usuarios
+	totalUsers, err := s.userRepo.CountUsers(ctx)
+	if err != nil {
+		totalUsers = 0
+	}
+
+	// Estadísticas de logs
+	logStats, err := s.logRepo.GetStats(ctx, repository.LogSearchFilter{})
+	if err != nil {
+		logStats = &models.LogStats{}
+	}
+
+	// Cola
+	queueLength, err := s.queueRepo.GetQueueLength(ctx, "")
+	if err != nil {
+		queueLength = 0
+	}
+
+	// Calcular tasa de éxito 24h
+	var successRate24h float64
+	if logStats.TotalExecutions > 0 {
+		successRate24h = (float64(logStats.SuccessfulRuns) / float64(logStats.TotalExecutions)) * 100
+	}
+
+	return &models.QuickStats{
+		ActiveWorkflows:     int(activeWorkflows),
+		TotalUsers:          int(totalUsers),
+		RunningExecutions:   0, // Placeholder
+		QueueLength:         int(queueLength),
+		SuccessRate24h:      successRate24h,
+		AvgExecutionTime:    logStats.AverageExecutionTime,
+		ExecutionsToday:     0, // Necesita implementarse según el campo correcto
+		ExecutionsThisWeek:  0, // Necesita implementarse según el campo correcto
+		ExecutionsThisMonth: 0, // Necesita implementarse según el campo correcto
+		ErrorsLast24h:       0, // Necesita implementarse según el campo correcto
+		TotalExecutions:     logStats.TotalExecutions,
+		TotalWorkflows:      int(activeWorkflows), // Usar activos por ahora
 	}, nil
 }
 
@@ -363,7 +426,7 @@ func (s *dashboardService) GetWorkflowHealth(ctx context.Context, workflowID str
 		Name:           workflow.Name,
 		Status:         status,
 		IsActive:       isActive,
-		LastExecution:  nil, // CORREGIDO: nil en lugar de time.Time{}
+		LastExecution:  nil, // nil en lugar de time.Time{}
 		SuccessRate:    successRate,
 		TotalRuns:      stats.TotalExecutions,
 		SuccessfulRuns: stats.SuccessfulRuns,
@@ -375,6 +438,148 @@ func (s *dashboardService) GetWorkflowHealth(ctx context.Context, workflowID str
 		Environment:    workflow.Environment,
 		Tags:           workflow.Tags,
 		CreatedBy:      workflow.UserID.Hex(),
+	}, nil
+}
+
+// GetRecentActivity obtiene actividad reciente
+func (s *dashboardService) GetRecentActivity(ctx context.Context, limit int) ([]models.ActivityItem, error) {
+	// Obtener logs recientes
+	logs, _, err := s.logRepo.Search(ctx, repository.LogSearchFilter{}, repository.PaginationOptions{
+		Page:     1,
+		PageSize: limit,
+		SortBy:   "created_at",
+	})
+	if err != nil {
+		return []models.ActivityItem{}, nil
+	}
+
+	// Convertir logs a items de actividad
+	activity := make([]models.ActivityItem, 0, len(logs))
+	for _, log := range logs {
+		item := models.ActivityItem{
+			ID:           log.ID.Hex(),
+			Type:         "execution",
+			WorkflowID:   log.WorkflowID.Hex(),
+			WorkflowName: log.WorkflowName,
+			UserID:       log.UserID.Hex(),
+			Message:      fmt.Sprintf("Workflow %s executed", log.WorkflowName),
+			Timestamp:    log.CreatedAt,
+			Status:       string(log.Status),
+			Duration:     log.Duration,
+		}
+
+		// Determinar severidad basada en el estado
+		switch log.Status {
+		case "completed":
+			item.Severity = "low"
+		case "failed":
+			item.Severity = "high"
+		case "running":
+			item.Severity = "medium"
+		default:
+			item.Severity = "low"
+		}
+
+		activity = append(activity, item)
+	}
+
+	return activity, nil
+}
+
+// GetWorkflowStatus obtiene estado de workflows
+func (s *dashboardService) GetWorkflowStatus(ctx context.Context, limit int) ([]models.WorkflowStatusItem, error) {
+	// List retorna 2 valores, no 3
+	workflows, err := s.workflowRepo.List(ctx, 1, limit)
+	if err != nil {
+		return []models.WorkflowStatusItem{}, nil
+	}
+
+	// Convertir a WorkflowStatusItem
+	status := make([]models.WorkflowStatusItem, 0, len(workflows.Workflows))
+	for _, workflow := range workflows.Workflows {
+		// Obtener estadísticas del workflow
+		stats, err := s.logRepo.GetWorkflowStats(ctx, workflow.ID, 30)
+		if err != nil {
+			stats = &models.LogStats{}
+		}
+
+		var successRate float64
+		if stats.TotalExecutions > 0 {
+			successRate = (float64(stats.SuccessfulRuns) / float64(stats.TotalExecutions)) * 100
+		}
+
+		isActive := workflow.Active != nil && *workflow.Active
+
+		item := models.WorkflowStatusItem{
+			ID:             workflow.ID.Hex(),
+			Name:           workflow.Name,
+			Status:         "active",
+			IsActive:       isActive,
+			LastExecution:  nil, // nil en lugar de time.Time{}
+			SuccessRate:    successRate,
+			TotalRuns:      stats.TotalExecutions,
+			SuccessfulRuns: stats.SuccessfulRuns,
+			FailedRuns:     stats.FailedRuns,
+			AvgRunTime:     stats.AverageExecutionTime,
+			ErrorRate:      100 - successRate,
+			TriggerType:    s.getTriggerType(*workflow),
+			Priority:       workflow.Priority,
+			Environment:    workflow.Environment,
+			Tags:           workflow.Tags,
+			CreatedBy:      workflow.UserID.Hex(),
+		}
+
+		status = append(status, item)
+	}
+
+	return status, nil
+}
+
+// GetQueueStatus obtiene estado de la cola
+func (s *dashboardService) GetQueueStatus(ctx context.Context) (*models.QueueStatus, error) {
+	queueLength, err := s.queueRepo.GetQueueLength(ctx, "")
+	if err != nil {
+		queueLength = 0
+	}
+
+	// Por ahora retornamos datos básicos
+	// En el futuro esto debería obtener métricas reales de la cola
+	return &models.QueueStatus{
+		Pending:            int(queueLength),
+		Processing:         0, // Placeholder
+		Failed:             0, // Placeholder
+		Completed:          0, // Placeholder
+		DelayedJobs:        0, // Placeholder
+		RetryJobs:          0, // Placeholder
+		ByPriority:         make(map[string]int),
+		AverageWaitTime:    0.0,
+		AverageProcessTime: 0.0,
+		ProcessingRate:     0.0,
+		ThroughputLast24h:  0,
+		QueueHealth:        "healthy",
+		BacklogSize:        int(queueLength),
+		WorkersActive:      1,
+		WorkersTotal:       1,
+	}, nil
+}
+
+// GetPerformanceData obtiene datos de rendimiento
+func (s *dashboardService) GetPerformanceData(ctx context.Context, timeRange string) (*models.PerformanceData, error) {
+	// Por ahora retornamos datos vacíos
+	// En el futuro esto debería generar series temporales reales
+	return &models.PerformanceData{
+		ExecutionsLast24h:    []models.TimeSeriesPoint{},
+		ExecutionsLast7d:     []models.TimeSeriesPoint{},
+		SuccessRateTrend:     []models.TimeSeriesPoint{},
+		AvgExecutionTime:     []models.TimeSeriesPoint{},
+		QueueLengthTrend:     []models.TimeSeriesPoint{},
+		ErrorDistribution:    []models.ErrorCount{},
+		TriggerDistribution:  []models.TriggerCount{},
+		WorkflowDistribution: []models.WorkflowCount{},
+		UserActivityHeatmap:  []models.HeatmapPoint{},
+		SystemResourceUsage:  []models.ResourceUsage{},
+		HourlyExecutions:     []models.HourlyStats{},
+		WeeklyTrends:         []models.WeeklyStats{},
 	}, nil
 }
 
@@ -422,196 +627,6 @@ func (s *dashboardService) ValidateFilter(filter *models.DashboardFilter) error 
 }
 
 // Métodos helper privados
-
-// getQuickStats obtiene estadísticas rápidas
-func (s *dashboardService) getQuickStats(ctx context.Context, filter *models.DashboardFilter) (*models.QuickStats, error) {
-	// Workflows activos
-	activeWorkflows, err := s.workflowRepo.CountActiveWorkflows(ctx)
-	if err != nil {
-		activeWorkflows = 0
-	}
-
-	// Total de usuarios
-	totalUsers, err := s.userRepo.CountUsers(ctx)
-	if err != nil {
-		totalUsers = 0
-	}
-
-	// Estadísticas de logs
-	logStats, err := s.logRepo.GetStats(ctx, repository.LogSearchFilter{})
-	if err != nil {
-		logStats = &models.LogStats{}
-	}
-
-	// Cola
-	queueLength, err := s.queueRepo.GetQueueLength(ctx, "")
-	if err != nil {
-		queueLength = 0
-	}
-
-	// Calcular tasa de éxito 24h
-	var successRate24h float64
-	if logStats.TotalExecutions > 0 {
-		successRate24h = (float64(logStats.SuccessfulRuns) / float64(logStats.TotalExecutions)) * 100
-	}
-
-	return &models.QuickStats{
-		ActiveWorkflows:     int(activeWorkflows),
-		TotalUsers:          int(totalUsers),
-		RunningExecutions:   0, // Placeholder
-		QueueLength:         int(queueLength),
-		SuccessRate24h:      successRate24h,
-		AvgExecutionTime:    logStats.AverageExecutionTime,
-		ExecutionsToday:     0, // Necesita implementarse según el campo correcto
-		ExecutionsThisWeek:  0, // Necesita implementarse según el campo correcto
-		ExecutionsThisMonth: 0, // Necesita implementarse según el campo correcto
-		ErrorsLast24h:       0, // Necesita implementarse según el campo correcto
-		TotalExecutions:     logStats.TotalExecutions,
-		TotalWorkflows:      int(activeWorkflows), // Usar activos por ahora
-	}, nil
-}
-
-// getRecentActivity obtiene actividad reciente
-func (s *dashboardService) getRecentActivity(ctx context.Context, limit int) ([]models.ActivityItem, error) {
-	// Obtener logs recientes - CORREGIDO: usar Search en lugar de SearchLogs
-	logs, _, err := s.logRepo.Search(ctx, repository.LogSearchFilter{}, repository.PaginationOptions{
-		Page:     1,
-		PageSize: limit,
-		SortBy:   "created_at",
-	})
-	if err != nil {
-		return []models.ActivityItem{}, nil
-	}
-
-	// Convertir logs a items de actividad
-	activity := make([]models.ActivityItem, 0, len(logs))
-	for _, log := range logs {
-		item := models.ActivityItem{
-			ID:           log.ID.Hex(),
-			Type:         "execution",
-			WorkflowID:   log.WorkflowID.Hex(),
-			WorkflowName: log.WorkflowName,
-			UserID:       log.UserID.Hex(),
-			Message:      fmt.Sprintf("Workflow %s executed", log.WorkflowName),
-			Timestamp:    log.CreatedAt,
-			Status:       string(log.Status),
-			Duration:     log.Duration, // CORREGIDO: quitar el & porque Duration ya es pointer
-		}
-
-		// Determinar severidad basada en el estado
-		switch log.Status {
-		case "completed":
-			item.Severity = "low"
-		case "failed":
-			item.Severity = "high"
-		case "running":
-			item.Severity = "medium"
-		default:
-			item.Severity = "low"
-		}
-
-		activity = append(activity, item)
-	}
-
-	return activity, nil
-}
-
-// getWorkflowStatus obtiene estado de workflows
-func (s *dashboardService) getWorkflowStatus(ctx context.Context, limit int) ([]models.WorkflowStatusItem, error) {
-	// CORREGIDO: List retorna 2 valores, no 3
-	workflows, err := s.workflowRepo.List(ctx, 1, limit)
-	if err != nil {
-		return []models.WorkflowStatusItem{}, nil
-	}
-
-	// Convertir a WorkflowStatusItem
-	status := make([]models.WorkflowStatusItem, 0, len(workflows.Workflows))
-	for _, workflow := range workflows.Workflows {
-		// Obtener estadísticas del workflow
-		stats, err := s.logRepo.GetWorkflowStats(ctx, workflow.ID, 30)
-		if err != nil {
-			stats = &models.LogStats{}
-		}
-
-		var successRate float64
-		if stats.TotalExecutions > 0 {
-			successRate = (float64(stats.SuccessfulRuns) / float64(stats.TotalExecutions)) * 100
-		}
-
-		isActive := workflow.Active != nil && *workflow.Active
-
-		item := models.WorkflowStatusItem{
-			ID:             workflow.ID.Hex(),
-			Name:           workflow.Name,
-			Status:         "active",
-			IsActive:       isActive,
-			LastExecution:  nil, // CORREGIDO: nil en lugar de time.Time{}
-			SuccessRate:    successRate,
-			TotalRuns:      stats.TotalExecutions,
-			SuccessfulRuns: stats.SuccessfulRuns,
-			FailedRuns:     stats.FailedRuns,
-			AvgRunTime:     stats.AverageExecutionTime,
-			ErrorRate:      100 - successRate,
-			TriggerType:    s.getTriggerType(*workflow),
-			Priority:       workflow.Priority,
-			Environment:    workflow.Environment,
-			Tags:           workflow.Tags,
-			CreatedBy:      workflow.UserID.Hex(),
-		}
-
-		status = append(status, item)
-	}
-
-	return status, nil
-}
-
-// getQueueStatus obtiene estado de la cola
-func (s *dashboardService) getQueueStatus(ctx context.Context) (*models.QueueStatus, error) {
-	queueLength, err := s.queueRepo.GetQueueLength(ctx, "")
-	if err != nil {
-		queueLength = 0
-	}
-
-	// Por ahora retornamos datos básicos
-	// En el futuro esto debería obtener métricas reales de la cola
-	return &models.QueueStatus{
-		Pending:            int(queueLength),
-		Processing:         0, // Placeholder
-		Failed:             0, // Placeholder
-		Completed:          0, // Placeholder
-		DelayedJobs:        0, // Placeholder
-		RetryJobs:          0, // Placeholder
-		ByPriority:         make(map[string]int),
-		AverageWaitTime:    0.0,
-		AverageProcessTime: 0.0,
-		ProcessingRate:     0.0,
-		ThroughputLast24h:  0,
-		QueueHealth:        "healthy",
-		BacklogSize:        int(queueLength),
-		WorkersActive:      1,
-		WorkersTotal:       1,
-	}, nil
-}
-
-// getPerformanceData obtiene datos de rendimiento
-func (s *dashboardService) getPerformanceData(ctx context.Context, filter *models.DashboardFilter) (*models.PerformanceData, error) {
-	// Por ahora retornamos datos vacíos
-	// En el futuro esto debería generar series temporales reales
-	return &models.PerformanceData{
-		ExecutionsLast24h:    []models.TimeSeriesPoint{},
-		ExecutionsLast7d:     []models.TimeSeriesPoint{},
-		SuccessRateTrend:     []models.TimeSeriesPoint{},
-		AvgExecutionTime:     []models.TimeSeriesPoint{},
-		QueueLengthTrend:     []models.TimeSeriesPoint{},
-		ErrorDistribution:    []models.ErrorCount{},
-		TriggerDistribution:  []models.TriggerCount{},
-		WorkflowDistribution: []models.WorkflowCount{},
-		UserActivityHeatmap:  []models.HeatmapPoint{},
-		SystemResourceUsage:  []models.ResourceUsage{},
-		HourlyExecutions:     []models.HourlyStats{},
-		WeeklyTrends:         []models.WeeklyStats{},
-	}, nil
-}
 
 // getTriggerType obtiene el tipo de trigger principal del workflow
 func (s *dashboardService) getTriggerType(workflow models.Workflow) string {

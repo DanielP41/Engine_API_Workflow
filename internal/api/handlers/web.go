@@ -19,7 +19,7 @@ type WebHandler struct {
 	userRepo        repository.UserRepository
 	workflowService services.WorkflowService
 	logService      services.LogService
-	authService     *services.AuthServiceImpl
+	authService     services.AuthService // CORREGIDO: Usar interfaz en lugar de implementación específica
 	jwtService      jwt.JWTService
 }
 
@@ -27,7 +27,7 @@ func NewWebHandler(
 	userRepo repository.UserRepository,
 	workflowService services.WorkflowService,
 	logService services.LogService,
-	authService *services.AuthServiceImpl,
+	authService services.AuthService, // CORREGIDO: Usar interfaz en lugar de implementación específica
 	jwtService jwt.JWTService,
 ) *WebHandler {
 	return &WebHandler{
@@ -92,8 +92,8 @@ func (h *WebHandler) HandleLogin(c *fiber.Ctx) error {
 		return c.Redirect("/login?error=Account is deactivated")
 	}
 
-	// Generar tokens
-	tokens, err := h.authService.GenerateTokens(user.ID, user.Email, string(user.Role))
+	// Generar tokens - CORREGIDO: capturar los 3 valores de retorno y convertir user.ID a string
+	accessToken, refreshToken, err := h.authService.GenerateTokens(user.ID.Hex(), user.Email, string(user.Role))
 	if err != nil {
 		return c.Redirect("/login?error=Login failed, please try again")
 	}
@@ -101,15 +101,18 @@ func (h *WebHandler) HandleLogin(c *fiber.Ctx) error {
 	// Actualizar último login
 	h.userRepo.UpdateLastLogin(c.Context(), user.ID)
 
-	// Establecer cookie con el token
+	// Establecer cookie con el token - CORREGIDO: usar accessToken directamente
 	c.Cookie(&fiber.Cookie{
 		Name:     "auth_token",
-		Value:    tokens.AccessToken,
+		Value:    accessToken,
 		Expires:  time.Now().Add(24 * time.Hour),
 		HTTPOnly: true,
 		Secure:   false, // En producción debe ser true
 		SameSite: "Lax",
 	})
+
+	// Nota: refreshToken se podría guardar en una cookie separada o base de datos si se necesita
+	_ = refreshToken // Evitar warning de variable no usada
 
 	return c.Redirect("/dashboard")
 }
@@ -170,7 +173,7 @@ func (h *WebHandler) ShowWorkflows(c *fiber.Ctx) error {
 		filters.UserID = &user.ID
 	}
 	if search != "" {
-		filters.Query = search
+		filters.Query = &search // CORREGIDO: usar puntero a string
 	}
 	if status != "" {
 		workflowStatus := models.WorkflowStatus(status)

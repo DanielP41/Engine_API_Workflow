@@ -57,26 +57,26 @@ func (h *DashboardHandler) GetDashboard(c *fiber.Ctx) error {
 	filter, err := h.parseFilterFromQuery(c)
 	if err != nil {
 		h.logger.Warn("Invalid filter parameters", zap.Error(err))
-		return c.Status(fiber.StatusBadRequest).JSON(utils.ErrorResponse("Invalid filter parameters", err.Error()))
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Invalid filter parameters", err.Error())
 	}
 
 	// Validar filtros
 	if err := h.dashboardService.ValidateFilter(filter); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.ErrorResponse("Invalid filter", err.Error()))
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Invalid filter", err.Error())
 	}
 
 	// Obtener datos del dashboard
 	dashboardData, err := h.dashboardService.GetCompleteDashboard(c.Context(), filter)
 	if err != nil {
 		h.logger.Error("Failed to get dashboard data", zap.Error(err), zap.String("user_id", userID.Hex()))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get dashboard data", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get dashboard data", nil)
 	}
 
 	h.logger.Info("Dashboard data retrieved successfully",
 		zap.String("user_id", userID.Hex()),
 		zap.String("time_range", filter.TimeRange))
 
-	return c.JSON(utils.SuccessResponse("Dashboard data retrieved successfully", dashboardData))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Dashboard data retrieved successfully", dashboardData)
 }
 
 // GetDashboardSummary obtiene un resumen ejecutivo del dashboard
@@ -99,10 +99,10 @@ func (h *DashboardHandler) GetDashboardSummary(c *fiber.Ctx) error {
 	summary, err := h.dashboardService.GetDashboardSummary(c.Context())
 	if err != nil {
 		h.logger.Error("Failed to get dashboard summary", zap.Error(err), zap.String("user_id", userID.Hex()))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get dashboard summary", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get dashboard summary", nil)
 	}
 
-	return c.JSON(utils.SuccessResponse("Dashboard summary retrieved successfully", summary))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Dashboard summary retrieved successfully", summary)
 }
 
 // GetSystemHealth obtiene el estado de salud del sistema
@@ -120,10 +120,10 @@ func (h *DashboardHandler) GetSystemHealth(c *fiber.Ctx) error {
 	systemHealth, err := h.dashboardService.GetSystemHealth(c.Context())
 	if err != nil {
 		h.logger.Error("Failed to get system health", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get system health", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get system health", nil)
 	}
 
-	return c.JSON(utils.SuccessResponse("System health retrieved successfully", systemHealth))
+	return utils.SuccessResponse(c, fiber.StatusOK, "System health retrieved successfully", systemHealth)
 }
 
 // GetQuickStats obtiene estadísticas rápidas
@@ -146,10 +146,10 @@ func (h *DashboardHandler) GetQuickStats(c *fiber.Ctx) error {
 	quickStats, err := h.dashboardService.GetQuickStats(c.Context())
 	if err != nil {
 		h.logger.Error("Failed to get quick stats", zap.Error(err), zap.String("user_id", userID.Hex()))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get quick stats", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get quick stats", nil)
 	}
 
-	return c.JSON(utils.SuccessResponse("Quick stats retrieved successfully", quickStats))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Quick stats retrieved successfully", quickStats)
 }
 
 // GetRecentActivity obtiene la actividad reciente
@@ -181,10 +181,10 @@ func (h *DashboardHandler) GetRecentActivity(c *fiber.Ctx) error {
 	activities, err := h.dashboardService.GetRecentActivity(c.Context(), limit)
 	if err != nil {
 		h.logger.Error("Failed to get recent activity", zap.Error(err), zap.String("user_id", userID.Hex()))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get recent activity", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get recent activity", nil)
 	}
 
-	return c.JSON(utils.SuccessResponse("Recent activity retrieved successfully", activities))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Recent activity retrieved successfully", activities)
 }
 
 // GetWorkflowStatus obtiene el estado de los workflows
@@ -216,10 +216,10 @@ func (h *DashboardHandler) GetWorkflowStatus(c *fiber.Ctx) error {
 	workflowStatus, err := h.dashboardService.GetWorkflowStatus(c.Context(), limit)
 	if err != nil {
 		h.logger.Error("Failed to get workflow status", zap.Error(err), zap.String("user_id", userID.Hex()))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get workflow status", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get workflow status", nil)
 	}
 
-	return c.JSON(utils.SuccessResponse("Workflow status retrieved successfully", workflowStatus))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Workflow status retrieved successfully", workflowStatus)
 }
 
 // GetQueueStatus obtiene el estado de las colas
@@ -242,10 +242,10 @@ func (h *DashboardHandler) GetQueueStatus(c *fiber.Ctx) error {
 	queueStatus, err := h.dashboardService.GetQueueStatus(c.Context())
 	if err != nil {
 		h.logger.Error("Failed to get queue status", zap.Error(err), zap.String("user_id", userID.Hex()))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get queue status", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get queue status", nil)
 	}
 
-	return c.JSON(utils.SuccessResponse("Queue status retrieved successfully", queueStatus))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Queue status retrieved successfully", queueStatus)
 }
 
 // GetPerformanceData obtiene datos de rendimiento para gráficos
@@ -278,16 +278,16 @@ func (h *DashboardHandler) GetPerformanceData(c *fiber.Ctx) error {
 		}
 	}
 	if !isValid {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.ErrorResponse("Invalid time_range", "Valid options: 1h, 6h, 12h, 24h, 7d, 30d"))
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Invalid time_range", "Valid options: 1h, 6h, 12h, 24h, 7d, 30d")
 	}
 
 	performanceData, err := h.dashboardService.GetPerformanceData(c.Context(), timeRange)
 	if err != nil {
 		h.logger.Error("Failed to get performance data", zap.Error(err), zap.String("user_id", userID.Hex()))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get performance data", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get performance data", nil)
 	}
 
-	return c.JSON(utils.SuccessResponse("Performance data retrieved successfully", performanceData))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Performance data retrieved successfully", performanceData)
 }
 
 // GetActiveAlerts obtiene las alertas activas
@@ -310,10 +310,10 @@ func (h *DashboardHandler) GetActiveAlerts(c *fiber.Ctx) error {
 	alerts, err := h.dashboardService.GetActiveAlerts(c.Context())
 	if err != nil {
 		h.logger.Error("Failed to get active alerts", zap.Error(err), zap.String("user_id", userID.Hex()))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get active alerts", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get active alerts", nil)
 	}
 
-	return c.JSON(utils.SuccessResponse("Active alerts retrieved successfully", alerts))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Active alerts retrieved successfully", alerts)
 }
 
 // GetWorkflowHealth obtiene la salud de un workflow específico
@@ -338,19 +338,19 @@ func (h *DashboardHandler) GetWorkflowHealth(c *fiber.Ctx) error {
 
 	workflowID := c.Params("id")
 	if workflowID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.ErrorResponse("Workflow ID is required", ""))
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Workflow ID is required", nil)
 	}
 
 	workflowHealth, err := h.dashboardService.GetWorkflowHealth(c.Context(), workflowID)
 	if err != nil {
 		if err.Error() == "workflow not found: "+workflowID {
-			return c.Status(fiber.StatusNotFound).JSON(utils.ErrorResponse("Workflow not found", ""))
+			return utils.ErrorResponse(c, fiber.StatusNotFound, "Workflow not found", nil)
 		}
 		h.logger.Error("Failed to get workflow health", zap.Error(err), zap.String("user_id", userID.Hex()), zap.String("workflow_id", workflowID))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get workflow health", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get workflow health", nil)
 	}
 
-	return c.JSON(utils.SuccessResponse("Workflow health retrieved successfully", workflowHealth))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Workflow health retrieved successfully", workflowHealth)
 }
 
 // GetMetrics obtiene métricas específicas del dashboard
@@ -376,7 +376,7 @@ func (h *DashboardHandler) GetMetrics(c *fiber.Ctx) error {
 	// Parsear métricas solicitadas
 	metricsParam := c.Query("metrics")
 	if metricsParam == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.ErrorResponse("Metrics parameter is required", ""))
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Metrics parameter is required", nil)
 	}
 
 	metricNames := []string{}
@@ -390,10 +390,10 @@ func (h *DashboardHandler) GetMetrics(c *fiber.Ctx) error {
 	metrics, err := h.dashboardService.GetDashboardMetrics(c.Context(), metricNames, timeRange)
 	if err != nil {
 		h.logger.Error("Failed to get metrics", zap.Error(err), zap.String("user_id", userID.Hex()))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to get metrics", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get metrics", nil)
 	}
 
-	return c.JSON(utils.SuccessResponse("Metrics retrieved successfully", metrics))
+	return utils.SuccessResponse(c, fiber.StatusOK, "Metrics retrieved successfully", metrics)
 }
 
 // RefreshDashboard fuerza la actualización de los datos del dashboard
@@ -416,19 +416,19 @@ func (h *DashboardHandler) RefreshDashboard(c *fiber.Ctx) error {
 	// Verificar que el usuario sea admin para esta operación
 	userRole, _ := middleware.GetCurrentUserRole(c)
 	if userRole != "admin" {
-		return c.Status(fiber.StatusForbidden).JSON(utils.ErrorResponse("Admin access required", ""))
+		return utils.ErrorResponse(c, fiber.StatusForbidden, "Admin access required", nil)
 	}
 
 	err = h.dashboardService.RefreshDashboardData(c.Context())
 	if err != nil {
 		h.logger.Error("Failed to refresh dashboard data", zap.Error(err), zap.String("user_id", userID.Hex()))
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.ErrorResponse("Failed to refresh dashboard data", ""))
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to refresh dashboard data", nil)
 	}
 
 	h.logger.Info("Dashboard data refreshed successfully", zap.String("user_id", userID.Hex()))
-	return c.JSON(utils.SuccessResponse("Dashboard data refreshed successfully", map[string]interface{}{
+	return utils.SuccessResponse(c, fiber.StatusOK, "Dashboard data refreshed successfully", map[string]interface{}{
 		"refreshed_at": time.Now(),
-	}))
+	})
 }
 
 // ServeDashboardPage sirve la página HTML del dashboard
