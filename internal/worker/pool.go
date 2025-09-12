@@ -317,6 +317,13 @@ func (p *WorkerPool) getNextWorkerID() int {
 	return maxID + 1
 }
 
+// GetWorkerCount obtiene el número actual de workers (MÉTODO AGREGADO)
+func (p *WorkerPool) GetWorkerCount() int {
+	p.workersMutex.RLock()
+	defer p.workersMutex.RUnlock()
+	return len(p.workers)
+}
+
 // Worker methods
 
 // Run ejecuta el loop principal del worker
@@ -368,7 +375,7 @@ func (w *Worker) processTask(task *models.QueueTask) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	// Aquí integramos con el processNextTask existente
+	// Aquí integramos con el processTask existente
 	err := w.engine.processTask(ctx, task, w.logger)
 
 	w.mutex.Lock()
@@ -398,7 +405,7 @@ func (w *Worker) GetStats() WorkerStats {
 	return w.stats
 }
 
-// GetPoolStats obtiene estadísticas del pool
+// GetStats obtiene estadísticas del pool (MÉTODO RENOMBRADO para evitar conflicto)
 func (p *WorkerPool) GetStats() map[string]interface{} {
 	p.workersMutex.RLock()
 	defer p.workersMutex.RUnlock()

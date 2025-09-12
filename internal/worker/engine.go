@@ -1,5 +1,3 @@
-// internal/worker/engine.go - MODIFICACIONES NECESARIAS
-
 package worker
 
 import (
@@ -7,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"Engine_API_Workflow/internal/models"
@@ -16,6 +15,26 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.uber.org/zap"
 )
+
+// WorkerConfig configuración del worker
+type WorkerConfig struct {
+	Workers           int           `json:"workers"`
+	MaxWorkers        int           `json:"max_workers"`
+	PollInterval      time.Duration `json:"poll_interval"`
+	MaxRetries        int           `json:"max_retries"`
+	RetryDelay        time.Duration `json:"retry_delay"`
+	ProcessingTimeout time.Duration `json:"processing_timeout"`
+}
+
+// TaskData estructura de datos del task
+type TaskData struct {
+	LogID     string                 `json:"log_id"`
+	Workflow  *models.Workflow       `json:"workflow"`
+	TriggerBy string                 `json:"trigger_by"`
+	Data      map[string]interface{} `json:"data"`
+	Metadata  map[string]interface{} `json:"metadata"`
+	UserID    string                 `json:"user_id"`
+}
 
 // WorkerEngine - ESTRUCTURA ACTUALIZADA
 type WorkerEngine struct {
@@ -30,23 +49,24 @@ type WorkerEngine struct {
 	executor *WorkflowExecutor
 	logger   *zap.Logger
 
-	// 🆕 NUEVOS COMPONENTES
+	// NUEVOS COMPONENTES
 	pool         *WorkerPool       // Pool dinámico de workers
 	retryManager *RetryManager     // Sistema de reintentos
 	metrics      *MetricsCollector // Sistema de métricas
 
-	// 🆕 NUEVOS EJECUTORES DE ACCIONES
+	// NUEVOS EJECUTORES DE ACCIONES
 	httpExecutor    *HTTPActionExecutor
 	emailExecutor   *EmailActionExecutor
 	slackExecutor   *SlackActionExecutor
 	webhookExecutor *WebhookActionExecutor
 
 	// Control de estado
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
-	isRunning bool
-	mu        sync.RWMutex
-	startTime time.Time // Para métricas de uptime
+	stopCh      chan struct{}
+	wg          sync.WaitGroup
+	isRunning   bool
+	mu          sync.RWMutex
+	startTime   time.Time // Para métricas de uptime
+	currentLoad int64     // Para tracking de carga
 }
 
 // NewWorkerEngine - CONSTRUCTOR ACTUALIZADO
@@ -70,11 +90,11 @@ func NewWorkerEngine(
 	// Crear ejecutor original
 	executor := NewWorkflowExecutor(logService, logger)
 
-	// 🆕 CREAR NUEVOS COMPONENTES
+	// CREAR NUEVOS COMPONENTES
 	retryManager := NewRetryManager(queueRepo, logRepo, logger)
 	metrics := NewMetricsCollector(logger, queueRepo)
 
-	// 🆕 CREAR EJECUTORES DE ACCIONES REALES
+	// CREAR EJECUTORES DE ACCIONES REALES
 	httpExecutor := NewHTTPActionExecutor(logger)
 	emailExecutor := NewEmailActionExecutor(logger)
 	slackExecutor := NewSlackActionExecutor(logger)
@@ -91,7 +111,7 @@ func NewWorkerEngine(
 		logger:       logger,
 		stopCh:       make(chan struct{}),
 
-		// 🆕 NUEVOS COMPONENTES
+		// NUEVOS COMPONENTES
 		retryManager:    retryManager,
 		metrics:         metrics,
 		httpExecutor:    httpExecutor,
@@ -99,9 +119,10 @@ func NewWorkerEngine(
 		slackExecutor:   slackExecutor,
 		webhookExecutor: webhookExecutor,
 		startTime:       time.Now(),
+		currentLoad:     0,
 	}
 
-	// 🆕 CREAR WORKER POOL (reemplaza workers simples)
+	// CREAR WORKER POOL (reemplaza workers simples)
 	engine.pool = NewWorkerPool(engine, config.Workers, config.MaxWorkers, logger)
 
 	return engine
@@ -118,16 +139,16 @@ func (e *WorkerEngine) Start(ctx context.Context) error {
 
 	e.logger.Info("Starting advanced worker engine with pool and metrics")
 
-	// 🆕 INICIAR WORKER POOL (en lugar de workers simples)
+	// INICIAR WORKER POOL (en lugar de workers simples)
 	if err := e.pool.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start worker pool: %w", err)
 	}
 
-	// 🆕 INICIAR LIMPIEZA PERIÓDICA DE MÉTRICAS
+	// INICIAR LIMPIEZA PERIÓDICA DE MÉTRICAS
 	e.wg.Add(1)
 	go e.metrics.StartPeriodicCleanup(ctx)
 
-	// 🆕 INICIAR LIMPIEZA DE REINTENTOS ANTIGUOS
+	// INICIAR LIMPIEZA DE REINTENTOS ANTIGUOS
 	e.wg.Add(1)
 	go e.periodicRetryCleanup(ctx)
 
@@ -148,7 +169,7 @@ func (e *WorkerEngine) Stop() error {
 
 	e.logger.Info("Stopping advanced worker engine...")
 
-	// 🆕 DETENER WORKER POOL
+	// DETENER WORKER POOL
 	if err := e.pool.Stop(); err != nil {
 		e.logger.Error("Error stopping worker pool", zap.Error(err))
 	}
@@ -163,7 +184,23 @@ func (e *WorkerEngine) Stop() error {
 	return nil
 }
 
-// 🆕 NUEVO MÉTODO: Procesar tarea con reintentos y métricas
+// GetStats - MÉTODO EXISTENTE (mantener compatibilidad)
+func (e *WorkerEngine) GetStats(ctx context.Context) (map[string]interface{}, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	stats := map[string]interface{}{
+		"is_running":    e.isRunning,
+		"current_load":  atomic.LoadInt64(&e.currentLoad),
+		"start_time":    e.startTime,
+		"uptime":        time.Since(e.startTime),
+		"workers_count": e.pool.GetWorkerCount(),
+	}
+
+	return stats, nil
+}
+
+// NUEVO MÉTODO: Procesar tarea con reintentos y métricas
 func (e *WorkerEngine) ProcessTaskWithRetries(ctx context.Context, task *models.QueueTask, logger *zap.Logger) error {
 	startTime := time.Now()
 
@@ -177,7 +214,7 @@ func (e *WorkerEngine) ProcessTaskWithRetries(ctx context.Context, task *models.
 	err := e.executeWorkflowTaskAdvanced(ctx, task, &taskData, logger)
 	duration := time.Since(startTime)
 
-	// 🆕 REGISTRAR MÉTRICAS
+	// REGISTRAR MÉTRICAS
 	actionType := "workflow" // Se puede extraer del workflow
 	if taskData.Workflow != nil && len(taskData.Workflow.Steps) > 0 {
 		actionType = taskData.Workflow.Steps[0].Type
@@ -187,7 +224,7 @@ func (e *WorkerEngine) ProcessTaskWithRetries(ctx context.Context, task *models.
 	e.metrics.RecordTaskProcessed(actionType, duration, success)
 
 	if err != nil {
-		// 🆕 USAR SISTEMA DE REINTENTOS
+		// USAR SISTEMA DE REINTENTOS
 		workflow := taskData.Workflow
 		if workflow != nil {
 			policy := e.retryManager.GetWorkflowRetryPolicy(workflow)
@@ -200,7 +237,7 @@ func (e *WorkerEngine) ProcessTaskWithRetries(ctx context.Context, task *models.
 	return e.queueRepo.MarkCompleted(ctx, task.ID)
 }
 
-// 🆕 NUEVO MÉTODO: Ejecutar workflow con nuevos ejecutores
+// NUEVO MÉTODO: Ejecutar workflow con nuevos ejecutores
 func (e *WorkerEngine) executeWorkflowTaskAdvanced(ctx context.Context, task *models.QueueTask, taskData *TaskData, logger *zap.Logger) error {
 	// Usar el executor original pero con nuevos ejecutores de acciones
 	logID, err := primitive.ObjectIDFromHex(taskData.LogID)
@@ -213,7 +250,7 @@ func (e *WorkerEngine) executeWorkflowTaskAdvanced(ctx context.Context, task *mo
 		return fmt.Errorf("invalid user ID: %w", err)
 	}
 
-	// 🆕 INTEGRAR EJECUTORES REALES
+	// INTEGRAR EJECUTORES REALES
 	e.executor.SetActionExecutors(
 		e.httpExecutor,
 		e.emailExecutor,
@@ -225,7 +262,7 @@ func (e *WorkerEngine) executeWorkflowTaskAdvanced(ctx context.Context, task *mo
 	return e.executor.Execute(ctx, taskData.Workflow, userID, logID, taskData.Data)
 }
 
-// 🆕 NUEVO MÉTODO: Limpieza periódica de reintentos
+// NUEVO MÉTODO: Limpieza periódica de reintentos
 func (e *WorkerEngine) periodicRetryCleanup(ctx context.Context) {
 	defer e.wg.Done()
 
@@ -246,7 +283,7 @@ func (e *WorkerEngine) periodicRetryCleanup(ctx context.Context) {
 	}
 }
 
-// 🆕 NUEVOS MÉTODOS: Exponer métricas y estado
+// NUEVOS MÉTODOS: Exponer métricas y estado
 func (e *WorkerEngine) GetAdvancedStats(ctx context.Context) (map[string]interface{}, error) {
 	// Combinar estadísticas existentes con nuevas métricas
 	poolStats := e.pool.GetStats()
@@ -283,4 +320,19 @@ func (e *WorkerEngine) GetRetryManager() *RetryManager {
 
 func (e *WorkerEngine) GetWorkerPool() *WorkerPool {
 	return e.pool
+}
+
+// MÉTODOS DE COMPATIBILIDAD (necesarios para los errores actuales)
+
+// markTaskFailed marca una tarea como fallida
+func (e *WorkerEngine) markTaskFailed(ctx context.Context, taskID string, err error) error {
+	return e.queueRepo.MarkFailed(ctx, taskID, err)
+}
+
+// processTask procesa una tarea (método usado por pool.go)
+func (e *WorkerEngine) processTask(ctx context.Context, task *models.QueueTask, logger *zap.Logger) error {
+	atomic.AddInt64(&e.currentLoad, 1)
+	defer atomic.AddInt64(&e.currentLoad, -1)
+
+	return e.ProcessTaskWithRetries(ctx, task, logger)
 }
