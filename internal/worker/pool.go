@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,7 +69,7 @@ type WorkerStats struct {
 	LastError       string
 }
 
-// PoolConfig configuración específica del pool
+// PoolConfig configuración específica del pool (separada de WorkerConfig)
 type PoolConfig struct {
 	ScalingInterval     time.Duration
 	HealthCheckInterval time.Duration
@@ -322,203 +321,45 @@ func (p *WorkerPool) evaluateScaling() {
 	}
 
 	currentWorkers := len(p.workers)
-	queueLength := p.getQueueLength()
 	avgLoad := p.calculateAverageLoad()
-
-	// Obtener métricas adicionales
-	errorRate := p.calculateErrorRate()
-
-	p.logger.Debug("Enhanced scaling evaluation",
-		zap.Int("current_workers", currentWorkers),
-		zap.Int64("queue_length", queueLength),
-		zap.Float64("avg_load", avgLoad),
-		zap.Float64("error_rate", errorRate))
+	queueLength := p.getQueueLength()
 
 	// Detectar modo de emergencia
 	if queueLength > p.config.EmergencyThreshold {
-		p.enterEmergencyMode("high_queue_length")
-	} else if p.emergencyMode && queueLength < p.config.EmergencyThreshold/2 {
-		p.exitEmergencyMode()
+		p.activateEmergencyMode("high_queue_length")
 	}
 
 	// Lógica de escalamiento
-	scalingDecision := p.makeScalingDecision(currentWorkers, queueLength, avgLoad, errorRate)
-
-	if scalingDecision.action != "none" {
-		p.executeScalingDecision(scalingDecision)
-		p.lastScaleTime = time.Now()
-	}
-}
-
-type ScalingDecision struct {
-	action     string // "scale_up", "scale_down", "none"
-	targetSize int
-	reason     string
-	priority   int
-}
-
-func (p *WorkerPool) makeScalingDecision(currentWorkers int, queueLength int64, avgLoad, errorRate float64) ScalingDecision {
-	// Modo emergencia: escalar agresivamente
-	if p.emergencyMode {
-		targetWorkers := min(p.maxWorkers, currentWorkers*2)
-		return ScalingDecision{
-			action:     "scale_up",
-			targetSize: targetWorkers,
-			reason:     "emergency_mode",
-			priority:   10,
-		}
-	}
-
-	// Escalar hacia arriba
 	if avgLoad > p.config.ScalingThreshold && currentWorkers < p.maxWorkers {
-		workersNeeded := int(float64(queueLength)/5.0) + 1
-		targetWorkers := min(p.maxWorkers, currentWorkers+workersNeeded)
-
-		return ScalingDecision{
-			action:     "scale_up",
-			targetSize: targetWorkers,
-			reason:     fmt.Sprintf("high_load_%.2f", avgLoad),
-			priority:   5,
+		// Scale up
+		newWorkerID := p.getNextWorkerID()
+		if err := p.createWorker(newWorkerID); err == nil {
+			p.lastScaleTime = time.Now()
+			p.logger.Info("Scaled up workers",
+				zap.Float64("avg_load", avgLoad),
+				zap.Int64("queue_length", queueLength),
+				zap.Int("new_workers", currentWorkers+1))
+		}
+	} else if avgLoad < p.config.DownscaleThreshold && currentWorkers > p.minWorkers {
+		// Scale down
+		oldestWorkerID := p.getOldestWorkerID()
+		if oldestWorkerID >= 0 {
+			p.removeWorker(oldestWorkerID)
+			p.lastScaleTime = time.Now()
+			p.logger.Info("Scaled down workers",
+				zap.Float64("avg_load", avgLoad),
+				zap.Int64("queue_length", queueLength),
+				zap.Int("new_workers", currentWorkers-1))
 		}
 	}
 
-	// Escalar hacia abajo
-	if avgLoad < p.config.DownscaleThreshold && currentWorkers > p.minWorkers && queueLength == 0 {
-		targetWorkers := max(p.minWorkers, currentWorkers-1)
-
-		return ScalingDecision{
-			action:     "scale_down",
-			targetSize: targetWorkers,
-			reason:     fmt.Sprintf("low_load_%.2f", avgLoad),
-			priority:   1,
-		}
-	}
-
-	return ScalingDecision{action: "none"}
-}
-
-func (p *WorkerPool) executeScalingDecision(decision ScalingDecision) {
-	currentWorkers := len(p.workers)
-
-	if decision.action == "scale_up" {
-		workersToAdd := decision.targetSize - currentWorkers
-		for i := 0; i < workersToAdd; i++ {
-			newWorkerID := p.getNextWorkerID()
-			if err := p.createWorker(newWorkerID); err != nil {
-				p.logger.Error("Failed to scale up", zap.Error(err))
-				break
-			}
-		}
-	} else if decision.action == "scale_down" {
-		workersToRemove := currentWorkers - decision.targetSize
-		for i := 0; i < workersToRemove; i++ {
-			idleWorkerID := p.findIdleWorker()
-			if idleWorkerID != -1 {
-				p.removeWorker(idleWorkerID)
-			}
-		}
+	// Desactivar modo de emergencia si es necesario
+	if queueLength < p.config.EmergencyThreshold/2 && p.emergencyMode {
+		p.deactivateEmergencyMode()
 	}
 }
 
-// enhancedTaskDispatcher distribuye tareas de forma optimizada
-func (p *WorkerPool) enhancedTaskDispatcher(ctx context.Context) {
-	defer p.wg.Done()
-
-	taskBuffer := make([]*models.QueueTask, 0, 10)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-p.stopCh:
-			return
-		case <-ticker.C:
-			// Procesar tasks en batch para mejor performance
-			newTasks := p.fetchTasksBatch(10)
-			taskBuffer = append(taskBuffer, newTasks...)
-
-			// Distribuir tasks usando algoritmo optimizado
-			taskBuffer = p.distributeTasksOptimally(taskBuffer)
-		}
-	}
-}
-
-func (p *WorkerPool) fetchTasksBatch(maxTasks int) []*models.QueueTask {
-	tasks := make([]*models.QueueTask, 0, maxTasks)
-
-	for i := 0; i < maxTasks; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		task, err := p.engine.queueRepo.Dequeue(ctx)
-		cancel()
-
-		if err != nil || task == nil {
-			break
-		}
-		tasks = append(tasks, task)
-	}
-
-	return tasks
-}
-
-func (p *WorkerPool) distributeTasksOptimally(tasks []*models.QueueTask) []*models.QueueTask {
-	if len(tasks) == 0 {
-		return tasks
-	}
-
-	// Obtener workers ordenados por carga (menos cargados primero)
-	workers := p.getWorkersByLoad()
-	distributed := 0
-
-	for _, task := range tasks {
-		if distributed >= len(tasks) {
-			break
-		}
-
-		// Buscar el worker menos cargado disponible
-		for _, worker := range workers {
-			select {
-			case worker.tasksCh <- task:
-				atomic.AddInt64(&p.currentLoad, 1)
-				distributed++
-				goto nextTask
-			default:
-				continue // Worker ocupado, probar el siguiente
-			}
-		}
-
-		// Si no se pudo distribuir, mantener en buffer
-		if distributed < len(tasks) {
-			return tasks[distributed:]
-		}
-
-	nextTask:
-	}
-
-	return tasks[distributed:]
-}
-
-func (p *WorkerPool) getWorkersByLoad() []*Worker {
-	p.workersMutex.RLock()
-	defer p.workersMutex.RUnlock()
-
-	workers := make([]*Worker, 0, len(p.workers))
-	for _, worker := range p.workers {
-		if worker.isActive {
-			workers = append(workers, worker)
-		}
-	}
-
-	// Ordenar por carga (workers menos ocupados primero)
-	sort.Slice(workers, func(i, j int) bool {
-		return len(workers[i].tasksCh) < len(workers[j].tasksCh)
-	})
-
-	return workers
-}
-
-// healthMonitor ejecuta chequeos de salud periódicos
+// healthMonitor monitorea la salud de los workers
 func (p *WorkerPool) healthMonitor(ctx context.Context) {
 	defer p.wg.Done()
 
@@ -537,49 +378,120 @@ func (p *WorkerPool) healthMonitor(ctx context.Context) {
 	}
 }
 
+// performHealthCheck realiza chequeos de salud en todos los workers
 func (p *WorkerPool) performHealthCheck() {
 	p.healthChecker.mutex.Lock()
 	defer p.healthChecker.mutex.Unlock()
 
-	issues := make([]string, 0)
-	unhealthyWorkers := 0
+	p.healthChecker.lastCheck = time.Now()
+	p.healthChecker.healthStatus.LastCheckTime = time.Now()
+	p.healthChecker.healthStatus.Issues = make([]string, 0)
+
+	unhealthyCount := 0
 
 	p.workersMutex.RLock()
-	for _, worker := range p.workers {
-		if !worker.isHealthy || time.Since(worker.lastHeartbeat) > p.config.HealthCheckInterval*2 {
-			unhealthyWorkers++
-			issues = append(issues, fmt.Sprintf("worker_%d_unhealthy", worker.ID))
+	for id, worker := range p.workers {
+		worker.mutex.RLock()
+
+		// Verificar heartbeat
+		if time.Since(worker.lastHeartbeat) > p.config.MaxIdleTime {
+			unhealthyCount++
+			p.healthChecker.healthStatus.Issues = append(
+				p.healthChecker.healthStatus.Issues,
+				fmt.Sprintf("Worker %d: heartbeat timeout", id),
+			)
+			worker.mutex.RUnlock()
+			continue
 		}
+
+		// Verificar errores recientes
+		if worker.stats.ErrorRate > 0.5 { // 50% error rate
+			unhealthyCount++
+			p.healthChecker.healthStatus.Issues = append(
+				p.healthChecker.healthStatus.Issues,
+				fmt.Sprintf("Worker %d: high error rate (%.2f%%)", id, worker.stats.ErrorRate*100),
+			)
+		}
+
+		worker.mutex.RUnlock()
 	}
 	p.workersMutex.RUnlock()
 
-	// Verificar salud del pool
-	queueLength := p.getQueueLength()
-	if queueLength > p.config.EmergencyThreshold {
-		issues = append(issues, "queue_length_critical")
-	}
+	p.healthChecker.healthStatus.UnhealthyCount = unhealthyCount
+	p.healthChecker.healthStatus.IsHealthy = unhealthyCount == 0
 
-	avgLoad := p.calculateAverageLoad()
-	if avgLoad > 0.95 {
-		issues = append(issues, "high_system_load")
-	}
-
-	// Actualizar estado de salud
-	p.healthChecker.healthStatus = HealthStatus{
-		IsHealthy:      len(issues) == 0,
-		UnhealthyCount: unhealthyWorkers,
-		LastCheckTime:  time.Now(),
-		Issues:         issues,
-	}
-
-	p.healthChecker.lastCheck = time.Now()
-
-	if len(issues) > 0 {
-		p.logger.Warn("Health check found issues", zap.Strings("issues", issues))
+	if !p.healthChecker.healthStatus.IsHealthy {
+		p.logger.Warn("Health check detected issues",
+			zap.Int("unhealthy_workers", unhealthyCount),
+			zap.Strings("issues", p.healthChecker.healthStatus.Issues))
 	}
 }
 
-// metricsCollector actualiza métricas del pool
+// enhancedTaskDispatcher distribuye tareas de manera inteligente
+func (p *WorkerPool) enhancedTaskDispatcher(ctx context.Context) {
+	defer p.wg.Done()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-p.stopCh:
+			return
+		default:
+			// Obtener tarea de la cola
+			task, err := p.engine.queueRepo.Dequeue(ctx)
+			if err != nil {
+				// No hay tareas o error, esperar un poco
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+
+			// Distribuir tarea al worker menos cargado
+			if !p.dispatchToOptimalWorker(task) {
+				// Si no se puede despachar, reintentarlo después
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+	}
+}
+
+// dispatchToOptimalWorker encuentra el worker óptimo para la tarea
+func (p *WorkerPool) dispatchToOptimalWorker(task *models.QueueTask) bool {
+	p.workersMutex.RLock()
+	defer p.workersMutex.RUnlock()
+
+	var bestWorker *Worker
+	lowestLoad := int(^uint(0) >> 1) // MaxInt
+
+	// Encontrar worker con menor carga
+	for _, worker := range p.workers {
+		worker.mutex.RLock()
+		load := len(worker.tasksCh)
+		isActive := worker.isActive
+		isHealthy := worker.isHealthy
+		worker.mutex.RUnlock()
+
+		if isActive && isHealthy && load < lowestLoad {
+			bestWorker = worker
+			lowestLoad = load
+		}
+	}
+
+	if bestWorker == nil {
+		return false
+	}
+
+	// Intentar enviar tarea sin bloquear
+	select {
+	case bestWorker.tasksCh <- task:
+		atomic.AddInt64(&p.engine.currentLoad, 1)
+		return true
+	default:
+		return false
+	}
+}
+
+// metricsCollector recolecta métricas del pool
 func (p *WorkerPool) metricsCollector(ctx context.Context) {
 	defer p.wg.Done()
 
@@ -593,16 +505,19 @@ func (p *WorkerPool) metricsCollector(ctx context.Context) {
 		case <-p.stopCh:
 			return
 		case <-ticker.C:
-			p.updatePoolMetrics()
+			p.updateMetrics()
 		}
 	}
 }
 
-func (p *WorkerPool) updatePoolMetrics() {
+// updateMetrics actualiza las métricas del pool
+func (p *WorkerPool) updateMetrics() {
+	p.workersMutex.RLock()
+	defer p.workersMutex.RUnlock()
+
 	var totalProcessed, totalSucceeded, totalFailed int64
 	var totalRunTime time.Duration
 
-	p.workersMutex.RLock()
 	for _, worker := range p.workers {
 		worker.mutex.RLock()
 		totalProcessed += worker.stats.TasksProcessed
@@ -611,18 +526,16 @@ func (p *WorkerPool) updatePoolMetrics() {
 		totalRunTime += worker.stats.TotalRunTime
 		worker.mutex.RUnlock()
 	}
-	p.workersMutex.RUnlock()
-
-	upTime := time.Since(p.metrics.LastResetTime)
 
 	p.metrics.TotalTasksProcessed = totalProcessed
 	p.metrics.TotalTasksSucceeded = totalSucceeded
 	p.metrics.TotalTasksFailed = totalFailed
-	p.metrics.UpTime = upTime
+	p.metrics.UpTime = time.Since(p.metrics.LastResetTime)
 
+	// Calcular métricas derivadas
 	if totalProcessed > 0 {
 		p.metrics.AverageProcessTime = totalRunTime / time.Duration(totalProcessed)
-		p.metrics.ThroughputPerSecond = float64(totalProcessed) / upTime.Seconds()
+		p.metrics.ThroughputPerSecond = float64(totalProcessed) / p.metrics.UpTime.Seconds()
 	}
 }
 
@@ -652,7 +565,7 @@ func (w *Worker) Run() {
 			return
 		case task := <-w.tasksCh:
 			w.processTaskEnhanced(task)
-		case <-time.After(w.engine.config.ProcessingTimeout):
+		case <-time.After(30 * time.Minute): // Usar timeout fijo
 			// Timeout de inactividad
 			w.mutex.RLock()
 			isIdle := w.stats.IsIdle
@@ -721,15 +634,14 @@ func (w *Worker) processTaskEnhanced(task *models.QueueTask) {
 		w.stats.TasksSucceeded++
 		w.isHealthy = true // Restaurar salud en éxito
 		w.logger.Info("Enhanced task completed successfully",
-			zap.String("task_id", task.ID),
-			zap.Duration("duration", time.Since(startTime)))
+			zap.String("task_id", task.ID))
 	}
 	w.mutex.Unlock()
 }
 
 // heartbeatLoop mantiene el heartbeat del worker
 func (w *Worker) heartbeatLoop() {
-	ticker := time.NewTicker(30 * time.Second) // Usar valor fijo
+	ticker := time.NewTicker(30 * time.Second) // Usar valor fijo en lugar de config
 	defer ticker.Stop()
 
 	for {
@@ -744,33 +656,16 @@ func (w *Worker) heartbeatLoop() {
 	}
 }
 
+// Stop detiene el worker
 func (w *Worker) Stop() {
 	w.mutex.Lock()
 	w.isActive = false
 	w.mutex.Unlock()
 
-	w.logger.Info("Stopping enhanced worker gracefully...")
 	close(w.stopCh)
 }
 
-func (w *Worker) GetStats() WorkerStats {
-	w.mutex.RLock()
-	defer w.mutex.RUnlock()
-	return w.stats
-}
-
-// HELPER METHODS
-
-func (p *WorkerPool) getQueueLength() int64 {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	length, err := p.engine.queueRepo.GetQueueLength(ctx, "workflow:queue")
-	if err != nil {
-		return 0
-	}
-	return length
-}
+// UTILITY METHODS
 
 func (p *WorkerPool) calculateAverageLoad() float64 {
 	p.workersMutex.RLock()
@@ -782,56 +677,24 @@ func (p *WorkerPool) calculateAverageLoad() float64 {
 
 	totalLoad := 0
 	for _, worker := range p.workers {
-		worker.mutex.RLock()
-		if !worker.stats.IsIdle {
-			totalLoad++
-		}
-		worker.mutex.RUnlock()
+		totalLoad += len(worker.tasksCh)
 	}
 
 	return float64(totalLoad) / float64(len(p.workers))
 }
 
-func (p *WorkerPool) calculateErrorRate() float64 {
-	var totalTasks, totalErrors int64
+func (p *WorkerPool) getQueueLength() int64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
 
-	p.workersMutex.RLock()
-	for _, worker := range p.workers {
-		worker.mutex.RLock()
-		totalTasks += worker.stats.TasksProcessed
-		totalErrors += worker.stats.TasksFailed
-		worker.mutex.RUnlock()
-	}
-	p.workersMutex.RUnlock()
-
-	if totalTasks == 0 {
+	length, err := p.engine.queueRepo.Length(ctx, "workflow_queue")
+	if err != nil {
 		return 0
 	}
-	return float64(totalErrors) / float64(totalTasks)
-}
-
-func (p *WorkerPool) findIdleWorker() int {
-	p.workersMutex.RLock()
-	defer p.workersMutex.RUnlock()
-
-	for id, worker := range p.workers {
-		worker.mutex.RLock()
-		isIdle := worker.stats.IsIdle
-		timeSinceLastTask := time.Since(worker.stats.LastTaskTime)
-		worker.mutex.RUnlock()
-
-		// Solo considerar workers que han estado idle por un tiempo
-		if isIdle && timeSinceLastTask > 2*time.Minute {
-			return id
-		}
-	}
-	return -1
+	return length
 }
 
 func (p *WorkerPool) getNextWorkerID() int {
-	p.workersMutex.RLock()
-	defer p.workersMutex.RUnlock()
-
 	maxID := -1
 	for id := range p.workers {
 		if id > maxID {
@@ -841,30 +704,42 @@ func (p *WorkerPool) getNextWorkerID() int {
 	return maxID + 1
 }
 
-// EMERGENCY MODE METHODS
+func (p *WorkerPool) getOldestWorkerID() int {
+	var oldestID = -1
+	var oldestTime time.Time
 
-func (p *WorkerPool) enterEmergencyMode(reason string) {
+	for id, worker := range p.workers {
+		if oldestID == -1 || worker.startTime.Before(oldestTime) {
+			oldestID = id
+			oldestTime = worker.startTime
+		}
+	}
+
+	return oldestID
+}
+
+func (p *WorkerPool) activateEmergencyMode(reason string) {
 	if !p.emergencyMode {
 		p.emergencyMode = true
 		p.emergencyReason = reason
-		p.logger.Warn("Entering emergency mode", zap.String("reason", reason))
+		p.logger.Warn("Emergency mode activated", zap.String("reason", reason))
 	}
 }
 
-func (p *WorkerPool) exitEmergencyMode() {
+func (p *WorkerPool) deactivateEmergencyMode() {
 	if p.emergencyMode {
 		p.emergencyMode = false
 		p.emergencyReason = ""
-		p.logger.Info("Exiting emergency mode")
+		p.logger.Info("Emergency mode deactivated")
 	}
 }
 
-func (p *WorkerPool) recordScalingEvent(action string, fromWorkers, toWorkers int, reason string) {
+func (p *WorkerPool) recordScalingEvent(action string, from, to int, reason string) {
 	event := ScalingEvent{
 		Timestamp:   time.Now(),
 		Action:      action,
-		FromWorkers: fromWorkers,
-		ToWorkers:   toWorkers,
+		FromWorkers: from,
+		ToWorkers:   to,
 		Reason:      reason,
 		QueueLength: p.getQueueLength(),
 		AvgLoad:     p.calculateAverageLoad(),
@@ -880,63 +755,28 @@ func (p *WorkerPool) recordScalingEvent(action string, fromWorkers, toWorkers in
 	p.metrics.ScalingEvents++
 }
 
+func (p *WorkerPool) calculateErrorRate() float64 {
+	if p.metrics.TotalTasksProcessed == 0 {
+		return 0
+	}
+	return float64(p.metrics.TotalTasksFailed) / float64(p.metrics.TotalTasksProcessed)
+}
+
 // PUBLIC API METHODS
 
+// GetWorkerCount retorna el número de workers
 func (p *WorkerPool) GetWorkerCount() int {
 	p.workersMutex.RLock()
 	defer p.workersMutex.RUnlock()
 	return len(p.workers)
 }
 
-func (p *WorkerPool) GetActiveWorkerCount() int {
-	p.workersMutex.RLock()
-	defer p.workersMutex.RUnlock()
-
-	activeCount := 0
-	for _, worker := range p.workers {
-		worker.mutex.RLock()
-		if worker.isActive && !worker.stats.IsIdle {
-			activeCount++
-		}
-		worker.mutex.RUnlock()
-	}
-	return activeCount
+// AddTask agrega una tarea al pool
+func (p *WorkerPool) AddTask(task *models.QueueTask) bool {
+	return p.dispatchToOptimalWorker(task)
 }
 
-func (p *WorkerPool) GetIdleWorkerCount() int {
-	totalWorkers := p.GetWorkerCount()
-	activeWorkers := p.GetActiveWorkerCount()
-	return totalWorkers - activeWorkers
-}
-
-func (p *WorkerPool) IsHealthy() bool {
-	p.healthChecker.mutex.RLock()
-	defer p.healthChecker.mutex.RUnlock()
-
-	return p.isRunning &&
-		len(p.workers) >= p.minWorkers &&
-		p.healthChecker.healthStatus.IsHealthy
-}
-
-func (p *WorkerPool) IsRunning() bool {
-	return p.isRunning
-}
-
-func (p *WorkerPool) GetHealthStatus() HealthStatus {
-	p.healthChecker.mutex.RLock()
-	defer p.healthChecker.mutex.RUnlock()
-	return p.healthChecker.healthStatus
-}
-
-func (p *WorkerPool) GetScalingHistory() []ScalingEvent {
-	return p.scalingHistory
-}
-
-func (p *WorkerPool) GetMetrics() *PoolMetrics {
-	return p.metrics
-}
-
-// GetStats mantiene compatibilidad con el método existente del engine
+// GetStats retorna estadísticas del pool
 func (p *WorkerPool) GetStats() map[string]interface{} {
 	p.workersMutex.RLock()
 	defer p.workersMutex.RUnlock()
@@ -945,7 +785,7 @@ func (p *WorkerPool) GetStats() map[string]interface{} {
 		"total_workers":  len(p.workers),
 		"min_workers":    p.minWorkers,
 		"max_workers":    p.maxWorkers,
-		"current_load":   atomic.LoadInt64(&p.currentLoad),
+		"current_load":   atomic.LoadInt64(&p.engine.currentLoad),
 		"average_load":   p.calculateAverageLoad(),
 		"queue_length":   p.getQueueLength(),
 		"is_running":     p.isRunning,
@@ -963,6 +803,13 @@ func (p *WorkerPool) GetStats() map[string]interface{} {
 	}
 
 	return stats
+}
+
+// GetHealthStatus retorna el estado de salud del pool
+func (p *WorkerPool) GetHealthStatus() HealthStatus {
+	p.healthChecker.mutex.RLock()
+	defer p.healthChecker.mutex.RUnlock()
+	return p.healthChecker.healthStatus
 }
 
 func (p *WorkerPool) getDetailedWorkerStats() []map[string]interface{} {

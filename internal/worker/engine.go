@@ -67,6 +67,9 @@ type WorkerEngine struct {
 	mu          sync.RWMutex
 	startTime   time.Time // Para métricas de uptime
 	currentLoad int64     // Para tracking de carga
+
+	// CAMPO CONFIG AGREGADO
+	config WorkerConfig // Configuración del engine
 }
 
 // NewWorkerEngine - CONSTRUCTOR ACTUALIZADO
@@ -120,6 +123,9 @@ func NewWorkerEngine(
 		webhookExecutor: webhookExecutor,
 		startTime:       time.Now(),
 		currentLoad:     0,
+
+		// CONFIG AGREGADO AL CONSTRUCTOR
+		config: config,
 	}
 
 	// CREAR WORKER POOL (reemplaza workers simples)

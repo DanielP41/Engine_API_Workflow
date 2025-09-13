@@ -11,14 +11,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// RouteConfig configuración de handlers para rutas
 type RouteConfig struct {
 	AuthHandler      *handlers.AuthHandler
 	WorkflowHandler  *handlers.WorkflowHandler
 	TriggerHandler   *handlers.TriggerHandler
 	DashboardHandler *handlers.DashboardHandler
-	WorkerHandler    *handlers.WorkerHandler // NUEVO: Handler de workers
-	UserHandler      *handlers.UserHandler   // NUEVO: Handler de usuarios
-	LogHandler       *handlers.LogHandler    // NUEVO: Handler de logs
+	WorkerHandler    *handlers.WorkerHandler
 	JWTService       jwt.JWTService
 	Logger           *zap.Logger
 }
@@ -55,15 +54,6 @@ func SetupRoutes(app *fiber.App, config *RouteConfig) {
 	protectedAuth.Get("/profile", config.AuthHandler.GetProfile)
 	protectedAuth.Post("/logout", config.AuthHandler.Logout)
 
-	// Rutas de usuarios (NUEVO)
-	if config.UserHandler != nil {
-		users := protected.Group("/users")
-		users.Get("/", config.UserHandler.GetUsers)
-		users.Get("/:id", config.UserHandler.GetUser)
-		users.Put("/:id", config.UserHandler.UpdateUser)
-		users.Delete("/:id", config.UserHandler.DeleteUser)
-	}
-
 	// Rutas de workflows
 	if config.WorkflowHandler != nil {
 		workflows := protected.Group("/workflows")
@@ -73,20 +63,9 @@ func SetupRoutes(app *fiber.App, config *RouteConfig) {
 		workflows.Put("/:id", config.WorkflowHandler.UpdateWorkflow)
 		workflows.Delete("/:id", config.WorkflowHandler.DeleteWorkflow)
 		workflows.Post("/:id/clone", config.WorkflowHandler.CloneWorkflow)
-		workflows.Post("/:id/execute", config.WorkflowHandler.ExecuteWorkflow) // NUEVO
-		workflows.Get("/:id/logs", config.WorkflowHandler.GetWorkflowLogs)     // NUEVO
 	}
 
-	// Rutas de logs (NUEVO)
-	if config.LogHandler != nil {
-		logs := protected.Group("/logs")
-		logs.Get("/", config.LogHandler.GetLogs)
-		logs.Get("/stats", config.LogHandler.GetLogStats)
-		logs.Get("/workflows/:id", config.LogHandler.GetWorkflowLogs)
-		logs.Get("/:id", config.LogHandler.GetLogByID) // NUEVO
-	}
-
-	// Rutas de workers (NUEVO - Sistema completo)
+	// Rutas de workers
 	if config.WorkerHandler != nil {
 		workers := protected.Group("/workers")
 
@@ -99,7 +78,7 @@ func SetupRoutes(app *fiber.App, config *RouteConfig) {
 		workers.Post("/retry/:task_id", config.WorkerHandler.RetryFailedTask)
 		workers.Post("/queue/clear", config.WorkerHandler.ClearQueue)
 
-		// NUEVAS RUTAS - Sistema avanzado de workers
+		// Rutas avanzadas de workers
 		workersAdvanced := workers.Group("/advanced")
 		workersAdvanced.Get("/stats", config.WorkerHandler.GetAdvancedStats)
 		workersAdvanced.Get("/health", config.WorkerHandler.GetHealthStatus)
@@ -112,7 +91,7 @@ func SetupRoutes(app *fiber.App, config *RouteConfig) {
 		// Metrics System
 		metricsGroup := workers.Group("/metrics")
 		metricsGroup.Get("/detailed", config.WorkerHandler.GetMetricsDetails)
-		metricsGroup.Post("/reset", config.WorkerHandler.ResetMetrics) // Solo admin
+		metricsGroup.Post("/reset", config.WorkerHandler.ResetMetrics)
 
 		// Retry System
 		retryGroup := workers.Group("/retries")
@@ -130,11 +109,10 @@ func SetupRoutes(app *fiber.App, config *RouteConfig) {
 		dashboard.Get("/summary", config.DashboardHandler.GetDashboardSummary)
 		dashboard.Get("/health", config.DashboardHandler.GetSystemHealth)
 		dashboard.Get("/stats", config.DashboardHandler.GetQuickStats)
-		dashboard.Get("/overview", config.DashboardHandler.GetOverview) // NUEVO
 	}
 }
 
-// NUEVA FUNCIÓN: Configurar rutas de monitoreo (sin autenticación para sistemas externos)
+// SetupMonitoringRoutes configurar rutas de monitoreo (sin autenticación)
 func SetupMonitoringRoutes(app *fiber.App, config *RouteConfig) {
 	monitoring := app.Group("/monitoring")
 
@@ -150,7 +128,6 @@ func SetupMonitoringRoutes(app *fiber.App, config *RouteConfig) {
 	// Métricas básicas para sistemas de monitoreo
 	if config.WorkerHandler != nil {
 		monitoring.Get("/metrics", func(c *fiber.Ctx) error {
-			// En el futuro, esto podría exportar métricas en formato Prometheus
 			return c.SendString("# Metrics endpoint - TODO: Implement Prometheus format\n")
 		})
 
@@ -162,7 +139,7 @@ func SetupMonitoringRoutes(app *fiber.App, config *RouteConfig) {
 	}
 }
 
-// NUEVA FUNCIÓN: Configurar rutas de administración (opcional)
+// SetupAdminRoutes configurar rutas de administración
 func SetupAdminRoutes(app *fiber.App, config *RouteConfig) {
 	// Middleware que verifica rol de administrador
 	adminMiddleware := middleware.NewAuthMiddleware(config.JWTService, nil).RequireAdmin()
@@ -176,24 +153,9 @@ func SetupAdminRoutes(app *fiber.App, config *RouteConfig) {
 		system.Post("/metrics/reset", config.WorkerHandler.ResetMetrics)
 		system.Post("/queue/clear", config.WorkerHandler.ClearQueue)
 	}
-
-	// Gestión de usuarios (solo admin)
-	if config.UserHandler != nil {
-		users := admin.Group("/users")
-		users.Get("/all", config.UserHandler.GetAllUsersAdmin) // Método admin con más info
-		// users.Post("/:id/disable", config.UserHandler.DisableUser)  // Para implementar
-		// users.Post("/:id/enable", config.UserHandler.EnableUser)    // Para implementar
-	}
-
-	// Gestión de workflows globales (solo admin)
-	if config.WorkflowHandler != nil {
-		workflows := admin.Group("/workflows")
-		workflows.Get("/all", config.WorkflowHandler.GetAllWorkflowsAdmin) // Para implementar
-		// workflows.Post("/:id/force-stop", config.WorkflowHandler.ForceStopWorkflow) // Para implementar
-	}
 }
 
-// NUEVA FUNCIÓN: Configuración completa con todas las rutas
+// SetupAllRoutes configuración completa con todas las rutas
 func SetupAllRoutes(app *fiber.App, config *RouteConfig) {
 	// Rutas principales de la API
 	SetupRoutes(app, config)
@@ -209,9 +171,7 @@ func SetupAllRoutes(app *fiber.App, config *RouteConfig) {
 		zap.Bool("auth_routes", config.AuthHandler != nil),
 		zap.Bool("workflow_routes", config.WorkflowHandler != nil),
 		zap.Bool("worker_routes", config.WorkerHandler != nil),
-		zap.Bool("dashboard_routes", config.DashboardHandler != nil),
-		zap.Bool("user_routes", config.UserHandler != nil),
-		zap.Bool("log_routes", config.LogHandler != nil))
+		zap.Bool("dashboard_routes", config.DashboardHandler != nil))
 }
 
 func ValidateRouteConfig(config *RouteConfig) error {
@@ -257,15 +217,15 @@ func GetRouteInfo() map[string]interface{} {
 		},
 		"endpoints": map[string]interface{}{
 			"auth":       []string{"/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/refresh"},
-			"workflows":  []string{"/api/v1/workflows", "/api/v1/workflows/:id", "/api/v1/workflows/:id/execute"},
+			"workflows":  []string{"/api/v1/workflows", "/api/v1/workflows/:id"},
 			"workers":    []string{"/api/v1/workers/stats", "/api/v1/workers/health", "/api/v1/workers/advanced/stats"},
 			"monitoring": []string{"/monitoring/health", "/monitoring/status", "/monitoring/metrics"},
-			"admin":      []string{"/admin/system/stats", "/admin/users/all", "/admin/workflows/all"},
+			"admin":      []string{"/admin/system/stats"},
 		},
 	}
 }
 
-// NUEVA FUNCIÓN: Obtener información de rutas específicas de workers
+// GetWorkerRouteInfo obtener información de rutas específicas de workers
 func GetWorkerRouteInfo() map[string]interface{} {
 	return map[string]interface{}{
 		"basic_routes": []string{
@@ -301,7 +261,7 @@ func GetWorkerRouteInfo() map[string]interface{} {
 	}
 }
 
-// NUEVA FUNCIÓN: Middleware de logging para rutas
+// LogRouteAccess middleware de logging para rutas
 func LogRouteAccess(logger *zap.Logger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		start := time.Now()

@@ -12,9 +12,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
-	"github.com/gofiber/fiber/v2/middleware/helmet"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 	"go.uber.org/zap"
 
 	"Engine_API_Workflow/internal/api/handlers"
@@ -36,16 +35,11 @@ func main() {
 	cfg.LogConfig()
 
 	// Inicializar logger
-	appLogger := logger.NewLogger(cfg.LogLevel, cfg.Environment)
+	appLogger := logger.New(cfg.LogLevel, cfg.Environment)
 	defer appLogger.Sync()
 
 	appLogger.Info("Starting Engine API Workflow",
-		if intValue, err := strconv.Atoi(cleanValue); err == nil {
-			return intValue * multiplier
-		}
-	}
-	return defaultValue
-}zap.String("version", "2.0.0"),
+		zap.String("version", "2.0.0"),
 		zap.String("environment", cfg.Environment))
 
 	// Conectar a MongoDB
@@ -140,55 +134,29 @@ func main() {
 			Validator:      validator,
 			Logger:         appLogger,
 		}),
-		User:      handlers.NewUserHandler(servicesContainer.User, appLogger),
-		Workflow:  handlers.NewWorkflowHandler(servicesContainer.Workflow, appLogger),
-		Log:       handlers.NewLogHandler(servicesContainer.Log, appLogger),
+		// CORREGIDO: Comentar handlers que no existen
+		// User:      handlers.NewUserHandler(servicesContainer.User, appLogger),
+		Workflow: handlers.NewWorkflowHandler(servicesContainer.Workflow, appLogger),
+		// Log:       handlers.NewLogHandler(servicesContainer.Log, appLogger),
 		Worker:    handlers.NewWorkerHandler(repos.Queue, workerEngine, appLogger),
 		Dashboard: handlers.NewDashboardHandler(servicesContainer.Dashboard, appLogger),
 	}
 
-	// Inicializar Fiber con configuración avanzada
+	// Inicializar Fiber con configuración básica
 	app := fiber.New(fiber.Config{
 		ServerHeader: "Engine-API-Workflow",
 		AppName:      "Engine API Workflow v2.0.0",
 		ErrorHandler: customErrorHandler(appLogger),
-		ReadTimeout:  getEnvAsDuration("SERVER_READ_TIMEOUT", 30*time.Second),  // 🔧 CORREGIDO
-		WriteTimeout: getEnvAsDuration("SERVER_WRITE_TIMEOUT", 30*time.Second), // 🔧 CORREGIDO
-		IdleTimeout:  getEnvAsDuration("SERVER_IDLE_TIMEOUT", 120*time.Second), // 🔧 CORREGIDO
+		ReadTimeout:  getEnvAsDuration("SERVER_READ_TIMEOUT", 30*time.Second),
+		WriteTimeout: getEnvAsDuration("SERVER_WRITE_TIMEOUT", 30*time.Second),
+		IdleTimeout:  getEnvAsDuration("SERVER_IDLE_TIMEOUT", 120*time.Second),
 		BodyLimit:    getEnvAsBytes("API_MAX_REQUEST_SIZE", 10*1024*1024), // 10MB
-		// 🆕 Configuraciones adicionales para mejor performance
-		Prefork:                 false, // Disable prefork para desarrollo
-		DisableHeaderNormalizing: false,
-		StrictRouting:           false,
-		CaseSensitive:          false,
-		ETag:                   true,
-		// 🆕 Configuración de proxy
-		ProxyHeader: fiber.HeaderXForwardedFor,
-		TrustedProxies: cfg.TrustedProxies,
 	})
 
-	// 🆕 MIDDLEWARES GLOBALES MEJORADOS
-	
-	// Recovery middleware (debe ir primero)
-	app.Use(recover.New(recover.Config{
-		EnableStackTrace: cfg.IsDevelopment(),
-	}))
+	// Middlewares globales
+	app.Use(recover.New())
 
-	// 🆕 Security headers
-	if !cfg.IsDevelopment() {
-		app.Use(helmet.New(helmet.Config{
-			XSSProtection:         "1; mode=block",
-			ContentTypeNosniff:    "nosniff",
-			XFrameOptions:         "DENY",
-			ReferrerPolicy:        "no-referrer",
-			CrossOriginEmbedderPolicy: "require-corp",
-			CrossOriginOpenerPolicy:   "same-origin",
-			CrossOriginResourcePolicy: "cross-origin",
-			OriginAgentCluster:        "?1",
-		}))
-	}
-
-	// 🆕 CORS MIDDLEWARE COMPLETO
+	// CORS básico
 	if cfg.EnableCORS {
 		corsConfig := cfg.GetCORSConfig()
 		app.Use(cors.New(cors.Config{
@@ -196,117 +164,48 @@ func main() {
 			AllowMethods:     strings.Join(corsConfig.AllowedMethods, ","),
 			AllowHeaders:     strings.Join(corsConfig.AllowedHeaders, ","),
 			AllowCredentials: corsConfig.AllowCredentials,
-			ExposeHeaders:    strings.Join(corsConfig.ExposedHeaders, ","),
-			MaxAge:          corsConfig.MaxAge,
-			// 🆕 Configuraciones adicionales
-			Next: func(c *fiber.Ctx) bool {
-				// Skip CORS para rutas internas
-				return strings.HasPrefix(c.Path(), "/internal/")
-			},
 		}))
-
-		// Log CORS configuration
-		appLogger.Info("CORS enabled",
-			zap.Strings("allowed_origins", corsConfig.AllowedOrigins),
-			zap.Bool("allow_credentials", corsConfig.AllowCredentials),
-			zap.Strings("allowed_methods", corsConfig.AllowedMethods))
+		appLogger.Info("CORS enabled")
 	}
 
-	// 🆕 Rate Limiting
+	// Rate limiting básico
 	if cfg.EnableRateLimit {
 		app.Use(limiter.New(limiter.Config{
 			Max:        cfg.RateLimitRequests,
 			Expiration: cfg.RateLimitWindow,
-			KeyGenerator: func(c *fiber.Ctx) string {
-				// Rate limit por IP + User Agent para mejor control
-				return c.IP() + c.Get("User-Agent")
-			},
-			LimitReached: func(c *fiber.Ctx) error {
-				return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
-					"error":   "Rate limit exceeded",
-					"message": fmt.Sprintf("Maximum %d requests per %v", cfg.RateLimitRequests, cfg.RateLimitWindow),
-					"retry_after": cfg.RateLimitWindow.Seconds(),
-				})
-			},
-			SkipFailedRequests: true,
-			SkipSuccessfulRequests: false,
-			// Skip rate limiting para health checks
-			Skip: func(c *fiber.Ctx) bool {
-				return strings.HasPrefix(c.Path(), "/api/v1/health") ||
-					   strings.HasPrefix(c.Path(), "/monitoring/")
-			},
 		}))
-
-		appLogger.Info("Rate limiting enabled",
-			zap.Int("max_requests", cfg.RateLimitRequests),
-			zap.Duration("window", cfg.RateLimitWindow))
+		appLogger.Info("Rate limiting enabled")
 	}
 
-	// 🆕 ARCHIVOS ESTÁTICOS PARA FRONTEND WEB
+	// Archivos estáticos
 	if cfg.EnableWebInterface {
-		// Servir archivos estáticos (CSS, JS, imágenes)
-		app.Static("/static", cfg.StaticFilesPath, fiber.Static{
-			Compress:  true,
-			ByteRange: true,
-			Browse:    cfg.IsDevelopment(), // Solo en desarrollo
-			MaxAge:   3600, // 1 hora de cache
-		})
-
-		// Servir archivos del directorio web como fallback
-		app.Static("/", "./web", fiber.Static{
-			Compress: true,
-			MaxAge:   1800, // 30 minutos de cache
-		})
-
-		appLogger.Info("Web interface enabled",
-			zap.String("static_path", cfg.StaticFilesPath),
-			zap.String("templates_path", cfg.TemplatesPath))
+		app.Static("/static", "./web/static")
+		app.Static("/", "./web")
+		appLogger.Info("Web interface enabled")
 	}
 
-	// 🆕 REQUEST LOGGING MIDDLEWARE
+	// Request logging middleware
 	app.Use(func(c *fiber.Ctx) error {
 		start := time.Now()
-
-		// Continuar con la request
 		err := c.Next()
-
-		// Log después de procesar
 		duration := time.Since(start)
-		
-		// Solo log requests que no sean health checks en desarrollo
-		if cfg.IsDevelopment() && strings.HasPrefix(c.Path(), "/api/v1/health") {
-			return err
-		}
 
-		logLevel := zap.InfoLevel
-		if c.Response().StatusCode() >= 400 {
-			logLevel = zap.WarnLevel
-		}
-		if c.Response().StatusCode() >= 500 {
-			logLevel = zap.ErrorLevel
-		}
-
-		appLogger.Log(logLevel, "HTTP Request",
+		appLogger.Info("HTTP Request",
 			zap.String("method", c.Method()),
 			zap.String("path", c.Path()),
 			zap.Int("status", c.Response().StatusCode()),
-			zap.Duration("duration", duration),
-			zap.String("ip", c.IP()),
-			zap.String("user_agent", c.Get("User-Agent")),
-			zap.Int("size", len(c.Response().Body())))
+			zap.Duration("duration", duration))
 
 		return err
 	})
 
-	// Configurar rutas con todos los handlers
+	// Configurar rutas
 	routeConfig := &routes.RouteConfig{
 		AuthHandler:      handlersContainer.Auth,
 		WorkflowHandler:  handlersContainer.Workflow,
-		TriggerHandler:   nil, // Mantener compatibilidad, puede ser nil
+		TriggerHandler:   nil,
 		DashboardHandler: handlersContainer.Dashboard,
 		WorkerHandler:    handlersContainer.Worker,
-		UserHandler:      handlersContainer.User,
-		LogHandler:       handlersContainer.Log,
 		JWTService:       jwtService,
 		Logger:           appLogger,
 	}
@@ -316,12 +215,12 @@ func main() {
 		appLogger.Fatal("Invalid route configuration", zap.Error(err))
 	}
 
-	// 🆕 RUTAS WEB ADICIONALES (para frontend)
+	// Configurar rutas web si está habilitado
 	if cfg.EnableWebInterface {
 		setupWebRoutes(app, handlersContainer, authMiddleware, appLogger)
 	}
 
-	// Configurar todas las rutas (básicas + avanzadas + monitoreo + admin)
+	// Configurar todas las rutas
 	routes.SetupAllRoutes(app, routeConfig)
 
 	// Log de rutas configuradas
@@ -331,10 +230,10 @@ func main() {
 		zap.Any("basic_info", routeInfo),
 		zap.Any("worker_routes", workerRouteInfo))
 
-	// Verificar que el directorio web existe (opcional)
+	// Verificar directorio web
 	if cfg.EnableWebInterface {
 		if err := ensureWebDirectoryExists(); err != nil {
-			appLogger.Warn("Web directory setup failed, dashboard UI may be limited", zap.Error(err))
+			appLogger.Warn("Web directory setup failed", zap.Error(err))
 		}
 	}
 
@@ -342,30 +241,25 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Iniciar Worker Engine avanzado
+	// Iniciar Worker Engine
 	appLogger.Info("Starting advanced worker engine...")
 	if err := workerEngine.Start(ctx); err != nil {
 		appLogger.Fatal("Failed to start worker engine", zap.Error(err))
 	}
 
-	// Canal para manejar señales del sistema
+	// Canal para señales del sistema
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	// Iniciar servicios en background
 	go startBackgroundServices(servicesContainer.Dashboard, appLogger)
 
-	// Iniciar el servidor en una goroutine
+	// Iniciar servidor
 	go func() {
 		addr := fmt.Sprintf(":%s", cfg.ServerPort)
 		appLogger.Info("Starting HTTP server",
 			zap.String("address", addr),
-			zap.String("dashboard_url", fmt.Sprintf("http://localhost:%s", cfg.ServerPort)),
-			zap.String("health_check", fmt.Sprintf("http://localhost:%s/api/v1/health", cfg.ServerPort)),
-			zap.String("worker_stats", fmt.Sprintf("http://localhost:%s/api/v1/workers/advanced/stats", cfg.ServerPort)),
-			zap.Bool("cors_enabled", cfg.EnableCORS),
-			zap.Bool("web_interface", cfg.EnableWebInterface),
-			zap.Bool("rate_limiting", cfg.EnableRateLimit))
+			zap.String("health_check", fmt.Sprintf("http://localhost:%s/api/v1/health", cfg.ServerPort)))
 
 		if err := app.Listen(addr); err != nil {
 			appLogger.Error("Server failed to start", zap.Error(err))
@@ -377,15 +271,13 @@ func main() {
 	<-sigChan
 	appLogger.Info("Shutting down server...")
 
-	// Shutdown graceful del Worker Engine
-	appLogger.Info("Stopping worker engine...")
+	// Shutdown del Worker Engine
 	if err := workerEngine.Stop(); err != nil {
 		appLogger.Error("Error stopping worker engine", zap.Error(err))
 	}
 
 	// Shutdown del servidor HTTP
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(),
-		getEnvAsDuration("GRACEFUL_SHUTDOWN_TIMEOUT", 15*time.Second))
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 
 	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
@@ -395,111 +287,59 @@ func main() {
 	appLogger.Info("Server exited gracefully")
 }
 
-// 🆕 setupWebRoutes configura rutas específicas para el frontend web
+// setupWebRoutes configura rutas web básicas
 func setupWebRoutes(app *fiber.App, handlers *handlers.Handlers, authMiddleware middleware.AuthMiddleware, logger *zap.Logger) {
-	// Ruta raíz redirige al dashboard
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.Redirect("/dashboard")
 	})
 
-	// Dashboard página principal
 	app.Get("/dashboard", func(c *fiber.Ctx) error {
 		return c.SendFile("./web/templates/dashboard.html")
 	})
 
-	// 🆕 Rutas adicionales para SPA support
-	spaRoutes := []string{"/workflows", "/users", "/logs", "/settings"}
-	for _, route := range spaRoutes {
-		app.Get(route, func(c *fiber.Ctx) error {
-			return c.SendFile("./web/templates/dashboard.html")
-		})
-	}
-
-	// 🆕 API Status endpoint para frontend
 	app.Get("/api/status", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"status":    "online",
 			"version":   "2.0.0",
 			"timestamp": time.Now(),
-			"features": fiber.Map{
-				"cors_enabled":      true,
-				"rate_limiting":     true,
-				"web_interface":     true,
-				"worker_engine":     "advanced",
-				"authentication":    "jwt",
-			},
 		})
 	})
 
-	logger.Info("Web routes configured successfully")
+	logger.Info("Web routes configured")
 }
 
-// customErrorHandler maneja los errores de la aplicación (MEJORADO)
+// customErrorHandler maneja errores de la aplicación
 func customErrorHandler(appLogger *zap.Logger) fiber.ErrorHandler {
 	return func(c *fiber.Ctx, err error) error {
-		// Código de estado por defecto
 		code := fiber.StatusInternalServerError
 
-		// Verificar si es un error de Fiber
 		if e, ok := err.(*fiber.Error); ok {
 			code = e.Code
 		}
 
-		// 🆕 Determinar si es una request de API o web
-		isAPIRequest := strings.HasPrefix(c.Path(), "/api/")
-		
-		// Log del error
 		appLogger.Error("HTTP Error",
 			zap.Error(err),
 			zap.String("path", c.Path()),
-			zap.String("method", c.Method()),
-			zap.Int("status", code),
-			zap.String("ip", c.IP()),
-			zap.Bool("is_api", isAPIRequest))
+			zap.Int("status", code))
 
-		// 🆕 Respuesta diferenciada para API vs Web
-		if isAPIRequest {
-			// Respuesta JSON para API
-			return c.Status(code).JSON(fiber.Map{
-				"success": false,
-				"error":   err.Error(),
-				"path":    c.Path(),
-				"status":  code,
-				"version": "2.0",
-				"timestamp": time.Now(),
-			})
-		} else {
-			// Respuesta HTML para web (si está habilitado)
-			if code == fiber.StatusNotFound {
-				return c.Status(code).SendFile("./web/templates/404.html")
-			}
-			// Para otros errores, retornar JSON también
-			return c.Status(code).JSON(fiber.Map{
-				"error":   err.Error(),
-				"status":  code,
-				"message": "An error occurred",
-			})
-		}
+		return c.Status(code).JSON(fiber.Map{
+			"success": false,
+			"error":   err.Error(),
+			"status":  code,
+		})
 	}
 }
 
-// ensureWebDirectoryExists verifica y crea el directorio web si no existe (MEJORADO)
+// ensureWebDirectoryExists crea directorios web básicos
 func ensureWebDirectoryExists() error {
-	webDir := "./web"
-	templatesDir := "./web/templates"
-	staticDir := "./web/static"
-	cssDir := "./web/static/css"
-	jsDir := "./web/static/js"
-
-	// Crear directorios si no existen
-	dirs := []string{webDir, templatesDir, staticDir, cssDir, jsDir}
+	dirs := []string{"./web", "./web/templates", "./web/static"}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("failed to create directory %s: %w", dir, err)
+			return err
 		}
 	}
 
-	// Crear archivo index básico si no existe
+	// Crear HTML básico
 	indexPath := "./web/templates/dashboard.html"
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
 		basicHTML := `<!DOCTYPE html>
@@ -507,130 +347,56 @@ func ensureWebDirectoryExists() error {
 <head>
     <title>Engine API Workflow Dashboard</title>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-        .header { background: rgba(255,255,255,0.95); padding: 30px; border-radius: 12px; margin-bottom: 20px; backdrop-filter: blur(10px); }
-        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-        .card { background: rgba(255,255,255,0.95); padding: 25px; border-radius: 12px; backdrop-filter: blur(10px); }
-        h1 { color: #333; margin: 0 0 10px 0; font-size: 2.5em; }
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; padding: 30px; border-radius: 8px; margin-bottom: 20px; }
+        h1 { color: #333; margin: 0; }
         .status { color: #28a745; font-weight: bold; }
-        .cors-info { background: #e3f2fd; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #2196f3; }
-        .api-links { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
-        .api-links a { background: linear-gradient(45deg, #007bff, #0056b3); color: white; padding: 12px 20px; text-decoration: none; border-radius: 8px; transition: transform 0.2s; }
-        .api-links a:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,123,255,0.3); }
-        .version { background: #f8f9fa; padding: 8px 16px; border-radius: 20px; display: inline-block; font-size: 0.9em; margin-left: 10px; }
-        .feature-badge { background: #28a745; color: white; padding: 4px 8px; border-radius: 12px; font-size: 0.8em; margin: 0 4px; }
+        .links { display: flex; gap: 10px; margin: 20px 0; }
+        .links a { background: #007bff; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>Engine API Workflow <span class="version">v2.0</span></h1>
-            <p class="status">
-                Sistema Operacional - Workers Avanzados Activos
-                <span class="feature-badge">CORS</span>
-                <span class="feature-badge">Web UI</span>
-                <span class="feature-badge">Rate Limiting</span>
-            </p>
-            <div class="cors-info">
-                <strong>✅ CORS Configurado:</strong> Frontend web completamente funcional con autenticación por cookies
-            </div>
-        </div>
-        
-        <div class="cards">
-            <div class="card">
-                <h3>🚀 API Endpoints Básicos</h3>
-                <div class="api-links">
-                    <a href="/api/v1/health">Health Check</a>
-                    <a href="/api/v1/dashboard/overview">Dashboard</a>
-                    <a href="/api/v1/workflows">Workflows</a>
-                    <a href="/api/status">API Status</a>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3>⚙️ Sistema de Workers Avanzado</h3>
-                <div class="api-links">
-                    <a href="/api/v1/workers/advanced/stats">Stats Avanzadas</a>
-                    <a href="/api/v1/workers/health/detailed">Health Detallado</a>
-                    <a href="/api/v1/workers/pool/stats">Pool de Workers</a>
-                    <a href="/api/v1/workers/metrics/detailed">Métricas</a>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3>📊 Monitoreo</h3>
-                <div class="api-links">
-                    <a href="/monitoring/health">Health Simple</a>
-                    <a href="/monitoring/status">Status Sistema</a>
-                    <a href="/api/v1/workers/retries/stats">Reintentos</a>
-                </div>
+            <h1>Engine API Workflow v2.0</h1>
+            <p class="status">Sistema Operacional</p>
+            <div class="links">
+                <a href="/api/v1/health">Health Check</a>
+                <a href="/api/v1/workers/stats">Workers</a>
+                <a href="/api/status">API Status</a>
             </div>
         </div>
     </div>
 </body>
 </html>`
 		if err := os.WriteFile(indexPath, []byte(basicHTML), 0644); err != nil {
-			return fmt.Errorf("failed to create basic HTML file: %w", err)
+			return err
 		}
 	}
-
-	// 🆕 Crear archivo 404.html básico
-	notFoundPath := "./web/templates/404.html"
-	if _, err := os.Stat(notFoundPath); os.IsNotExist(err) {
-		notFoundHTML := `<!DOCTYPE html>
-<html>
-<head>
-    <title>404 - Page Not Found</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-        .container { text-align: center; background: rgba(255,255,255,0.95); padding: 60px; border-radius: 12px; backdrop-filter: blur(10px); }
-        h1 { font-size: 4em; margin: 0; color: #333; }
-        p { font-size: 1.2em; color: #666; margin: 20px 0; }
-        a { background: linear-gradient(45deg, #007bff, #0056b3); color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>404</h1>
-        <p>Página no encontrada</p>
-        <a href="/dashboard">Volver al Dashboard</a>
-    </div>
-</body>
-</html>`
-		if err := os.WriteFile(notFoundPath, []byte(notFoundHTML), 0644); err != nil {
-			return fmt.Errorf("failed to create 404 HTML file: %w", err)
-		}
-	}
-
 	return nil
 }
 
-// startBackgroundServices inicia servicios en background (MEJORADO)
+// startBackgroundServices inicia servicios en background
 func startBackgroundServices(dashboardService services.DashboardService, appLogger *zap.Logger) {
 	appLogger.Info("Starting background services")
-
-	ticker := time.NewTicker(getEnvAsDuration("DASHBOARD_REFRESH_INTERVAL", 30*time.Second))
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			// Refrescar datos del dashboard en background
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			if err := dashboardService.RefreshDashboardData(ctx); err != nil {
-				appLogger.Debug("Failed to refresh dashboard data", zap.Error(err)) // Changed to Debug
+				appLogger.Debug("Failed to refresh dashboard data", zap.Error(err))
 			}
 			cancel()
 		}
 	}
 }
 
-// Helper functions para configuración (MANTENIDAS)
+// Helper functions
 func getEnvAsInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if intValue, err := strconv.Atoi(value); err == nil {
@@ -651,7 +417,6 @@ func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 
 func getEnvAsBytes(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
-		// Parse formato como "10MB", "1GB", etc.
 		multiplier := 1
 		cleanValue := strings.ToUpper(value)
 
@@ -665,3 +430,10 @@ func getEnvAsBytes(key string, defaultValue int) int {
 			multiplier = 1024 * 1024 * 1024
 			cleanValue = strings.TrimSuffix(cleanValue, "GB")
 		}
+
+		if intValue, err := strconv.Atoi(cleanValue); err == nil {
+			return intValue * multiplier
+		}
+	}
+	return defaultValue
+}

@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 
+	"Engine_API_Workflow/internal/models"
 	"Engine_API_Workflow/internal/repository"
 	"Engine_API_Workflow/internal/utils"
 	"Engine_API_Workflow/internal/worker"
@@ -188,7 +191,7 @@ func (h *WorkerHandler) GetMetricsDetails(c *fiber.Ctx) error {
 	return utils.SuccessResponse(c, fiber.StatusOK, "Detailed metrics retrieved successfully", detailedMetrics)
 }
 
-// GetRetryStats obtiene estadísticas de reintentos (NUEVO)
+// GetRetryStats obtiene estadísticas de reintentos (CORREGIDO)
 // @Summary Get retry statistics
 // @Description Get statistics about task retries and failures
 // @Tags workers
@@ -204,11 +207,8 @@ func (h *WorkerHandler) GetRetryStats(c *fiber.Ctx) error {
 		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Retry manager not available", "")
 	}
 
-	stats, err := retryManager.GetRetryStats(c.Context())
-	if err != nil {
-		h.logger.Error("Failed to get retry stats", zap.Error(err))
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get retry statistics", err.Error())
-	}
+	// CORREGIDO: GetRetryStats solo retorna 1 valor, no error
+	stats := retryManager.GetRetryStats(c.Context())
 
 	return utils.SuccessResponse(c, fiber.StatusOK, "Retry statistics retrieved successfully", stats)
 }
@@ -266,7 +266,7 @@ func (h *WorkerHandler) GetExecutorInfo(c *fiber.Ctx) error {
 	return utils.SuccessResponse(c, fiber.StatusOK, "Executor information retrieved", info)
 }
 
-// GetQueueStats obtiene estadísticas detalladas de las colas
+// GetQueueStats obtiene estadísticas detalladas de las colas (CORREGIDO)
 // @Summary Get queue statistics
 // @Description Get detailed statistics about all queues
 // @Tags workers
@@ -278,13 +278,48 @@ func (h *WorkerHandler) GetExecutorInfo(c *fiber.Ctx) error {
 // @Failure 500 {object} utils.ErrorResponse
 // @Router /api/v1/workers/queue/stats [get]
 func (h *WorkerHandler) GetQueueStats(c *fiber.Ctx) error {
-	stats, err := h.queueRepo.GetQueueStats(c.Context(), "workflow:queue")
+	// CORREGIDO: Usar métodos existentes del repository en lugar de GetQueueStats
+	ctx := c.Context()
+
+	// Obtener estadísticas usando métodos disponibles
+	queueLength, err := h.queueRepo.GetQueueLength(ctx, "workflow_queue")
 	if err != nil {
-		h.logger.Error("Failed to get queue stats", zap.Error(err))
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get queue statistics", err.Error())
+		h.logger.Error("Failed to get queue length", zap.Error(err))
+		queueLength = 0
+	}
+
+	processingTasks, err := h.queueRepo.GetProcessingTasks(ctx)
+	if err != nil {
+		h.logger.Error("Failed to get processing tasks", zap.Error(err))
+		processingTasks = []*models.QueueTask{}
+	}
+
+	failedTasksCount, err := h.queueRepo.GetFailedTasksCount(ctx)
+	if err != nil {
+		h.logger.Error("Failed to get failed tasks count", zap.Error(err))
+		failedTasksCount = 0
+	}
+
+	// Construir estadísticas usando métodos disponibles
+	stats := map[string]interface{}{
+		"queue_length":        queueLength,
+		"processing_tasks":    len(processingTasks),
+		"failed_tasks":        failedTasksCount,
+		"processing_task_ids": extractTaskIDs(processingTasks),
+		"status":              "active",
+		"last_updated":        time.Now(),
 	}
 
 	return utils.SuccessResponse(c, fiber.StatusOK, "Queue statistics retrieved successfully", stats)
+}
+
+// Helper function para extraer IDs de tareas
+func extractTaskIDs(tasks []*models.QueueTask) []string {
+	ids := make([]string, len(tasks))
+	for i, task := range tasks {
+		ids[i] = task.ID
+	}
+	return ids
 }
 
 // GetProcessingTasks obtiene las tareas actualmente en procesamiento
