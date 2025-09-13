@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -44,6 +45,14 @@ type Config struct {
 	RateLimitRequests  int
 	RateLimitWindow    time.Duration
 
+	// 🆕 CORS Configuration Expanded
+	CORSAllowedMethods    []string
+	CORSAllowedHeaders    []string
+	CORSExposedHeaders    []string
+	CORSAllowCredentials  bool
+	CORSMaxAge            int
+	CORSPreflightContinue bool
+
 	// External Services
 	SlackWebhookURL string
 	SlackBotToken   string
@@ -52,6 +61,11 @@ type Config struct {
 	EnableTokenBlacklist bool
 	EnableRateLimit      bool
 	EnableCORS           bool
+
+	// 🆕 Web Interface Settings
+	EnableWebInterface bool
+	StaticFilesPath    string
+	TemplatesPath      string
 }
 
 // ✅ JWTConfig estructura específica para configuración JWT
@@ -61,6 +75,17 @@ type JWTConfig struct {
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
 	Audience        string
+}
+
+// 🆕 CORSConfig estructura específica para configuración CORS
+type CORSConfig struct {
+	AllowedOrigins    []string
+	AllowedMethods    []string
+	AllowedHeaders    []string
+	ExposedHeaders    []string
+	AllowCredentials  bool
+	MaxAge            int
+	PreflightContinue bool
 }
 
 func Load() *Config {
@@ -77,7 +102,7 @@ func Load() *Config {
 	// Configuración principal
 	cfg := &Config{
 		ServerPort:  getEnv("PORT", "8081"),
-		Environment: getEnv("ENV", "development"),
+		Environment: getEnv("ENVIRONMENT", "development"), // 🔧 CORREGIDO: de ENV a ENVIRONMENT
 		LogLevel:    getEnv("LOG_LEVEL", "info"),
 
 		// ✅ Configuración JWT segura
@@ -89,15 +114,28 @@ func Load() *Config {
 		JWTExpiresIn:  getEnv("JWT_EXPIRES_IN", "24h"), // Compatibilidad
 
 		// ✅ Configuración de seguridad
-		TrustedProxies:     parseStringSlice("TRUSTED_PROXIES", "127.0.0.1,::1"),
-		CORSAllowedOrigins: parseStringSlice("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001"),
-		RateLimitRequests:  getEnvAsInt("RATE_LIMIT_REQUESTS", 100),
-		RateLimitWindow:    rateLimitWindow,
+		TrustedProxies:    parseStringSlice("TRUSTED_PROXIES", "127.0.0.1,::1"),
+		RateLimitRequests: getEnvAsInt("RATE_LIMIT_REQUESTS", 100),
+		RateLimitWindow:   rateLimitWindow,
+
+		// 🆕 CORS Configuration Completa
+		CORSAllowedOrigins:    parseStringSlice("CORS_ALLOWED_ORIGINS", getDefaultCORSOrigins()),
+		CORSAllowedMethods:    parseStringSlice("CORS_ALLOWED_METHODS", "GET,POST,PUT,DELETE,OPTIONS,PATCH"),
+		CORSAllowedHeaders:    parseStringSlice("CORS_ALLOWED_HEADERS", getDefaultCORSHeaders()),
+		CORSExposedHeaders:    parseStringSlice("CORS_EXPOSED_HEADERS", "X-Total-Count,X-Request-ID"),
+		CORSAllowCredentials:  getEnvAsBool("CORS_ALLOW_CREDENTIALS", true), // 🔧 TRUE para cookies
+		CORSMaxAge:            getEnvAsInt("CORS_MAX_AGE", 3600),
+		CORSPreflightContinue: getEnvAsBool("CORS_PREFLIGHT_CONTINUE", false),
 
 		// ✅ Feature flags
 		EnableTokenBlacklist: getEnvAsBool("ENABLE_TOKEN_BLACKLIST", true),
 		EnableRateLimit:      getEnvAsBool("ENABLE_RATE_LIMIT", true),
 		EnableCORS:           getEnvAsBool("ENABLE_CORS", true),
+
+		// 🆕 Web Interface Settings
+		EnableWebInterface: getEnvAsBool("ENABLE_WEB_INTERFACE", true),
+		StaticFilesPath:    getEnv("STATIC_FILES_PATH", "./web/static"),
+		TemplatesPath:      getEnv("TEMPLATES_PATH", "./web/templates"),
 	}
 
 	// Configuración MongoDB con validación
@@ -144,6 +182,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("Redis validation failed: %w", err)
 	}
 
+	// 🆕 Validar CORS
+	if err := c.ValidateCORS(); err != nil {
+		return fmt.Errorf("CORS validation failed: %w", err)
+	}
+
 	return nil
 }
 
@@ -158,6 +201,7 @@ func (c *Config) ValidateJWT() error {
 	if c.Environment == "production" {
 		defaultSecrets := []string{
 			"your-super-secret-jwt-key-change-this-in-production",
+			"your-super-secret-jwt-key-change-this-in-production-make-it-longer-and-more-secure",
 			"default-jwt-secret",
 			"change-me",
 			"secret",
@@ -269,6 +313,57 @@ func (c *Config) ValidateRedis() error {
 	return nil
 }
 
+// 🆕 ValidateCORS valida la configuración de CORS
+func (c *Config) ValidateCORS() error {
+	if !c.EnableCORS {
+		return nil // CORS deshabilitado, no validar
+	}
+
+	// Validar orígenes
+	for _, origin := range c.CORSAllowedOrigins {
+		if origin == "*" {
+			// Wildcard permitido pero advertir en producción
+			if c.IsProduction() {
+				log.Printf("Warning: CORS wildcard (*) origin detected in production environment")
+			}
+			continue
+		}
+
+		// Validar formato de URL
+		if _, err := url.Parse(origin); err != nil {
+			return fmt.Errorf("invalid CORS origin format: %s", origin)
+		}
+	}
+
+	// Validar métodos HTTP
+	validMethods := []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"}
+	for _, method := range c.CORSAllowedMethods {
+		isValid := false
+		for _, validMethod := range validMethods {
+			if method == validMethod {
+				isValid = true
+				break
+			}
+		}
+		if !isValid {
+			return fmt.Errorf("invalid CORS method: %s (valid: %v)", method, validMethods)
+		}
+	}
+
+	// Advertir sobre configuraciones inseguras en producción
+	if c.IsProduction() {
+		if c.CORSAllowCredentials && len(c.CORSAllowedOrigins) > 0 {
+			for _, origin := range c.CORSAllowedOrigins {
+				if origin == "*" {
+					return fmt.Errorf("CORS credentials cannot be true when origin is wildcard in production")
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
 // ✅ GetJWTConfig retorna configuración específica para JWT
 func (c *Config) GetJWTConfig() JWTConfig {
 	return JWTConfig{
@@ -277,6 +372,19 @@ func (c *Config) GetJWTConfig() JWTConfig {
 		AccessTokenTTL:  c.JWTAccessTTL,
 		RefreshTokenTTL: c.JWTRefreshTTL,
 		Audience:        c.JWTAudience,
+	}
+}
+
+// 🆕 GetCORSConfig retorna configuración específica para CORS
+func (c *Config) GetCORSConfig() CORSConfig {
+	return CORSConfig{
+		AllowedOrigins:    c.GetCORSOrigins(),
+		AllowedMethods:    c.CORSAllowedMethods,
+		AllowedHeaders:    c.CORSAllowedHeaders,
+		ExposedHeaders:    c.CORSExposedHeaders,
+		AllowCredentials:  c.CORSAllowCredentials,
+		MaxAge:            c.CORSMaxAge,
+		PreflightContinue: c.CORSPreflightContinue,
 	}
 }
 
@@ -290,19 +398,43 @@ func (c *Config) IsDevelopment() bool {
 	return c.Environment == "development"
 }
 
-// ✅ GetCORSOrigins retorna los orígenes CORS permitidos
+// 🔧 MEJORADO: GetCORSOrigins retorna los orígenes CORS permitidos con lógica específica para tu frontend
 func (c *Config) GetCORSOrigins() []string {
-	if c.IsProduction() {
-		// En producción, ser más restrictivo
-		return c.CORSAllowedOrigins
+	// Siempre incluir el origen del servidor para el frontend web
+	baseOrigins := []string{
+		fmt.Sprintf("http://localhost:%s", c.ServerPort),
+		fmt.Sprintf("http://127.0.0.1:%s", c.ServerPort),
 	}
-	// En desarrollo, agregar orígenes comunes
-	origins := append(c.CORSAllowedOrigins,
-		"http://localhost:3000",
-		"http://localhost:3001",
+
+	if c.IsProduction() {
+		// En producción, usar solo los configurados + servidor
+		return removeDuplicates(append(baseOrigins, c.CORSAllowedOrigins...))
+	}
+
+	// En desarrollo, agregar orígenes comunes de desarrollo
+	devOrigins := []string{
+		"http://localhost:3000", // React
+		"http://localhost:3001", // React alternativo
+		"http://localhost:8080", // Vue
+		"http://localhost:4200", // Angular
 		"http://127.0.0.1:3000",
-	)
-	return removeDuplicates(origins)
+		"http://127.0.0.1:3001",
+	}
+
+	allOrigins := append(baseOrigins, c.CORSAllowedOrigins...)
+	allOrigins = append(allOrigins, devOrigins...)
+
+	return removeDuplicates(allOrigins)
+}
+
+// 🆕 Funciones helper para valores por defecto
+
+func getDefaultCORSOrigins() string {
+	return "http://localhost:8081,http://127.0.0.1:8081,http://localhost:3000"
+}
+
+func getDefaultCORSHeaders() string {
+	return "Accept,Authorization,Content-Type,X-CSRF-Token,X-Requested-With,Cache-Control,X-File-Name"
 }
 
 // ✅ Helper functions
@@ -410,7 +542,7 @@ func getDefaultMongoURI(environment string) string {
 	case "production":
 		return "mongodb://localhost:27017/engine_workflow" // Sin credenciales por defecto
 	case "development":
-		return "mongodb://admin:password123@localhost:27017/engine_workflow?authSource=admin"
+		return "mongodb://admin:password123@localhost:27018/engine_workflow?authSource=admin" // 🔧 PUERTO 27018
 	default:
 		return "mongodb://localhost:27017/engine_workflow"
 	}
@@ -443,7 +575,7 @@ func removeDuplicates(slice []string) []string {
 	return result
 }
 
-// ✅ LogConfig registra la configuración actual (sin secrets)
+// 🔧 MEJORADO: LogConfig registra la configuración actual (sin secrets)
 func (c *Config) LogConfig() {
 	log.Printf("Configuration loaded:")
 	log.Printf("  Environment: %s", c.Environment)
@@ -454,10 +586,21 @@ func (c *Config) LogConfig() {
 	log.Printf("  JWT Issuer: %s", c.JWTIssuer)
 	log.Printf("  JWT Access TTL: %v", c.JWTAccessTTL)
 	log.Printf("  JWT Refresh TTL: %v", c.JWTRefreshTTL)
-	log.Printf("  Features: BlackList=%v, RateLimit=%v, CORS=%v",
-		c.EnableTokenBlacklist, c.EnableRateLimit, c.EnableCORS)
+	log.Printf("  Features: BlackList=%v, RateLimit=%v, CORS=%v, WebUI=%v",
+		c.EnableTokenBlacklist, c.EnableRateLimit, c.EnableCORS, c.EnableWebInterface)
+
+	// 🆕 CORS Configuration Log
+	if c.EnableCORS {
+		log.Printf("  CORS Origins: %v", c.GetCORSOrigins())
+		log.Printf("  CORS Allow Credentials: %v", c.CORSAllowCredentials)
+		log.Printf("  CORS Methods: %v", c.CORSAllowedMethods)
+	}
 
 	// ✅ Nunca logear secrets
 	secretLength := len(c.JWTSecret)
-	log.Printf("  JWT Secret: [%d characters] %s***", secretLength, c.JWTSecret[:4])
+	if secretLength >= 4 {
+		log.Printf("  JWT Secret: [%d characters] %s***", secretLength, c.JWTSecret[:4])
+	} else {
+		log.Printf("  JWT Secret: [%d characters] ***", secretLength)
+	}
 }
