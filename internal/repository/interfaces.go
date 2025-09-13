@@ -175,12 +175,26 @@ type QueueRepository interface {
 	GetFailedTasks(ctx context.Context, limit int64) ([]*models.QueueTask, error)
 	RequeueFailedTask(ctx context.Context, taskID string) error
 
+	// 🆕 MÉTODOS AGREGADOS PARA ARREGLAR ERRORES DE COMPILACIÓN
+	GetFailedTasksCount(ctx context.Context) (int64, error)
+	EnqueueAt(ctx context.Context, workflowID primitive.ObjectID, executionID string, userID primitive.ObjectID, payload map[string]interface{}, priority int, scheduledAt time.Time) error
+	GetProcessingTasksCount(ctx context.Context) (int64, error)
+	GetCompletedTasksCount(ctx context.Context) (int64, error)
+	GetQueuedTasksCount(ctx context.Context) (int64, error)
+	GetRetryingTasksCount(ctx context.Context) (int64, error)
+	CleanupStaleProcessingTasks(ctx context.Context, timeout time.Duration) (int64, error)
+	GetTasksByStatus(ctx context.Context, status string, limit int64) ([]*models.QueueTask, error)
+	UpdateTaskStatus(ctx context.Context, taskID string, status string, errorMsg string) error
+	GetOldestPendingTask(ctx context.Context) (*models.QueueTask, error)
+	GetTaskMetrics(ctx context.Context, since time.Time) (map[string]int64, error)
+	RescheduleTask(ctx context.Context, taskID string, newScheduledTime time.Time) error
+
 	// Job tracking
 	SetJobStatus(ctx context.Context, jobID string, status string) error
 	GetJobStatus(ctx context.Context, jobID string) (string, error)
 
-	// Statistics
-	GetQueueStats(ctx context.Context, queueName string) (map[string]interface{}, error)
+	// Statistics - 🔧 CORREGIDO: Renombrado método para evitar conflicto
+	GetStats(ctx context.Context, queueName string) (map[string]interface{}, error)
 	GetAllQueueNames(ctx context.Context) ([]string, error)
 }
 

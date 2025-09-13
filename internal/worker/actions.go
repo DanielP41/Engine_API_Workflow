@@ -3,16 +3,20 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"Engine_API_Workflow/internal/models"
 
 	"go.uber.org/zap"
+	"gopkg.in/gomail.v2"
 )
 
 // HTTPActionExecutor ejecuta acciones HTTP reales
@@ -212,51 +216,198 @@ func (h *HTTPActionExecutor) createHTTPRequest(ctx context.Context, config *HTTP
 	return req, nil
 }
 
-// EmailActionExecutor ejecuta acciones de email
+// SMTP CONFIG
+type SMTPConfig struct {
+	Host      string
+	Port      int
+	Username  string
+	Password  string
+	FromName  string
+	FromEmail string
+}
+
+// EmailActionExecutor ejecuta acciones de email REALES
 type EmailActionExecutor struct {
-	logger *zap.Logger
+	logger     *zap.Logger
+	smtpConfig *SMTPConfig
 }
 
 func NewEmailActionExecutor(logger *zap.Logger) *EmailActionExecutor {
-	return &EmailActionExecutor{logger: logger}
+	// Cargar configuración SMTP desde variables de entorno
+	smtpConfig := &SMTPConfig{
+		Host:      getEnvOrDefault("SMTP_HOST", "smtp.gmail.com"),
+		Port:      getEnvIntOrDefault("SMTP_PORT", 587),
+		Username:  getEnvOrDefault("SMTP_USERNAME", ""),
+		Password:  getEnvOrDefault("SMTP_PASSWORD", ""),
+		FromName:  getEnvOrDefault("SMTP_FROM_NAME", "Engine API Workflow"),
+		FromEmail: getEnvOrDefault("SMTP_FROM_EMAIL", ""),
+	}
+
+	// Si FromEmail no está configurado, usar Username
+	if smtpConfig.FromEmail == "" {
+		smtpConfig.FromEmail = smtpConfig.Username
+	}
+
+	return &EmailActionExecutor{
+		logger:     logger,
+		smtpConfig: smtpConfig,
+	}
 }
 
 func (e *EmailActionExecutor) Execute(ctx context.Context, step *models.WorkflowStep, execCtx *ExecutionContext) (*StepResult, error) {
 	result := &StepResult{
-		Success: true,
+		Success: false,
 		Output:  make(map[string]interface{}),
 	}
 
 	// Extraer configuración de email
 	emailConfig, err := e.parseEmailConfig(step.Config)
 	if err != nil {
+		result.ErrorMessage = fmt.Sprintf("Invalid email configuration: %v", err)
 		return result, fmt.Errorf("invalid email configuration: %w", err)
 	}
 
 	// Reemplazar variables
 	e.replaceVariables(emailConfig, execCtx.Variables)
 
-	e.logger.Info("Sending email",
+	// Verificar configuración SMTP
+	if !e.isSMTPConfigured() {
+		e.logger.Warn("SMTP not configured, simulating email send")
+		return e.simulateEmail(emailConfig)
+	}
+
+	// Enviar email real
+	e.logger.Info("Sending real email",
 		zap.String("to", emailConfig.To),
-		zap.String("subject", emailConfig.Subject))
+		zap.String("subject", emailConfig.Subject),
+		zap.String("smtp_host", e.smtpConfig.Host))
 
-	// Simular envío de email (aquí integrarías con servicio real como SendGrid, SMTP, etc.)
-	time.Sleep(500 * time.Millisecond)
+	startTime := time.Now()
+	err = e.sendRealEmail(emailConfig)
+	duration := time.Since(startTime)
 
+	if err != nil {
+		result.ErrorMessage = fmt.Sprintf("Failed to send email: %v", err)
+		result.Output["error"] = err.Error()
+		result.Output["duration_ms"] = duration.Milliseconds()
+		return result, fmt.Errorf("failed to send email: %w", err)
+	}
+
+	// Email enviado exitosamente
+	result.Success = true
 	result.Output["email_sent"] = true
 	result.Output["to"] = emailConfig.To
 	result.Output["subject"] = emailConfig.Subject
-	result.Output["message"] = "Email sent successfully (simulated)"
+	result.Output["from"] = e.smtpConfig.FromEmail
+	result.Output["message"] = "Email sent successfully"
+	result.Output["duration_ms"] = duration.Milliseconds()
 	result.Output["timestamp"] = time.Now()
+	result.Output["smtp_host"] = e.smtpConfig.Host
+
+	e.logger.Info("Email sent successfully",
+		zap.String("to", emailConfig.To),
+		zap.Duration("duration", duration))
 
 	return result, nil
 }
 
+// sendRealEmail envía un email real usando SMTP
+func (e *EmailActionExecutor) sendRealEmail(config *EmailConfig) error {
+	// Crear mensaje
+	m := gomail.NewMessage()
+
+	// Configurar remitente
+	fromAddress := e.smtpConfig.FromEmail
+	if e.smtpConfig.FromName != "" {
+		fromAddress = fmt.Sprintf("%s <%s>", e.smtpConfig.FromName, e.smtpConfig.FromEmail)
+	}
+	m.SetHeader("From", fromAddress)
+
+	// Configurar destinatario
+	m.SetHeader("To", config.To)
+
+	// Configurar CC si existe
+	if len(config.CC) > 0 {
+		m.SetHeader("Cc", config.CC...)
+	}
+
+	// Configurar BCC si existe
+	if len(config.BCC) > 0 {
+		m.SetHeader("Bcc", config.BCC...)
+	}
+
+	// Configurar asunto
+	m.SetHeader("Subject", config.Subject)
+
+	// Configurar cuerpo
+	if config.IsHTML {
+		m.SetBody("text/html", config.Body)
+	} else {
+		m.SetBody("text/plain", config.Body)
+	}
+
+	// Si hay archivos adjuntos
+	for _, attachment := range config.Attachments {
+		if attachment != "" {
+			m.Attach(attachment)
+		}
+	}
+
+	// Crear dialer SMTP
+	d := gomail.NewDialer(
+		e.smtpConfig.Host,
+		e.smtpConfig.Port,
+		e.smtpConfig.Username,
+		e.smtpConfig.Password,
+	)
+
+	// Configurar TLS para Gmail y otros proveedores
+	d.TLSConfig = &tls.Config{InsecureSkipVerify: false}
+
+	// Enviar email
+	if err := d.DialAndSend(m); err != nil {
+		return fmt.Errorf("failed to send email via SMTP: %w", err)
+	}
+
+	return nil
+}
+
+// simulateEmail simula el envío cuando SMTP no está configurado
+func (e *EmailActionExecutor) simulateEmail(config *EmailConfig) (*StepResult, error) {
+	result := &StepResult{
+		Success: true,
+		Output:  make(map[string]interface{}),
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	result.Output["email_sent"] = true
+	result.Output["to"] = config.To
+	result.Output["subject"] = config.Subject
+	result.Output["message"] = "Email sent successfully (simulated - SMTP not configured)"
+	result.Output["timestamp"] = time.Now()
+	result.Output["mode"] = "simulated"
+
+	return result, nil
+}
+
+// isSMTPConfigured verifica si SMTP está configurado
+func (e *EmailActionExecutor) isSMTPConfigured() bool {
+	return e.smtpConfig.Host != "" &&
+		e.smtpConfig.Username != "" &&
+		e.smtpConfig.Password != ""
+}
+
+// EmailConfig configuración de email MEJORADA
 type EmailConfig struct {
-	To      string `json:"to"`
-	Subject string `json:"subject"`
-	Body    string `json:"body"`
-	From    string `json:"from"`
+	To          string   `json:"to"`
+	Subject     string   `json:"subject"`
+	Body        string   `json:"body"`
+	From        string   `json:"from"`        // Opcional, usa configuración por defecto
+	IsHTML      bool     `json:"is_html"`     // Soporte para HTML
+	Attachments []string `json:"attachments"` // Archivos adjuntos
+	CC          []string `json:"cc"`          // Copia
+	BCC         []string `json:"bcc"`         // Copia oculta
 }
 
 func (e *EmailActionExecutor) parseEmailConfig(config map[string]interface{}) (*EmailConfig, error) {
@@ -271,11 +422,15 @@ func (e *EmailActionExecutor) parseEmailConfig(config map[string]interface{}) (*
 		return nil, err
 	}
 
+	// Validaciones
 	if emailConfig.To == "" {
 		return nil, fmt.Errorf("'to' field is required")
 	}
 	if emailConfig.Subject == "" {
 		return nil, fmt.Errorf("'subject' field is required")
+	}
+	if emailConfig.Body == "" {
+		return nil, fmt.Errorf("'body' field is required")
 	}
 
 	return &emailConfig, nil
@@ -296,6 +451,23 @@ func (e *EmailActionExecutor) replaceInString(text string, variables map[string]
 		result = strings.ReplaceAll(result, placeholder, valueStr)
 	}
 	return result
+}
+
+// Funciones helper para variables de entorno
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func getEnvIntOrDefault(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
 }
 
 // SlackActionExecutor ejecuta acciones de Slack

@@ -25,6 +25,7 @@ type WorkerPool struct {
 	logger       *zap.Logger
 	stopCh       chan struct{}
 	wg           sync.WaitGroup
+	isRunning    bool // 🆕 AGREGADO: tracking del estado del pool
 }
 
 // Worker representa un worker individual
@@ -58,6 +59,7 @@ func NewWorkerPool(engine *WorkerEngine, minWorkers, maxWorkers int, logger *zap
 		minWorkers: minWorkers,
 		logger:     logger,
 		stopCh:     make(chan struct{}),
+		isRunning:  false, // 🆕 INICIALIZADO
 	}
 }
 
@@ -66,6 +68,8 @@ func (p *WorkerPool) Start(ctx context.Context) error {
 	p.logger.Info("Starting worker pool",
 		zap.Int("min_workers", p.minWorkers),
 		zap.Int("max_workers", p.maxWorkers))
+
+	p.isRunning = true // 🆕 MARCADO COMO EJECUTÁNDOSE
 
 	// Iniciar workers mínimos
 	for i := 0; i < p.minWorkers; i++ {
@@ -89,6 +93,7 @@ func (p *WorkerPool) Start(ctx context.Context) error {
 func (p *WorkerPool) Stop() error {
 	p.logger.Info("Stopping worker pool...")
 
+	p.isRunning = false // 🆕 MARCADO COMO DETENIDO
 	close(p.stopCh)
 
 	// Detener todos los workers
@@ -317,11 +322,80 @@ func (p *WorkerPool) getNextWorkerID() int {
 	return maxID + 1
 }
 
-// GetWorkerCount obtiene el número actual de workers (MÉTODO AGREGADO)
+// 🆕 MÉTODOS REQUERIDOS Y ADICIONALES
+
+// GetWorkerCount obtiene el número actual de workers (YA EXISTÍA)
 func (p *WorkerPool) GetWorkerCount() int {
 	p.workersMutex.RLock()
 	defer p.workersMutex.RUnlock()
 	return len(p.workers)
+}
+
+// GetActiveWorkerCount obtiene el número de workers que están procesando tareas
+func (p *WorkerPool) GetActiveWorkerCount() int {
+	p.workersMutex.RLock()
+	defer p.workersMutex.RUnlock()
+
+	activeCount := 0
+	for _, worker := range p.workers {
+		worker.mutex.RLock()
+		if worker.isActive && !worker.stats.IsIdle {
+			activeCount++
+		}
+		worker.mutex.RUnlock()
+	}
+	return activeCount
+}
+
+// GetIdleWorkerCount obtiene el número de workers inactivos
+func (p *WorkerPool) GetIdleWorkerCount() int {
+	totalWorkers := p.GetWorkerCount()
+	activeWorkers := p.GetActiveWorkerCount()
+	return totalWorkers - activeWorkers
+}
+
+// GetPoolStats obtiene estadísticas completas del pool
+func (p *WorkerPool) GetPoolStats() map[string]interface{} {
+	p.workersMutex.RLock()
+	defer p.workersMutex.RUnlock()
+
+	return map[string]interface{}{
+		"total_workers":  len(p.workers),
+		"active_workers": p.GetActiveWorkerCount(),
+		"idle_workers":   p.GetIdleWorkerCount(),
+		"min_size":       p.minWorkers,
+		"max_size":       p.maxWorkers,
+		"is_running":     p.isRunning,
+		"current_load":   atomic.LoadInt64(&p.currentLoad),
+		"average_load":   p.calculateAverageLoad(),
+		"queue_length":   p.getQueueLength(),
+	}
+}
+
+// GetWorkerIDs obtiene los IDs de todos los workers
+func (p *WorkerPool) GetWorkerIDs() []int {
+	p.workersMutex.RLock()
+	defer p.workersMutex.RUnlock()
+
+	ids := make([]int, 0, len(p.workers))
+	for id := range p.workers {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// IsHealthy verifica si el pool está en un estado saludable
+func (p *WorkerPool) IsHealthy() bool {
+	p.workersMutex.RLock()
+	defer p.workersMutex.RUnlock()
+
+	// El pool está saludable si está corriendo y tiene al menos el mínimo de workers
+	return p.isRunning && len(p.workers) >= p.minWorkers
+}
+
+// IsRunning verifica si el pool está actualmente ejecutándose
+func (p *WorkerPool) IsRunning() bool {
+	return p.isRunning
 }
 
 // Worker methods
@@ -405,7 +479,7 @@ func (w *Worker) GetStats() WorkerStats {
 	return w.stats
 }
 
-// GetStats obtiene estadísticas del pool (MÉTODO RENOMBRADO para evitar conflicto)
+// GetStats obtiene estadísticas del pool (MÉTODO EXISTENTE - MANTENER COMPATIBILIDAD)
 func (p *WorkerPool) GetStats() map[string]interface{} {
 	p.workersMutex.RLock()
 	defer p.workersMutex.RUnlock()
@@ -417,6 +491,7 @@ func (p *WorkerPool) GetStats() map[string]interface{} {
 		"current_load":   atomic.LoadInt64(&p.currentLoad),
 		"average_load":   p.calculateAverageLoad(),
 		"queue_length":   p.getQueueLength(),
+		"is_running":     p.isRunning, // 🆕 AGREGADO
 		"worker_details": make([]map[string]interface{}, 0),
 	}
 

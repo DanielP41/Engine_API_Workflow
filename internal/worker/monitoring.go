@@ -31,8 +31,9 @@ type MetricsCollector struct {
 	statsMutex  sync.RWMutex
 
 	// Configuración
-	logger *zap.Logger
-	repo   repository.QueueRepository
+	logger    *zap.Logger
+	repo      repository.QueueRepository
+	startTime time.Time // AGREGADO: Para tracking de uptime
 }
 
 // ActionMetrics métricas por tipo de acción
@@ -90,6 +91,7 @@ func NewMetricsCollector(logger *zap.Logger, repo repository.QueueRepository) *M
 		dailyStats:    make(map[string]*DailyStats),
 		logger:        logger,
 		repo:          repo,
+		startTime:     time.Now(), // INICIALIZADO
 	}
 }
 
@@ -206,7 +208,6 @@ func (m *MetricsCollector) updateTemporalStats(durationMs int64, success bool) {
 // GetMetrics obtiene todas las métricas actuales
 func (m *MetricsCollector) GetMetrics() map[string]interface{} {
 	processed := atomic.LoadInt64(&m.tasksProcessed)
-	succeeded := atomic.LoadInt64(&m.tasksSucceeded)
 	failed := atomic.LoadInt64(&m.tasksFailed)
 	retried := atomic.LoadInt64(&m.tasksRetried)
 	totalTime := atomic.LoadInt64(&m.totalProcessTime)
@@ -218,13 +219,13 @@ func (m *MetricsCollector) GetMetrics() map[string]interface{} {
 
 	var successRate float64
 	if processed > 0 {
-		successRate = float64(succeeded) / float64(processed) * 100
+		successRate = float64(atomic.LoadInt64(&m.tasksSucceeded)) / float64(processed) * 100
 	}
 
 	metrics := map[string]interface{}{
 		"summary": map[string]interface{}{
 			"tasks_processed": processed,
-			"tasks_succeeded": succeeded,
+			"tasks_succeeded": atomic.LoadInt64(&m.tasksSucceeded),
 			"tasks_failed":    failed,
 			"tasks_retried":   retried,
 			"success_rate":    successRate,
@@ -305,7 +306,7 @@ func (m *MetricsCollector) getRecentDailyStats(days int) map[string]*DailyStats 
 	return result
 }
 
-// CheckHealth verifica el estado de salud del sistema
+// CheckHealth verifica el estado de salud del sistema - CORREGIDO
 func (m *MetricsCollector) CheckHealth(ctx context.Context, workerPool *WorkerPool, startTime time.Time) (*WorkerHealthStatus, error) {
 	status := &WorkerHealthStatus{
 		IsHealthy:       true,
@@ -317,7 +318,7 @@ func (m *MetricsCollector) CheckHealth(ctx context.Context, workerPool *WorkerPo
 
 	// Verificar estadísticas básicas
 	processed := atomic.LoadInt64(&m.tasksProcessed)
-	succeeded := atomic.LoadInt64(&m.tasksSucceeded)
+	// CORREGIDO: Eliminar variable succeeded no usada
 	failed := atomic.LoadInt64(&m.tasksFailed)
 	totalTime := atomic.LoadInt64(&m.totalProcessTime)
 
@@ -340,10 +341,14 @@ func (m *MetricsCollector) CheckHealth(ctx context.Context, workerPool *WorkerPo
 		}
 	}
 
-	// Obtener tareas fallidas
-	failedTasks, err := m.repo.GetFailedTasksCount(ctx)
+	// Obtener tareas fallidas usando el método correcto
+	failedTasks, err := m.getFailedTasksCount(ctx)
 	if err == nil {
 		status.FailedTasks = failedTasks
+	} else {
+		// Si falla, usar 0 y log del error
+		m.logger.Warn("Failed to get failed tasks count", zap.Error(err))
+		status.FailedTasks = 0
 	}
 
 	// Evaluar salud general
@@ -355,6 +360,22 @@ func (m *MetricsCollector) CheckHealth(ctx context.Context, workerPool *WorkerPo
 	status.Metrics = m.GetMetrics()
 
 	return status, nil
+}
+
+// getFailedTasksCount maneja diferentes métodos disponibles
+func (m *MetricsCollector) getFailedTasksCount(ctx context.Context) (int64, error) {
+	// Intentar usar GetFailedTasksCount si está disponible
+	if count, err := m.repo.GetFailedTasksCount(ctx); err == nil {
+		return count, nil
+	}
+
+	// Fallback: usar GetFailedTasks y contar
+	failedTasks, err := m.repo.GetFailedTasks(ctx, 0) // 0 = sin límite
+	if err != nil {
+		return 0, fmt.Errorf("failed to get failed tasks: %w", err)
+	}
+
+	return int64(len(failedTasks)), nil
 }
 
 // evaluateHealth evalúa problemas de salud
@@ -387,6 +408,35 @@ func (m *MetricsCollector) evaluateHealth(status *WorkerHealthStatus) []string {
 	}
 
 	return issues
+}
+
+// GetUptime obtiene el tiempo de funcionamiento
+func (m *MetricsCollector) GetUptime() time.Duration {
+	return time.Since(m.startTime)
+}
+
+// GetSuccessRate obtiene la tasa de éxito actual
+func (m *MetricsCollector) GetSuccessRate() float64 {
+	processed := atomic.LoadInt64(&m.tasksProcessed)
+	succeeded := atomic.LoadInt64(&m.tasksSucceeded)
+
+	if processed == 0 {
+		return 0
+	}
+
+	return float64(succeeded) / float64(processed) * 100
+}
+
+// GetAverageProcessingTime obtiene el tiempo promedio de procesamiento
+func (m *MetricsCollector) GetAverageProcessingTime() float64 {
+	processed := atomic.LoadInt64(&m.tasksProcessed)
+	totalTime := atomic.LoadInt64(&m.totalProcessTime)
+
+	if processed == 0 {
+		return 0
+	}
+
+	return float64(totalTime) / float64(processed)
 }
 
 // ResetMetrics reinicia todas las métricas

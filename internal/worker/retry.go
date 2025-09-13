@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"Engine_API_Workflow/internal/models"
@@ -14,19 +15,22 @@ import (
 
 // RetryManager maneja la lógica de reintentos
 type RetryManager struct {
-	queueRepo repository.QueueRepository
-	logRepo   repository.LogRepository
-	logger    *zap.Logger
+	queueRepo     repository.QueueRepository
+	logRepo       repository.LogRepository
+	logger        *zap.Logger
+	policies      map[string]RetryPolicy // 🆕 AGREGADO: Políticas por workflow
+	defaultPolicy RetryPolicy            // 🆕 AGREGADO: Política por defecto
+	mu            sync.RWMutex           // 🆕 AGREGADO: Mutex para concurrencia
 }
 
 // RetryPolicy política de reintentos
 type RetryPolicy struct {
 	MaxAttempts     int             `json:"max_attempts"`
-	InitialDelay    time.Duration   `json:"initial_delay"`
+	BaseDelay       time.Duration   `json:"base_delay"` // 🔧 RENOMBRADO: InitialDelay -> BaseDelay
 	MaxDelay        time.Duration   `json:"max_delay"`
 	BackoffStrategy BackoffStrategy `json:"backoff_strategy"`
 	RetryableErrors []string        `json:"retryable_errors"`
-	ExponentialBase float64         `json:"exponential_base"`
+	Multiplier      float64         `json:"multiplier"` // 🔧 RENOMBRADO: ExponentialBase -> Multiplier
 }
 
 // BackoffStrategy estrategias de backoff
@@ -50,10 +54,14 @@ type RetryableError struct {
 
 // NewRetryManager crea un nuevo manager de reintentos
 func NewRetryManager(queueRepo repository.QueueRepository, logRepo repository.LogRepository, logger *zap.Logger) *RetryManager {
+	defaultPolicy := GetDefaultRetryPolicy()
+
 	return &RetryManager{
-		queueRepo: queueRepo,
-		logRepo:   logRepo,
-		logger:    logger,
+		queueRepo:     queueRepo,
+		logRepo:       logRepo,
+		logger:        logger,
+		policies:      make(map[string]RetryPolicy), // 🆕 INICIALIZADO
+		defaultPolicy: defaultPolicy,                // 🆕 INICIALIZADO
 	}
 }
 
@@ -61,10 +69,10 @@ func NewRetryManager(queueRepo repository.QueueRepository, logRepo repository.Lo
 func GetDefaultRetryPolicy() RetryPolicy {
 	return RetryPolicy{
 		MaxAttempts:     3,
-		InitialDelay:    30 * time.Second,
+		BaseDelay:       30 * time.Second, // 🔧 CORREGIDO: InitialDelay -> BaseDelay
 		MaxDelay:        10 * time.Minute,
 		BackoffStrategy: BackoffExponential,
-		ExponentialBase: 2.0,
+		Multiplier:      2.0, // 🔧 CORREGIDO: ExponentialBase -> Multiplier
 		RetryableErrors: []string{
 			"timeout",
 			"connection_error",
@@ -76,17 +84,48 @@ func GetDefaultRetryPolicy() RetryPolicy {
 	}
 }
 
-// GetWorkflowRetryPolicy obtiene política específica del workflow
+// GetWorkflowRetryPolicy obtiene política específica del workflow - CORREGIDO PARA SATISFACER INTERFAZ
 func (r *RetryManager) GetWorkflowRetryPolicy(workflow *models.Workflow) RetryPolicy {
-	policy := GetDefaultRetryPolicy()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
-	// Sobrescribir con configuración del workflow
+	workflowKey := workflow.ID.Hex()
+
+	// Buscar política específica para el workflow
+	if policy, exists := r.policies[workflowKey]; exists {
+		return policy
+	}
+
+	// Buscar política por tipo/categoría usando tags
+	if len(workflow.Tags) > 0 {
+		for _, tag := range workflow.Tags {
+			if policy, exists := r.policies[tag]; exists {
+				return policy
+			}
+		}
+	}
+
+	// Política por defecto basada en configuración del workflow
+	policy := r.defaultPolicy
+
+	// Sobrescribir con configuración del workflow si está disponible
 	if workflow.RetryAttempts > 0 {
 		policy.MaxAttempts = workflow.RetryAttempts
 	}
 
 	if workflow.RetryDelayMs > 0 {
-		policy.InitialDelay = time.Duration(workflow.RetryDelayMs) * time.Millisecond
+		policy.BaseDelay = time.Duration(workflow.RetryDelayMs) * time.Millisecond
+	}
+
+	// Política por defecto basada en prioridad del workflow
+	if workflow.Priority >= 8 { // Alta prioridad
+		policy.MaxAttempts = 5
+		policy.BaseDelay = 10 * time.Second
+		policy.MaxDelay = 5 * time.Minute
+	} else if workflow.Priority >= 5 { // Prioridad media
+		policy.MaxAttempts = 3
+		policy.BaseDelay = 30 * time.Second
+		policy.MaxDelay = 10 * time.Minute
 	}
 
 	return policy
@@ -114,36 +153,44 @@ func (r *RetryManager) ShouldRetry(task *models.QueueTask, err error, policy Ret
 	return true
 }
 
-// ScheduleRetry programa un reintento para una tarea
+// ScheduleRetry programa un reintento para una tarea - CORREGIDO COMPLETAMENTE
 func (r *RetryManager) ScheduleRetry(ctx context.Context, task *models.QueueTask, err error, policy RetryPolicy) error {
 	if !r.ShouldRetry(task, err, policy) {
-		return r.markTaskAsFinallyFailed(ctx, task, err)
+		return r.handleMaxRetriesExceeded(ctx, task, err)
 	}
 
-	// Calcular delay para el próximo intento
-	delay := r.calculateRetryDelay(task.RetryCount, policy)
-	nextRunTime := time.Now().Add(delay)
+	// Calcular el tiempo de reintento
+	retryTime := r.calculateRetryTime(policy, task.RetryCount)
+	errorMsg := err.Error()
 
-	// Actualizar información del task
-	task.RetryCount++
-	task.ScheduledAt = &nextRunTime
-	task.Status = models.QueueTaskStatusPending
-	task.LastError = err.Error()
-	task.ProcessedAt = nil
+	// Log del reintento
+	r.logger.Info("Scheduling retry",
+		zap.String("task_id", task.ID),
+		zap.Int("retry_count", task.RetryCount+1),
+		zap.Time("retry_time", retryTime),
+		zap.String("error", errorMsg))
 
-	// Reencolar la tarea
-	err = r.queueRepo.EnqueueAt(ctx, task, nextRunTime)
-	if err != nil {
-		return fmt.Errorf("failed to schedule retry: %w", err)
-	}
+	// 🔧 CORREGIDO: Encolar nuevamente usando EnqueueAt con parámetros correctos
+	return r.queueRepo.EnqueueAt(ctx, task.WorkflowID, task.ExecutionID, task.UserID, task.Payload, task.Priority, retryTime)
+}
 
-	r.logger.Info("Task scheduled for retry",
+// 🆕 MÉTODO AGREGADO: calculateRetryTime calcula cuándo debe ejecutarse el reintento
+func (r *RetryManager) calculateRetryTime(policy RetryPolicy, currentRetryCount int) time.Time {
+	delay := r.calculateRetryDelay(currentRetryCount, policy)
+	return time.Now().Add(delay)
+}
+
+// 🆕 MÉTODO AGREGADO: handleMaxRetriesExceeded maneja cuando se exceden los reintentos
+func (r *RetryManager) handleMaxRetriesExceeded(ctx context.Context, task *models.QueueTask, err error) error {
+	errorMsg := fmt.Sprintf("Max retries exceeded (%d): %v", task.RetryCount, err)
+
+	r.logger.Error("Task failed permanently",
 		zap.String("task_id", task.ID),
 		zap.Int("retry_count", task.RetryCount),
-		zap.Duration("delay", delay),
-		zap.Time("next_run", nextRunTime))
+		zap.String("error", errorMsg))
 
-	return nil
+	// 🔧 CORREGIDO: Usar el método MarkFailed del repositorio
+	return r.queueRepo.MarkFailed(ctx, task.ID, fmt.Errorf(errorMsg))
 }
 
 // calculateRetryDelay calcula el delay para el próximo intento
@@ -152,21 +199,20 @@ func (r *RetryManager) calculateRetryDelay(retryCount int, policy RetryPolicy) t
 
 	switch policy.BackoffStrategy {
 	case BackoffFixed:
-		delay = policy.InitialDelay
+		delay = policy.BaseDelay // 🔧 CORREGIDO: InitialDelay -> BaseDelay
 
 	case BackoffLinear:
-		delay = policy.InitialDelay * time.Duration(retryCount+1)
+		delay = policy.BaseDelay * time.Duration(retryCount+1) // 🔧 CORREGIDO
 
 	case BackoffExponential:
-		multiplier := math.Pow(policy.ExponentialBase, float64(retryCount))
-		delay = time.Duration(float64(policy.InitialDelay) * multiplier)
+		multiplier := math.Pow(policy.Multiplier, float64(retryCount)) // 🔧 CORREGIDO
+		delay = time.Duration(float64(policy.BaseDelay) * multiplier)  // 🔧 CORREGIDO
 
 	case BackoffCustom:
-		// Implementar lógica personalizada
 		delay = r.customBackoffCalculation(retryCount, policy)
 
 	default:
-		delay = policy.InitialDelay
+		delay = policy.BaseDelay // 🔧 CORREGIDO
 	}
 
 	// Aplicar jitter para evitar thundering herd
@@ -185,15 +231,15 @@ func (r *RetryManager) calculateRetryDelay(retryCount int, policy RetryPolicy) t
 func (r *RetryManager) customBackoffCalculation(retryCount int, policy RetryPolicy) time.Duration {
 	// Fibonacci-like backoff: cada intento toma más tiempo basado en los anteriores
 	if retryCount == 0 {
-		return policy.InitialDelay
+		return policy.BaseDelay // 🔧 CORREGIDO
 	}
 	if retryCount == 1 {
-		return policy.InitialDelay * 2
+		return policy.BaseDelay * 2 // 🔧 CORREGIDO
 	}
 
 	// Aproximación de Fibonacci para delay
-	prev2 := policy.InitialDelay
-	prev1 := policy.InitialDelay * 2
+	prev2 := policy.BaseDelay     // 🔧 CORREGIDO
+	prev1 := policy.BaseDelay * 2 // 🔧 CORREGIDO
 
 	for i := 2; i <= retryCount; i++ {
 		current := prev1 + prev2
@@ -219,8 +265,6 @@ func (r *RetryManager) isRetryableError(err error, retryableErrors []string) boo
 
 // containsPattern verifica si el mensaje de error contiene un patrón específico
 func (r *RetryManager) containsPattern(errorMsg, pattern string) bool {
-	// Implementación simple de matching
-	// Se puede expandir para usar regex si es necesario
 	return len(errorMsg) > 0 && len(pattern) > 0 &&
 		r.simpleContains(errorMsg, pattern)
 }
@@ -237,14 +281,11 @@ func (r *RetryManager) simpleContains(str, substr string) bool {
 	return false
 }
 
-// markTaskAsFinallyFailed marca una tarea como fallida definitivamente
+// 🔧 MÉTODO SIMPLIFICADO Y CORREGIDO
 func (r *RetryManager) markTaskAsFinallyFailed(ctx context.Context, task *models.QueueTask, err error) error {
-	task.Status = models.QueueTaskStatusFailed
-	task.FailedAt = &time.Time{}
-	*task.FailedAt = time.Now()
-	task.LastError = fmt.Sprintf("Max retries exceeded: %s", err.Error())
+	errorMsg := fmt.Sprintf("Max retries exceeded: %s", err.Error())
 
-	updateErr := r.queueRepo.MarkFailed(ctx, task.ID, fmt.Errorf(task.LastError))
+	updateErr := r.queueRepo.MarkFailed(ctx, task.ID, fmt.Errorf(errorMsg))
 	if updateErr != nil {
 		r.logger.Error("Failed to mark task as finally failed",
 			zap.String("task_id", task.ID),
@@ -255,59 +296,63 @@ func (r *RetryManager) markTaskAsFinallyFailed(ctx context.Context, task *models
 	r.logger.Info("Task marked as finally failed",
 		zap.String("task_id", task.ID),
 		zap.Int("final_retry_count", task.RetryCount),
-		zap.String("final_error", task.LastError))
+		zap.String("final_error", errorMsg))
 
 	return nil
 }
 
-// GetRetryStats obtiene estadísticas de reintentos
-func (r *RetryManager) GetRetryStats(ctx context.Context) (map[string]interface{}, error) {
-	// Obtener tareas pendientes de reintento
-	pendingRetries, err := r.queueRepo.GetPendingRetries(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get pending retries: %w", err)
-	}
+// 🆕 MÉTODOS ADICIONALES PARA COMPLETAR LA FUNCIONALIDAD
 
-	// Agrupar por número de intentos
-	retryDistribution := make(map[int]int)
-	for _, task := range pendingRetries {
-		retryDistribution[task.RetryCount]++
-	}
-
-	stats := map[string]interface{}{
-		"total_pending_retries": len(pendingRetries),
-		"retry_distribution":    retryDistribution,
-		"timestamp":             time.Now(),
-	}
-
-	return stats, nil
+// SetWorkflowPolicy establece una política específica para un workflow
+func (r *RetryManager) SetWorkflowPolicy(workflowID string, policy RetryPolicy) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.policies[workflowID] = policy
 }
 
-// CleanupOldRetries limpia reintentos muy antiguos
-func (r *RetryManager) CleanupOldRetries(ctx context.Context, maxAge time.Duration) error {
-	cutoffTime := time.Now().Add(-maxAge)
+// RemoveWorkflowPolicy elimina una política específica de workflow
+func (r *RetryManager) RemoveWorkflowPolicy(workflowID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.policies, workflowID)
+}
 
-	oldTasks, err := r.queueRepo.GetTasksOlderThan(ctx, cutoffTime)
+// GetRetryStats obtiene estadísticas de reintentos - CORREGIDO PARA USAR MÉTODOS EXISTENTES
+func (r *RetryManager) GetRetryStats(ctx context.Context) map[string]interface{} {
+	stats := make(map[string]interface{})
+
+	// Obtener tareas que están siendo reintentadas
+	retryingTasks, err := r.queueRepo.GetRetryingTasksCount(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get old tasks: %w", err)
+		r.logger.Error("Failed to get retrying tasks count", zap.Error(err))
+		retryingTasks = 0
 	}
 
-	cleanedCount := 0
-	for _, task := range oldTasks {
-		if task.Status == models.QueueTaskStatusPending && task.RetryCount > 0 {
-			err := r.markTaskAsFinallyFailed(ctx, task, fmt.Errorf("task expired after %v", maxAge))
-			if err != nil {
-				r.logger.Error("Failed to cleanup old retry task",
-					zap.String("task_id", task.ID),
-					zap.Error(err))
-				continue
-			}
-			cleanedCount++
-		}
+	// Obtener tareas fallidas permanentemente
+	failedTasks, err := r.queueRepo.GetFailedTasksCount(ctx)
+	if err != nil {
+		r.logger.Error("Failed to get failed tasks count", zap.Error(err))
+		failedTasks = 0
+	}
+
+	stats["retrying_tasks"] = retryingTasks
+	stats["permanently_failed_tasks"] = failedTasks
+	stats["retry_policies_count"] = len(r.policies)
+	stats["timestamp"] = time.Now()
+
+	return stats
+}
+
+// CleanupOldRetries limpia reintentos muy antiguos - SIMPLIFICADO PARA USAR MÉTODOS EXISTENTES
+func (r *RetryManager) CleanupOldRetries(ctx context.Context, maxAge time.Duration) error {
+	// Usar el método de limpieza existente del repositorio
+	cleanedCount, err := r.queueRepo.CleanupStaleProcessingTasks(ctx, maxAge)
+	if err != nil {
+		return fmt.Errorf("failed to cleanup old retries: %w", err)
 	}
 
 	if cleanedCount > 0 {
-		r.logger.Info("Cleaned up old retry tasks", zap.Int("count", cleanedCount))
+		r.logger.Info("Cleaned up old retry tasks", zap.Int64("count", cleanedCount))
 	}
 
 	return nil
@@ -323,7 +368,6 @@ func (r *RetryManager) ProcessFailedTasks(ctx context.Context) error {
 	for _, task := range failedTasks {
 		// Solo procesar tareas que fallaron recientemente y pueden ser reintentadas
 		if task.FailedAt != nil && time.Since(*task.FailedAt) < 24*time.Hour {
-			// Aquí se podría implementar lógica para reactivar reintentos
 			r.logger.Debug("Reviewing failed task for potential retry",
 				zap.String("task_id", task.ID),
 				zap.Int("retry_count", task.RetryCount))
@@ -331,4 +375,35 @@ func (r *RetryManager) ProcessFailedTasks(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// 🆕 MÉTODOS ADICIONALES ÚTILES
+
+// shouldRetryError determina si un error justifica un reintento
+func (r *RetryManager) shouldRetryError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errorMsg := err.Error()
+
+	// Errores que NO deben reintentarse
+	nonRetryableErrors := []string{
+		"invalid workflow",
+		"user not found",
+		"workflow not found",
+		"invalid payload",
+		"permission denied",
+		"unauthorized",
+		"forbidden",
+	}
+
+	for _, nonRetryable := range nonRetryableErrors {
+		if r.simpleContains(errorMsg, nonRetryable) {
+			return false
+		}
+	}
+
+	// Por defecto, reintentar errores temporales
+	return true
 }

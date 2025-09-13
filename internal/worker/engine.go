@@ -288,10 +288,9 @@ func (e *WorkerEngine) GetAdvancedStats(ctx context.Context) (map[string]interfa
 	// Combinar estadísticas existentes con nuevas métricas
 	poolStats := e.pool.GetStats()
 	metricsStats := e.metrics.GetMetrics()
-	retryStats, err := e.retryManager.GetRetryStats(ctx)
-	if err != nil {
-		retryStats = map[string]interface{}{"error": err.Error()}
-	}
+
+	// CORREGIDO: GetRetryStats solo retorna un valor, no error
+	retryStats := e.retryManager.GetRetryStats(ctx)
 
 	return map[string]interface{}{
 		"pool":    poolStats,
