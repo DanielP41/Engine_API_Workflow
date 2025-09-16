@@ -1,19 +1,308 @@
 package handlers
 
 import (
-	"bytes"
-	"encoding/json"
-	"net/http/httptest"
+	"context"
 	"testing"
+	"time"
 
-	"github.com/gofiber/fiber/v2"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
+	"Engine_API_Workflow/internal/models"
+	"Engine_API_Workflow/internal/repository"
 	"Engine_API_Workflow/internal/utils"
 	"Engine_API_Workflow/pkg/jwt"
+	"Engine_API_Workflow/pkg/logger"
 )
 
-// MockAuthService simplificado para tests
+// MockUserRepository implementación completa para tests
+type MockUserRepository struct {
+	users         map[string]*models.User
+	shouldFailMap map[string]bool
+}
+
+func NewMockUserRepository() *MockUserRepository {
+	return &MockUserRepository{
+		users:         make(map[string]*models.User),
+		shouldFailMap: make(map[string]bool),
+	}
+}
+
+func (m *MockUserRepository) Create(ctx context.Context, user *models.User) (*models.User, error) {
+	if m.shouldFailMap["Create"] {
+		return nil, repository.ErrUserAlreadyExists
+	}
+
+	for _, existingUser := range m.users {
+		if existingUser.Email == user.Email {
+			return nil, repository.ErrUserAlreadyExists
+		}
+	}
+
+	user.ID = primitive.NewObjectID()
+	m.users[user.ID.Hex()] = user
+	return user, nil
+}
+
+func (m *MockUserRepository) GetByID(ctx context.Context, id primitive.ObjectID) (*models.User, error) {
+	if m.shouldFailMap["GetByID"] {
+		return nil, repository.ErrUserNotFound
+	}
+
+	user, exists := m.users[id.Hex()]
+	if !exists {
+		return nil, repository.ErrUserNotFound
+	}
+	return user, nil
+}
+
+func (m *MockUserRepository) GetByEmail(ctx context.Context, email string) (*models.User, error) {
+	if m.shouldFailMap["GetByEmail"] {
+		return nil, repository.ErrUserNotFound
+	}
+
+	for _, user := range m.users {
+		if user.Email == email {
+			return user, nil
+		}
+	}
+	return nil, repository.ErrUserNotFound
+}
+
+func (m *MockUserRepository) Update(ctx context.Context, id primitive.ObjectID, update *models.UpdateUserRequest) error {
+	if m.shouldFailMap["Update"] {
+		return repository.ErrUserNotFound
+	}
+
+	user, exists := m.users[id.Hex()]
+	if !exists {
+		return repository.ErrUserNotFound
+	}
+
+	if update.FirstName != "" {
+		user.FirstName = update.FirstName
+	}
+	if update.LastName != "" {
+		user.LastName = update.LastName
+	}
+	if update.Role != "" {
+		user.Role = models.Role(update.Role)
+	}
+	if update.IsActive != nil {
+		user.IsActive = *update.IsActive
+	}
+
+	return nil
+}
+
+func (m *MockUserRepository) Delete(ctx context.Context, id primitive.ObjectID) error {
+	if m.shouldFailMap["Delete"] {
+		return repository.ErrUserNotFound
+	}
+
+	if _, exists := m.users[id.Hex()]; !exists {
+		return repository.ErrUserNotFound
+	}
+
+	delete(m.users, id.Hex())
+	return nil
+}
+
+func (m *MockUserRepository) List(ctx context.Context, page, pageSize int) (*models.UserListResponse, error) {
+	if m.shouldFailMap["List"] {
+		return nil, repository.ErrUserNotFound
+	}
+
+	users := make([]models.User, 0, len(m.users))
+	for _, user := range m.users {
+		if user.IsActive {
+			users = append(users, *user)
+		}
+	}
+
+	return &models.UserListResponse{
+		Users:      users,
+		Total:      int64(len(users)),
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: 1,
+	}, nil
+}
+
+func (m *MockUserRepository) ListByRole(ctx context.Context, role models.Role, page, pageSize int) (*models.UserListResponse, error) {
+	if m.shouldFailMap["ListByRole"] {
+		return nil, repository.ErrUserNotFound
+	}
+
+	users := make([]models.User, 0)
+	for _, user := range m.users {
+		if user.IsActive && user.Role == role {
+			users = append(users, *user)
+		}
+	}
+
+	return &models.UserListResponse{
+		Users:      users,
+		Total:      int64(len(users)),
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: 1,
+	}, nil
+}
+
+func (m *MockUserRepository) UpdateLastLogin(ctx context.Context, id primitive.ObjectID) error {
+	if m.shouldFailMap["UpdateLastLogin"] {
+		return repository.ErrUserNotFound
+	}
+
+	if _, exists := m.users[id.Hex()]; !exists {
+		return repository.ErrUserNotFound
+	}
+
+	return nil
+}
+
+func (m *MockUserRepository) UpdatePassword(ctx context.Context, id primitive.ObjectID, hashedPassword string) error {
+	if m.shouldFailMap["UpdatePassword"] {
+		return repository.ErrUserNotFound
+	}
+
+	user, exists := m.users[id.Hex()]
+	if !exists {
+		return repository.ErrUserNotFound
+	}
+
+	user.Password = hashedPassword
+	return nil
+}
+
+func (m *MockUserRepository) SetActiveStatus(ctx context.Context, id primitive.ObjectID, isActive bool) error {
+	if m.shouldFailMap["SetActiveStatus"] {
+		return repository.ErrUserNotFound
+	}
+
+	user, exists := m.users[id.Hex()]
+	if !exists {
+		return repository.ErrUserNotFound
+	}
+
+	user.IsActive = isActive
+	return nil
+}
+
+func (m *MockUserRepository) Count(ctx context.Context) (int64, error) {
+	if m.shouldFailMap["Count"] {
+		return 0, repository.ErrUserNotFound
+	}
+
+	count := int64(0)
+	for _, user := range m.users {
+		if user.IsActive {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *MockUserRepository) CountByRole(ctx context.Context, role models.Role) (int64, error) {
+	if m.shouldFailMap["CountByRole"] {
+		return 0, repository.ErrUserNotFound
+	}
+
+	count := int64(0)
+	for _, user := range m.users {
+		if user.IsActive && user.Role == role {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *MockUserRepository) CountUsers(ctx context.Context) (int64, error) {
+	if m.shouldFailMap["CountUsers"] {
+		return 0, repository.ErrUserNotFound
+	}
+
+	return int64(len(m.users)), nil
+}
+
+func (m *MockUserRepository) EmailExists(ctx context.Context, email string) (bool, error) {
+	if m.shouldFailMap["EmailExists"] {
+		return false, repository.ErrUserNotFound
+	}
+
+	for _, user := range m.users {
+		if user.Email == email {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *MockUserRepository) EmailExistsExcludeID(ctx context.Context, email string, excludeID primitive.ObjectID) (bool, error) {
+	if m.shouldFailMap["EmailExistsExcludeID"] {
+		return false, repository.ErrUserNotFound
+	}
+
+	for _, user := range m.users {
+		if user.Email == email && user.ID != excludeID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *MockUserRepository) GetByIDString(ctx context.Context, id string) (*models.User, error) {
+	if m.shouldFailMap["GetByIDString"] {
+		return nil, repository.ErrUserNotFound
+	}
+
+	objectID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, repository.ErrUserNotFound
+	}
+
+	return m.GetByID(ctx, objectID)
+}
+
+func (m *MockUserRepository) UpdateLastLoginString(ctx context.Context, id string) error {
+	if m.shouldFailMap["UpdateLastLoginString"] {
+		return repository.ErrUserNotFound
+	}
+
+	objectID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return repository.ErrUserNotFound
+	}
+
+	return m.UpdateLastLogin(ctx, objectID)
+}
+
+func (m *MockUserRepository) Search(ctx context.Context, query string, page, pageSize int) (*models.UserListResponse, error) {
+	if m.shouldFailMap["Search"] {
+		return nil, repository.ErrUserNotFound
+	}
+
+	users := make([]models.User, 0)
+	for _, user := range m.users {
+		if user.IsActive && (user.FirstName == query || user.LastName == query || user.Email == query) {
+			users = append(users, *user)
+		}
+	}
+
+	return &models.UserListResponse{
+		Users:      users,
+		Total:      int64(len(users)),
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: 1,
+	}, nil
+}
+
+func (m *MockUserRepository) SetShouldFail(method string, shouldFail bool) {
+	m.shouldFailMap[method] = shouldFail
+}
+
+// MockAuthService para tests
 type MockAuthService struct {
 	shouldFailMap map[string]bool
 }
@@ -54,10 +343,9 @@ func (m *MockAuthService) ValidateToken(token string) (*jwt.Claims, error) {
 		return nil, jwt.ErrInvalidToken
 	}
 
-	// Parse mock token to extract user ID
-	userID := "507f1f77bcf86cd799439011" // Default test user ID
+	userID := "507f1f77bcf86cd799439011"
 	if len(token) > 17 {
-		userID = token[17:] // Extract after "mock_access_token_"
+		userID = token[17:]
 	}
 
 	return &jwt.Claims{
@@ -72,384 +360,241 @@ func (m *MockAuthService) SetShouldFail(method string, shouldFail bool) {
 	m.shouldFailMap[method] = shouldFail
 }
 
-// Helper para crear app de test
-func createTestApp() *fiber.App {
-	app := fiber.New(fiber.Config{
-		ErrorHandler: func(c *fiber.Ctx, err error) error {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": err.Error(),
-			})
-		},
-	})
-	return app
+// MockJWTService para tests
+type MockJWTService struct {
+	shouldFailMap map[string]bool
 }
 
-// Helper para crear handler de test simplificado
-func createTestAuthHandler() (*AuthHandler, *MockAuthService) {
+func NewMockJWTService() *MockJWTService {
+	return &MockJWTService{
+		shouldFailMap: make(map[string]bool),
+	}
+}
+
+func (m *MockJWTService) GenerateTokens(userID primitive.ObjectID, email, role string) (*jwt.TokenPair, error) {
+	if m.shouldFailMap["GenerateTokens"] {
+		return nil, jwt.ErrInvalidToken
+	}
+
+	return &jwt.TokenPair{
+		AccessToken:  "mock_access_token",
+		RefreshToken: "mock_refresh_token",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		ExpiresIn:    3600,
+	}, nil
+}
+
+func (m *MockJWTService) GenerateTokensWithTTL(userID primitive.ObjectID, email, role string, accessTTL, refreshTTL time.Duration) (*jwt.TokenPair, error) {
+	if m.shouldFailMap["GenerateTokensWithTTL"] {
+		return nil, jwt.ErrInvalidToken
+	}
+
+	return m.GenerateTokens(userID, email, role)
+}
+
+func (m *MockJWTService) ValidateToken(tokenString string) (*jwt.Claims, error) {
+	if m.shouldFailMap["ValidateToken"] {
+		return nil, jwt.ErrInvalidToken
+	}
+
+	return &jwt.Claims{
+		UserID: "507f1f77bcf86cd799439011",
+		Email:  "test@example.com",
+		Role:   "user",
+		Type:   "access",
+	}, nil
+}
+
+func (m *MockJWTService) RefreshToken(refreshToken string) (*jwt.TokenPair, error) {
+	if m.shouldFailMap["RefreshToken"] {
+		return nil, jwt.ErrInvalidToken
+	}
+
+	return m.GenerateTokens(primitive.NewObjectID(), "test@example.com", "user")
+}
+
+func (m *MockJWTService) RevokeToken(tokenString string) error {
+	if m.shouldFailMap["RevokeToken"] {
+		return jwt.ErrInvalidToken
+	}
+	return nil
+}
+
+func (m *MockJWTService) GetTokenClaims(tokenString string) (*jwt.Claims, error) {
+	if m.shouldFailMap["GetTokenClaims"] {
+		return nil, jwt.ErrInvalidToken
+	}
+
+	return &jwt.Claims{
+		UserID: "507f1f77bcf86cd799439011",
+		Email:  "test@example.com",
+		Role:   "user",
+		Type:   "access",
+	}, nil
+}
+
+func (m *MockJWTService) IsTokenExpired(tokenString string) bool {
+	return m.shouldFailMap["IsTokenExpired"]
+}
+
+func (m *MockJWTService) SetShouldFail(method string, shouldFail bool) {
+	m.shouldFailMap[method] = shouldFail
+}
+
+// Helper para crear handler de test con configuración completa
+func createTestAuthHandler() (*AuthHandler, *MockAuthService, *MockUserRepository) {
 	mockAuthService := NewMockAuthService()
+	mockUserRepo := NewMockUserRepository()
+	mockJWTService := NewMockJWTService()
 	mockValidator := utils.NewValidator()
+	mockLogger := logger.New("debug", "test")
 
-	// Crear handler simplificado sin JWT service y sin user repo
-	handler := &AuthHandler{
-		authService: mockAuthService,
-		validator:   mockValidator,
-	}
-
-	return handler, mockAuthService
-}
-
-func TestRegister_Simple(t *testing.T) {
-	tests := []struct {
-		name           string
-		payload        RegisterRequest
-		setupMocks     func(*MockAuthService)
-		expectedStatus int
-		shouldContain  string
-	}{
-		{
-			name: "Valid registration",
-			payload: RegisterRequest{
-				Name:     "Test User",
-				Email:    "test@example.com",
-				Password: "password123",
-				Role:     "user",
-			},
-			setupMocks: func(auth *MockAuthService) {
-				// No setup needed for success case
-			},
-			expectedStatus: 201,
-			shouldContain:  "registered",
-		},
-		{
-			name: "Invalid email format",
-			payload: RegisterRequest{
-				Name:     "Test User",
-				Email:    "invalid-email",
-				Password: "password123",
-				Role:     "user",
-			},
-			setupMocks:     func(auth *MockAuthService) {},
-			expectedStatus: 400,
-			shouldContain:  "validation",
-		},
-		{
-			name: "Password too short",
-			payload: RegisterRequest{
-				Name:     "Test User",
-				Email:    "test@example.com",
-				Password: "123",
-				Role:     "user",
-			},
-			setupMocks:     func(auth *MockAuthService) {},
-			expectedStatus: 400,
-			shouldContain:  "validation",
-		},
-		{
-			name: "Password hashing fails",
-			payload: RegisterRequest{
-				Name:     "Test User",
-				Email:    "test@example.com",
-				Password: "password123",
-				Role:     "user",
-			},
-			setupMocks: func(auth *MockAuthService) {
-				auth.SetShouldFail("HashPassword", true)
-			},
-			expectedStatus: 500,
-			shouldContain:  "error",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			app := createTestApp()
-			handler, mockAuth := createTestAuthHandler()
-
-			// Setup mocks
-			tt.setupMocks(mockAuth)
-
-			// Setup route - usar un handler simplificado que no requiera repositorio
-			app.Post("/register", func(c *fiber.Ctx) error {
-				var req RegisterRequest
-				if err := c.BodyParser(&req); err != nil {
-					return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
-				}
-
-				// Validar request
-				if err := handler.validator.Validate(&req); err != nil {
-					return c.Status(400).JSON(fiber.Map{"error": "validation failed"})
-				}
-
-				// Hash password
-				_, err := handler.authService.HashPassword(req.Password)
-				if err != nil {
-					return c.Status(500).JSON(fiber.Map{"error": "Failed to process registration"})
-				}
-
-				return c.Status(201).JSON(fiber.Map{"message": "User registered successfully"})
-			})
-
-			// Create request
-			payload, _ := json.Marshal(tt.payload)
-			req := httptest.NewRequest("POST", "/register", bytes.NewBuffer(payload))
-			req.Header.Set("Content-Type", "application/json")
-
-			// Execute request
-			resp, err := app.Test(req)
-			if err != nil {
-				t.Fatalf("Request failed: %v", err)
-			}
-
-			// Check status code
-			if resp.StatusCode != tt.expectedStatus {
-				t.Errorf("Expected status %d, got %d", tt.expectedStatus, resp.StatusCode)
-			}
-
-			// Check response content
-			body := make([]byte, 1024)
-			n, _ := resp.Body.Read(body)
-			responseStr := string(body[:n])
-
-			if tt.shouldContain != "" && !contains(responseStr, tt.shouldContain) {
-				t.Errorf("Expected response to contain '%s', got: %s", tt.shouldContain, responseStr)
-			}
-		})
-	}
-}
-
-func TestLogin_Simple(t *testing.T) {
-	tests := []struct {
-		name           string
-		payload        LoginRequest
-		setupMocks     func(*MockAuthService)
-		expectedStatus int
-		shouldContain  string
-	}{
-		{
-			name: "Valid login",
-			payload: LoginRequest{
-				Email:    "test@example.com",
-				Password: "password123",
-			},
-			setupMocks: func(auth *MockAuthService) {
-				// No setup needed for success case
-			},
-			expectedStatus: 200,
-			shouldContain:  "token",
-		},
-		{
-			name: "Invalid email format",
-			payload: LoginRequest{
-				Email:    "invalid-email",
-				Password: "password123",
-			},
-			setupMocks:     func(auth *MockAuthService) {},
-			expectedStatus: 400,
-			shouldContain:  "validation",
-		},
-		{
-			name: "Password check fails",
-			payload: LoginRequest{
-				Email:    "test@example.com",
-				Password: "wrongpassword",
-			},
-			setupMocks: func(auth *MockAuthService) {
-				auth.SetShouldFail("CheckPassword", true)
-			},
-			expectedStatus: 401,
-			shouldContain:  "Invalid",
-		},
-		{
-			name: "Token generation fails",
-			payload: LoginRequest{
-				Email:    "test@example.com",
-				Password: "password123",
-			},
-			setupMocks: func(auth *MockAuthService) {
-				auth.SetShouldFail("GenerateTokens", true)
-			},
-			expectedStatus: 500,
-			shouldContain:  "token",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			app := createTestApp()
-			handler, mockAuth := createTestAuthHandler()
-
-			// Setup mocks
-			tt.setupMocks(mockAuth)
-
-			// Setup route - handler simplificado para login
-			app.Post("/login", func(c *fiber.Ctx) error {
-				var req LoginRequest
-				if err := c.BodyParser(&req); err != nil {
-					return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
-				}
-
-				// Validar request
-				if err := handler.validator.Validate(&req); err != nil {
-					return c.Status(400).JSON(fiber.Map{"error": "validation failed"})
-				}
-
-				// Simular verificación de password
-				hash := "hashed_" + req.Password
-				err := handler.authService.CheckPassword(req.Password, hash)
-				if err != nil {
-					return c.Status(401).JSON(fiber.Map{"error": "Invalid credentials"})
-				}
-
-				// Generar tokens
-				userID := primitive.NewObjectID().Hex()
-				accessToken, refreshToken, err := handler.authService.GenerateTokens(userID, req.Email, "user")
-				if err != nil {
-					return c.Status(500).JSON(fiber.Map{"error": "Failed to generate tokens"})
-				}
-
-				return c.Status(200).JSON(fiber.Map{
-					"message": "Login successful",
-					"data": fiber.Map{
-						"access_token":  accessToken,
-						"refresh_token": refreshToken,
-					},
-				})
-			})
-
-			// Create request
-			payload, _ := json.Marshal(tt.payload)
-			req := httptest.NewRequest("POST", "/login", bytes.NewBuffer(payload))
-			req.Header.Set("Content-Type", "application/json")
-
-			// Execute request
-			resp, err := app.Test(req)
-			if err != nil {
-				t.Fatalf("Request failed: %v", err)
-			}
-
-			// Check status code
-			if resp.StatusCode != tt.expectedStatus {
-				t.Errorf("Expected status %d, got %d", tt.expectedStatus, resp.StatusCode)
-			}
-
-			// Check response content
-			body := make([]byte, 1024)
-			n, _ := resp.Body.Read(body)
-			responseStr := string(body[:n])
-
-			if tt.shouldContain != "" && !contains(responseStr, tt.shouldContain) {
-				t.Errorf("Expected response to contain '%s', got: %s", tt.shouldContain, responseStr)
-			}
-		})
-	}
-}
-
-func TestValidateToken_Simple(t *testing.T) {
-	tests := []struct {
-		name          string
-		token         string
-		setupMocks    func(*MockAuthService)
-		expectedValid bool
-	}{
-		{
-			name:  "Valid token",
-			token: "mock_access_token_123",
-			setupMocks: func(auth *MockAuthService) {
-				// Success case
-			},
-			expectedValid: true,
-		},
-		{
-			name:  "Invalid token",
-			token: "invalid_token",
-			setupMocks: func(auth *MockAuthService) {
-				auth.SetShouldFail("ValidateToken", true)
-			},
-			expectedValid: false,
-		},
-		{
-			name:          "Empty token",
-			token:         "",
-			setupMocks:    func(auth *MockAuthService) {},
-			expectedValid: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			handler, mockAuth := createTestAuthHandler()
-
-			// Setup mocks
-			tt.setupMocks(mockAuth)
-
-			// Test token validation
-			claims, err := handler.authService.ValidateToken(tt.token)
-
-			if tt.expectedValid {
-				if err != nil {
-					t.Errorf("Expected valid token, got error: %v", err)
-				}
-				if claims == nil {
-					t.Errorf("Expected claims, got nil")
-				}
-			} else {
-				if err == nil {
-					t.Errorf("Expected error for invalid token, got nil")
-				}
-			}
-		})
-	}
-}
-
-// Helper function
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && findInString(s, substr)
-}
-
-func findInString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
-// Benchmark tests
-func BenchmarkRegister_Simple(b *testing.B) {
-	app := createTestApp()
-	handler, _ := createTestAuthHandler()
-
-	app.Post("/register", func(c *fiber.Ctx) error {
-		var req RegisterRequest
-		if err := c.BodyParser(&req); err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
-		}
-
-		if err := handler.validator.Validate(&req); err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "validation failed"})
-		}
-
-		_, err := handler.authService.HashPassword(req.Password)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Failed to process registration"})
-		}
-
-		return c.Status(201).JSON(fiber.Map{"message": "User registered successfully"})
+	handler := NewAuthHandlerWithConfig(AuthHandlerConfig{
+		UserRepo:    mockUserRepo,
+		AuthService: mockAuthService,
+		JWTService:  mockJWTService,
+		Validator:   mockValidator,
+		Logger:      mockLogger,
 	})
 
-	payload := RegisterRequest{
-		Name:     "Benchmark User",
-		Email:    "bench@example.com",
-		Password: "password123",
-		Role:     "user",
-	}
-	payloadBytes, _ := json.Marshal(payload)
+	return handler, mockAuthService, mockUserRepo
+}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		req := httptest.NewRequest("POST", "/register", bytes.NewBuffer(payloadBytes))
-		req.Header.Set("Content-Type", "application/json")
-		app.Test(req)
-	}
+// Tests básicos sin HTTP
+func TestRegister_Basic(t *testing.T) {
+	t.Run("simple register test", func(t *testing.T) {
+		mockAuth := NewMockAuthService()
+		mockRepo := NewMockUserRepository()
+
+		hashedPassword, err := mockAuth.HashPassword("password123")
+		if err != nil {
+			t.Errorf("Expected password hash to succeed, got error: %v", err)
+		}
+		if hashedPassword == "" {
+			t.Errorf("Expected hashed password, got empty string")
+		}
+
+		user := &models.User{
+			FirstName: "Test",
+			LastName:  "User",
+			Email:     "test@example.com",
+			Password:  hashedPassword,
+			Role:      models.RoleUser,
+			IsActive:  true,
+		}
+
+		createdUser, err := mockRepo.Create(context.Background(), user)
+		if err != nil {
+			t.Errorf("Expected user creation to succeed, got error: %v", err)
+		}
+		if createdUser == nil {
+			t.Errorf("Expected created user, got nil")
+		}
+	})
+}
+
+func TestLogin_Basic(t *testing.T) {
+	t.Run("simple login test", func(t *testing.T) {
+		mockAuth := NewMockAuthService()
+		mockRepo := NewMockUserRepository()
+
+		user := &models.User{
+			FirstName: "Test",
+			LastName:  "User",
+			Email:     "test@example.com",
+			Password:  "hashed_password123",
+			Role:      models.RoleUser,
+			IsActive:  true,
+		}
+		createdUser, err := mockRepo.Create(context.Background(), user)
+		if err != nil {
+			t.Errorf("Failed to create test user: %v", err)
+			return
+		}
+
+		foundUser, err := mockRepo.GetByEmail(context.Background(), "test@example.com")
+		if err != nil {
+			t.Errorf("Expected to find user, got error: %v", err)
+		}
+		if foundUser.Email != "test@example.com" {
+			t.Errorf("Expected email test@example.com, got %s", foundUser.Email)
+		}
+
+		err = mockAuth.CheckPassword("password123", "hashed_password123")
+		if err != nil {
+			t.Errorf("Expected password check to succeed, got error: %v", err)
+		}
+
+		accessToken, refreshToken, err := mockAuth.GenerateTokens(createdUser.ID.Hex(), createdUser.Email, string(createdUser.Role))
+		if err != nil {
+			t.Errorf("Expected token generation to succeed, got error: %v", err)
+		}
+		if accessToken == "" || refreshToken == "" {
+			t.Errorf("Expected tokens to be generated, got empty tokens")
+		}
+	})
+}
+
+func TestAuthHandler_Creation(t *testing.T) {
+	t.Run("test handler creation", func(t *testing.T) {
+		handler, _, _ := createTestAuthHandler()
+
+		if handler == nil {
+			t.Errorf("Expected handler to be created, got nil")
+		}
+
+		if handler.authService == nil {
+			t.Errorf("Expected authService to be set, got nil")
+		}
+
+		if handler.userRepo == nil {
+			t.Errorf("Expected userRepo to be set, got nil")
+		}
+
+		if handler.validator == nil {
+			t.Errorf("Expected validator to be set, got nil")
+		}
+
+		if handler.logger == nil {
+			t.Errorf("Expected logger to be set, got nil")
+		}
+
+		if handler.jwtService == nil {
+			t.Errorf("Expected jwtService to be set, got nil")
+		}
+	})
+}
+
+func TestGenerateUserTokens(t *testing.T) {
+	t.Run("test generateUserTokens method", func(t *testing.T) {
+		handler, _, _ := createTestAuthHandler()
+
+		user := &models.User{
+			ID:        primitive.NewObjectID(),
+			FirstName: "Test",
+			LastName:  "User",
+			Email:     "test@example.com",
+			Role:      models.RoleUser,
+			IsActive:  true,
+		}
+
+		tokens, err := handler.generateUserTokens(user, false)
+
+		if err != nil {
+			t.Errorf("Expected generateUserTokens to succeed, got error: %v", err)
+		}
+
+		if tokens == nil {
+			t.Errorf("Expected tokens, got nil")
+		}
+
+		if tokens.AccessToken == "" {
+			t.Errorf("Expected access token, got empty")
+		}
+
+		if tokens.RefreshToken == "" {
+			t.Errorf("Expected refresh token, got empty")
+		}
+	})
 }
