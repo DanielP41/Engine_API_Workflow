@@ -152,17 +152,6 @@ type UserStats struct {
 // WORKFLOW RESPONSE STRUCTURES (EXPANDIDAS)
 // ===============================================
 
-// WorkflowListResponse respuesta de lista de workflows con metadatos
-type WorkflowListResponse struct {
-	Workflows    []*WorkflowResponse  `json:"workflows"`
-	Total        int64                `json:"total"`
-	Page         int                  `json:"page"`
-	PageSize     int                  `json:"page_size"`
-	TotalPages   int                  `json:"total_pages"`
-	Filters      WorkflowFilters      `json:"applied_filters"`
-	Aggregations WorkflowAggregations `json:"aggregations"`
-}
-
 // WorkflowFilters filtros aplicados
 type WorkflowFilters struct {
 	Status      []WorkflowStatus `json:"status,omitempty"`
@@ -241,14 +230,6 @@ type ExecutionProgress struct {
 	CurrentStep    *string `json:"current_step,omitempty"`
 	Percentage     float64 `json:"percentage"`
 	EstimatedTime  *int64  `json:"estimated_time,omitempty"` // ms remaining
-}
-
-// ResourceUsage uso de recursos
-type ResourceUsage struct {
-	CPUUsage    float64 `json:"cpu_usage"`    // percentage
-	MemoryUsage int64   `json:"memory_usage"` // bytes
-	NetworkIO   int64   `json:"network_io"`   // bytes
-	DiskIO      int64   `json:"disk_io"`      // bytes
 }
 
 // StepResourceUsage uso de recursos por paso

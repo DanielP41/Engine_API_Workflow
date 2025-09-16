@@ -119,39 +119,9 @@ func ValidActionTypes() []ActionType {
 	}
 }
 
-// IsValid valida si el WorkflowStatus es válido
-func (ws WorkflowStatus) IsValid() bool {
-	for _, status := range ValidWorkflowStatuses() {
-		if ws == status {
-			return true
-		}
-	}
-	return false
-}
-
 // IsActive verifica si el workflow está activo
 func (ws WorkflowStatus) IsActive() bool {
 	return ws == WorkflowStatusActive
-}
-
-// IsValid valida si el TriggerType es válido
-func (tt TriggerType) IsValid() bool {
-	for _, triggerType := range ValidTriggerTypes() {
-		if tt == triggerType {
-			return true
-		}
-	}
-	return false
-}
-
-// IsValid valida si el ActionType es válido
-func (at ActionType) IsValid() bool {
-	for _, actionType := range ValidActionTypes() {
-		if at == actionType {
-			return true
-		}
-	}
-	return false
 }
 
 // String retorna la representación string del Priority
