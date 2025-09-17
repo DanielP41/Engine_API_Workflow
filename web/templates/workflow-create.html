@@ -1,0 +1,1554 @@
+{{template "layout.html" .}}
+
+{{define "content"}}
+<div class="container-fluid py-4">
+    <!-- Page Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="/workflows">Workflows</a></li>
+                    <li class="breadcrumb-item active">Create New Workflow</li>
+                </ol>
+            </nav>
+            <h1 class="h3 mb-0">Create New Workflow</h1>
+            <p class="text-muted">Design and configure a new automated workflow</p>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="/workflows" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left me-2"></i>Cancel
+            </a>
+            <button type="button" class="btn btn-outline-info" onclick="previewWorkflow()">
+                <i class="bi bi-eye me-2"></i>Preview
+            </button>
+            <button type="button" class="btn btn-outline-warning" onclick="saveAsDraft()">
+                <i class="bi bi-file-earmark me-2"></i>Save as Draft
+            </button>
+        </div>
+    </div>
+
+    <!-- Progress Steps -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-body py-3">
+            <div class="workflow-wizard">
+                <div class="step-indicator">
+                    <div class="step active" data-step="1">
+                        <div class="step-number">1</div>
+                        <div class="step-label">Basic Info</div>
+                    </div>
+                    <div class="step-line"></div>
+                    <div class="step" data-step="2">
+                        <div class="step-number">2</div>
+                        <div class="step-label">Workflow Steps</div>
+                    </div>
+                    <div class="step-line"></div>
+                    <div class="step" data-step="3">
+                        <div class="step-number">3</div>
+                        <div class="step-label">Triggers</div>
+                    </div>
+                    <div class="step-line"></div>
+                    <div class="step" data-step="4">
+                        <div class="step-number">4</div>
+                        <div class="step-label">Settings</div>
+                    </div>
+                    <div class="step-line"></div>
+                    <div class="step" data-step="5">
+                        <div class="step-number">5</div>
+                        <div class="step-label">Review</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Form -->
+    <form id="workflow-form" method="POST" action="/api/v1/workflows" data-ajax="true">
+        <!-- Step 1: Basic Information -->
+        <div class="wizard-step active" data-step="1">
+            <div class="row">
+                <div class="col-lg-8">
+                    <div class="card shadow">
+                        <div class="card-header">
+                            <h6 class="m-0 font-weight-bold text-primary">Basic Information</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-8">
+                                    <div class="mb-3">
+                                        <label for="name" class="form-label">
+                                            Workflow Name <span class="text-danger">*</span>
+                                        </label>
+                                        <input type="text" class="form-control" id="name" name="name" 
+                                               required maxlength="100" 
+                                               placeholder="Enter a descriptive name for your workflow">
+                                        <div class="form-text">Choose a clear, descriptive name (max 100 characters)</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="mb-3">
+                                        <label for="priority" class="form-label">Priority</label>
+                                        <select class="form-select" id="priority" name="priority">
+                                            <option value="1">1 - Critical</option>
+                                            <option value="2">2 - High</option>
+                                            <option value="3" selected>3 - Normal</option>
+                                            <option value="4">4 - Low</option>
+                                            <option value="5">5 - Very Low</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="description" class="form-label">Description</label>
+                                <textarea class="form-control" id="description" name="description" 
+                                          rows="3" maxlength="500"
+                                          placeholder="Describe what this workflow does and when it should be used"></textarea>
+                                <div class="form-text">Optional description (max 500 characters)</div>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="environment" class="form-label">Environment</label>
+                                        <select class="form-select" id="environment" name="environment">
+                                            <option value="development" selected>Development</option>
+                                            <option value="staging">Staging</option>
+                                            <option value="production">Production</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="tags" class="form-label">Tags</label>
+                                        <input type="text" class="form-control" id="tags" name="tags" 
+                                               placeholder="Enter tags separated by commas">
+                                        <div class="form-text">Use tags to organize and find workflows easily</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-lg-4">
+                    <div class="card shadow">
+                        <div class="card-header">
+                            <h6 class="m-0 font-weight-bold text-primary">Quick Start Templates</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="template-list">
+                                <div class="template-item" onclick="loadTemplate('notification')">
+                                    <i class="bi bi-bell template-icon"></i>
+                                    <div class="template-info">
+                                        <div class="template-name">Notification Workflow</div>
+                                        <div class="template-desc">Send emails and Slack notifications</div>
+                                    </div>
+                                </div>
+                                <div class="template-item" onclick="loadTemplate('approval')">
+                                    <i class="bi bi-check-circle template-icon"></i>
+                                    <div class="template-info">
+                                        <div class="template-name">Approval Process</div>
+                                        <div class="template-desc">Multi-step approval workflow</div>
+                                    </div>
+                                </div>
+                                <div class="template-item" onclick="loadTemplate('data-sync')">
+                                    <i class="bi bi-arrow-repeat template-icon"></i>
+                                    <div class="template-info">
+                                        <div class="template-name">Data Synchronization</div>
+                                        <div class="template-desc">Sync data between systems</div>
+                                    </div>
+                                </div>
+                                <div class="template-item" onclick="loadTemplate('monitoring')">
+                                    <i class="bi bi-graph-up template-icon"></i>
+                                    <div class="template-info">
+                                        <div class="template-name">Monitoring & Alerts</div>
+                                        <div class="template-desc">System monitoring workflow</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <hr>
+                            <button type="button" class="btn btn-outline-primary w-100" onclick="startFromScratch()">
+                                <i class="bi bi-plus-circle me-2"></i>Start from Scratch
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 2: Workflow Steps -->
+        <div class="wizard-step" data-step="2">
+            <div class="card shadow">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h6 class="m-0 font-weight-bold text-primary">Workflow Steps</h6>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="importSteps()">
+                            <i class="bi bi-upload me-1"></i>Import
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-info" onclick="validateSteps()">
+                            <i class="bi bi-check-circle me-1"></i>Validate
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <!-- Step Builder Toolbar -->
+                    <div class="step-builder-toolbar mb-4">
+                        <div class="row">
+                            <div class="col-md-8">
+                                <h6 class="mb-3">Add New Step:</h6>
+                                <div class="step-types">
+                                    <button type="button" class="btn btn-outline-primary step-type-btn" data-type="http">
+                                        <i class="bi bi-globe"></i><br>HTTP Request
+                                    </button>
+                                    <button type="button" class="btn btn-outline-success step-type-btn" data-type="email">
+                                        <i class="bi bi-envelope"></i><br>Send Email
+                                    </button>
+                                    <button type="button" class="btn btn-outline-info step-type-btn" data-type="slack">
+                                        <i class="bi bi-slack"></i><br>Slack Message
+                                    </button>
+                                    <button type="button" class="btn btn-outline-warning step-type-btn" data-type="condition">
+                                        <i class="bi bi-diamond"></i><br>Condition
+                                    </button>
+                                    <button type="button" class="btn btn-outline-secondary step-type-btn" data-type="delay">
+                                        <i class="bi bi-clock"></i><br>Delay
+                                    </button>
+                                    <button type="button" class="btn btn-outline-dark step-type-btn" data-type="transform">
+                                        <i class="bi bi-gear"></i><br>Transform Data
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <h6 class="mb-3">Actions:</h6>
+                                <div class="d-flex flex-column gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="addParallelBranch()">
+                                        <i class="bi bi-diagram-3 me-1"></i>Add Parallel Branch
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearAllSteps()">
+                                        <i class="bi bi-trash me-1"></i>Clear All Steps
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Steps Visual Builder -->
+                    <div class="steps-container">
+                        <div id="workflow-canvas" class="workflow-canvas">
+                            <div class="canvas-placeholder">
+                                <i class="bi bi-diagram-3" style="font-size: 3rem; color: #6c757d;"></i>
+                                <h5 class="mt-3">Design Your Workflow</h5>
+                                <p class="text-muted">Click on the step types above to add them to your workflow</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Steps JSON (Hidden) -->
+                    <input type="hidden" id="steps-json" name="steps">
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3: Triggers -->
+        <div class="wizard-step" data-step="3">
+            <div class="card shadow">
+                <div class="card-header">
+                    <h6 class="m-0 font-weight-bold text-primary">Workflow Triggers</h6>
+                </div>
+                <div class="card-body">
+                    <div class="mb-4">
+                        <h6>How should this workflow be triggered?</h6>
+                        <p class="text-muted">Select one or more trigger types. You can configure them after selection.</p>
+                    </div>
+
+                    <div class="trigger-types">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <div class="trigger-option" data-type="manual">
+                                    <div class="trigger-card">
+                                        <div class="trigger-header">
+                                            <i class="bi bi-hand-index trigger-icon"></i>
+                                            <div class="trigger-info">
+                                                <h6>Manual Trigger</h6>
+                                                <p>Start workflow manually via button or API call</p>
+                                            </div>
+                                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="enable_debug_mode" name="enable_debug_mode">
+                                <label class="form-check-label" for="enable_debug_mode">
+                                    Enable debug mode
+                                </label>
+                            </div>
+
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="save_execution_artifacts" name="save_execution_artifacts">
+                                <label class="form-check-label" for="save_execution_artifacts">
+                                    Save execution artifacts
+                                </label>
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="execution_context" class="form-label">Default Execution Context</label>
+                                <textarea class="form-control" id="execution_context" name="execution_context" 
+                                          rows="3" placeholder='{"key": "value"}'></textarea>
+                                <div class="form-text">JSON object with default variables for workflow execution</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 5: Review & Create -->
+        <div class="wizard-step" data-step="5">
+            <div class="card shadow">
+                <div class="card-header">
+                    <h6 class="m-0 font-weight-bold text-primary">Review & Create Workflow</h6>
+                </div>
+                <div class="card-body">
+                    <div class="review-summary">
+                        <!-- Basic Info Review -->
+                        <div class="review-section mb-4">
+                            <h6 class="section-title">Basic Information</h6>
+                            <div class="review-content">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="review-item">
+                                            <strong>Name:</strong> <span id="review-name">-</span>
+                                        </div>
+                                        <div class="review-item">
+                                            <strong>Priority:</strong> <span id="review-priority">-</span>
+                                        </div>
+                                        <div class="review-item">
+                                            <strong>Environment:</strong> <span id="review-environment">-</span>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="review-item">
+                                            <strong>Description:</strong> <span id="review-description">-</span>
+                                        </div>
+                                        <div class="review-item">
+                                            <strong>Tags:</strong> <span id="review-tags">-</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Steps Review -->
+                        <div class="review-section mb-4">
+                            <h6 class="section-title">Workflow Steps</h6>
+                            <div class="review-content">
+                                <div id="review-steps" class="steps-preview">
+                                    <p class="text-muted">No steps configured</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Triggers Review -->
+                        <div class="review-section mb-4">
+                            <h6 class="section-title">Triggers</h6>
+                            <div class="review-content">
+                                <div id="review-triggers" class="triggers-preview">
+                                    <p class="text-muted">No triggers configured</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Settings Review -->
+                        <div class="review-section mb-4">
+                            <h6 class="section-title">Settings</h6>
+                            <div class="review-content">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="review-item">
+                                            <strong>Timeout:</strong> <span id="review-timeout">-</span> minutes
+                                        </div>
+                                        <div class="review-item">
+                                            <strong>Max Concurrent:</strong> <span id="review-max-concurrent">-</span>
+                                        </div>
+                                        <div class="review-item">
+                                            <strong>Retry Attempts:</strong> <span id="review-retry-attempts">-</span>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="review-item">
+                                            <strong>Execution Permission:</strong> <span id="review-execution-permission">-</span>
+                                        </div>
+                                        <div class="review-item">
+                                            <strong>Notifications:</strong> <span id="review-notifications">-</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Validation Results -->
+                        <div class="review-section">
+                            <h6 class="section-title">Validation Results</h6>
+                            <div class="review-content">
+                                <div id="validation-results" class="alert alert-info">
+                                    <i class="bi bi-info-circle me-2"></i>
+                                    Click "Validate Workflow" to check for issues
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigation Buttons -->
+        <div class="wizard-navigation mt-4">
+            <div class="d-flex justify-content-between">
+                <button type="button" class="btn btn-outline-secondary" id="prev-btn" onclick="previousStep()" disabled>
+                    <i class="bi bi-arrow-left me-2"></i>Previous
+                </button>
+                
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-outline-info" onclick="validateWorkflow()">
+                        <i class="bi bi-check-circle me-2"></i>Validate Workflow
+                    </button>
+                    <button type="button" class="btn btn-outline-warning" onclick="saveAsDraft()" id="draft-btn">
+                        <i class="bi bi-file-earmark me-2"></i>Save as Draft
+                    </button>
+                    <button type="button" class="btn btn-primary" id="next-btn" onclick="nextStep()">
+                        Next<i class="bi bi-arrow-right ms-2"></i>
+                    </button>
+                    <button type="submit" class="btn btn-success" id="create-btn" style="display: none;">
+                        <i class="bi bi-plus-circle me-2"></i>Create Workflow
+                    </button>
+                </div>
+            </div>
+        </div>
+    </form>
+</div>
+
+<!-- Modals -->
+
+<!-- Step Configuration Modal -->
+<div class="modal fade" id="stepConfigModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Configure Step</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="step-config-content">
+                    <!-- Dynamic step configuration will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveStepConfig()">Save Step</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Preview Modal -->
+<div class="modal fade" id="previewModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Workflow Preview</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="workflow-preview">
+                    <!-- Workflow preview will be generated here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-outline-primary" onclick="exportWorkflowJSON()">
+                    <i class="bi bi-download me-2"></i>Export JSON
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Success/Error Alerts Container -->
+<div id="alerts-container" class="position-fixed" style="top: 20px; right: 20px; z-index: 9999;"></div>
+{{end}}
+
+{{define "scripts"}}
+<style>
+/* Workflow Creation Wizard Styles */
+.workflow-wizard {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.step-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0;
+}
+
+.step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+}
+
+.step-number {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background-color: #e9ecef;
+    color: #6c757d;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    margin-bottom: 0.5rem;
+    transition: all 0.3s ease;
+}
+
+.step.active .step-number {
+    background-color: #007bff;
+    color: white;
+}
+
+.step.completed .step-number {
+    background-color: #28a745;
+    color: white;
+}
+
+.step-label {
+    font-size: 0.875rem;
+    text-align: center;
+    color: #6c757d;
+    font-weight: 500;
+}
+
+.step.active .step-label {
+    color: #007bff;
+    font-weight: 600;
+}
+
+.step-line {
+    width: 80px;
+    height: 2px;
+    background-color: #dee2e6;
+    margin: 0 1rem;
+    margin-top: -20px;
+}
+
+.step.completed + .step-line {
+    background-color: #28a745;
+}
+
+/* Wizard Steps */
+.wizard-step {
+    display: none;
+}
+
+.wizard-step.active {
+    display: block;
+}
+
+/* Template Selection */
+.template-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.template-item {
+    display: flex;
+    align-items: center;
+    padding: 1rem;
+    border: 1px solid #dee2e6;
+    border-radius: 0.375rem;
+    margin-bottom: 0.75rem;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.template-item:hover {
+    border-color: #007bff;
+    background-color: #f8f9fa;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 123, 255, 0.15);
+}
+
+.template-icon {
+    font-size: 1.5rem;
+    color: #007bff;
+    margin-right: 1rem;
+    min-width: 30px;
+}
+
+.template-info {
+    flex: 1;
+}
+
+.template-name {
+    font-weight: 600;
+    color: #495057;
+    margin-bottom: 0.25rem;
+}
+
+.template-desc {
+    font-size: 0.875rem;
+    color: #6c757d;
+}
+
+/* Step Builder */
+.step-builder-toolbar {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 1.5rem;
+}
+
+.step-types {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.step-type-btn {
+    min-width: 100px;
+    min-height: 80px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.375rem;
+    transition: all 0.3s ease;
+}
+
+.step-type-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.step-type-btn i {
+    font-size: 1.5rem;
+    margin-bottom: 0.5rem;
+}
+
+/* Workflow Canvas */
+.workflow-canvas {
+    min-height: 400px;
+    border: 2px dashed #dee2e6;
+    border-radius: 0.375rem;
+    padding: 2rem;
+    background-color: #fafafa;
+    position: relative;
+}
+
+.canvas-placeholder {
+    text-align: center;
+    color: #6c757d;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+
+.workflow-step-item {
+    background: white;
+    border: 2px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    position: relative;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.workflow-step-item:hover {
+    border-color: #007bff;
+    box-shadow: 0 4px 8px rgba(0, 123, 255, 0.15);
+}
+
+.workflow-step-item.selected {
+    border-color: #007bff;
+    background-color: #e7f3ff;
+}
+
+.step-connector-line {
+    position: absolute;
+    left: 50%;
+    bottom: -10px;
+    width: 2px;
+    height: 20px;
+    background-color: #007bff;
+    transform: translateX(-50%);
+}
+
+/* Trigger Configuration */
+.trigger-types {
+    margin-bottom: 2rem;
+}
+
+.trigger-option {
+    cursor: pointer;
+}
+
+.trigger-card {
+    border: 2px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 1rem;
+    transition: all 0.3s ease;
+    height: 100%;
+}
+
+.trigger-option:hover .trigger-card {
+    border-color: #007bff;
+    background-color: #f8f9fa;
+}
+
+.trigger-option.selected .trigger-card {
+    border-color: #007bff;
+    background-color: #e7f3ff;
+}
+
+.trigger-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.trigger-icon {
+    font-size: 1.5rem;
+    color: #007bff;
+    min-width: 30px;
+}
+
+.trigger-info {
+    flex: 1;
+}
+
+.trigger-info h6 {
+    margin-bottom: 0.25rem;
+    color: #495057;
+}
+
+.trigger-info p {
+    margin-bottom: 0;
+    font-size: 0.875rem;
+    color: #6c757d;
+}
+
+.trigger-configurations {
+    border-top: 1px solid #dee2e6;
+    padding-top: 1.5rem;
+}
+
+.trigger-config {
+    margin-bottom: 1rem;
+}
+
+/* Review Section */
+.review-section {
+    border: 1px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 1.5rem;
+}
+
+.section-title {
+    color: #007bff;
+    border-bottom: 2px solid #e7f3ff;
+    padding-bottom: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.review-item {
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #f1f3f4;
+}
+
+.review-item:last-child {
+    border-bottom: none;
+}
+
+.steps-preview,
+.triggers-preview {
+    background-color: #f8f9fa;
+    border-radius: 0.375rem;
+    padding: 1rem;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+/* Wizard Navigation */
+.wizard-navigation {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 1rem;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .step-indicator {
+        flex-direction: column;
+        gap: 1rem;
+    }
+    
+    .step-line {
+        width: 2px;
+        height: 40px;
+        margin: 0.5rem 0;
+    }
+    
+    .step-types {
+        justify-content: center;
+    }
+    
+    .step-type-btn {
+        min-width: 80px;
+        min-height: 60px;
+    }
+}
+
+/* Animation classes */
+.fade-in {
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.slide-in {
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from { transform: translateX(-20px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+</style>
+
+<script>
+// Workflow Creation Wizard JavaScript
+let currentStep = 1;
+let totalSteps = 5;
+let workflowSteps = [];
+let workflowTriggers = [];
+let currentStepConfig = null;
+
+// Initialize wizard
+document.addEventListener('DOMContentLoaded', function() {
+    initializeWizard();
+    setupEventListeners();
+    loadSavedData();
+});
+
+function initializeWizard() {
+    updateStepIndicator();
+    updateNavigationButtons();
+    setupFormValidation();
+}
+
+function setupEventListeners() {
+    // Step type buttons
+    document.querySelectorAll('.step-type-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            addWorkflowStep(this.dataset.type);
+        });
+    });
+
+    // Trigger checkboxes
+    document.querySelectorAll('input[name="triggers[]"]').forEach(checkbox => {
+        checkbox.addEventListener('change', function() {
+            toggleTriggerConfig(this.value, this.checked);
+        });
+    });
+
+    // Auto-save functionality
+    document.getElementById('workflow-form').addEventListener('input', function() {
+        debounce(autoSave, 2000)();
+    });
+
+    // Form submission
+    document.getElementById('workflow-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        createWorkflow();
+    });
+}
+
+// Navigation functions
+function nextStep() {
+    if (validateCurrentStep()) {
+        if (currentStep < totalSteps) {
+            currentStep++;
+            showStep(currentStep);
+            updateStepIndicator();
+            updateNavigationButtons();
+            
+            if (currentStep === 5) {
+                updateReviewSection();
+            }
+        }
+    }
+}
+
+function previousStep() {
+    if (currentStep > 1) {
+        currentStep--;
+        showStep(currentStep);
+        updateStepIndicator();
+        updateNavigationButtons();
+    }
+}
+
+function showStep(step) {
+    // Hide all steps
+    document.querySelectorAll('.wizard-step').forEach(stepEl => {
+        stepEl.classList.remove('active');
+    });
+    
+    // Show current step
+    const targetStep = document.querySelector(`[data-step="${step}"]`);
+    if (targetStep) {
+        targetStep.classList.add('active', 'fade-in');
+    }
+}
+
+function updateStepIndicator() {
+    document.querySelectorAll('.step-indicator .step').forEach((step, index) => {
+        const stepNum = index + 1;
+        step.classList.remove('active', 'completed');
+        
+        if (stepNum === currentStep) {
+            step.classList.add('active');
+        } else if (stepNum < currentStep) {
+            step.classList.add('completed');
+        }
+    });
+}
+
+function updateNavigationButtons() {
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const createBtn = document.getElementById('create-btn');
+    
+    prevBtn.disabled = currentStep === 1;
+    
+    if (currentStep === totalSteps) {
+        nextBtn.style.display = 'none';
+        createBtn.style.display = 'inline-block';
+    } else {
+        nextBtn.style.display = 'inline-block';
+        createBtn.style.display = 'none';
+    }
+}
+
+// Step validation
+function validateCurrentStep() {
+    switch (currentStep) {
+        case 1:
+            return validateBasicInfo();
+        case 2:
+            return validateSteps();
+        case 3:
+            return validateTriggers();
+        case 4:
+            return validateSettings();
+        case 5:
+            return true; // Review step doesn't need validation
+        default:
+            return true;
+    }
+}
+
+function validateBasicInfo() {
+    const name = document.getElementById('name').value.trim();
+    if (!name) {
+        showAlert('Please enter a workflow name', 'warning');
+        document.getElementById('name').focus();
+        return false;
+    }
+    
+    if (name.length < 3) {
+        showAlert('Workflow name must be at least 3 characters long', 'warning');
+        document.getElementById('name').focus();
+        return false;
+    }
+    
+    return true;
+}
+
+function validateSteps() {
+    if (workflowSteps.length === 0) {
+        showAlert('Please add at least one step to your workflow', 'warning');
+        return false;
+    }
+    
+    // Validate each step has required configuration
+    for (let step of workflowSteps) {
+        if (!step.config || Object.keys(step.config).length === 0) {
+            showAlert(`Step "${step.name}" needs to be configured`, 'warning');
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+function validateTriggers() {
+    const selectedTriggers = document.querySelectorAll('input[name="triggers[]"]:checked');
+    if (selectedTriggers.length === 0) {
+        showAlert('Please select at least one trigger for your workflow', 'warning');
+        return false;
+    }
+    
+    return true;
+}
+
+function validateSettings() {
+    const timeout = parseInt(document.getElementById('timeout_minutes').value);
+    const maxConcurrent = parseInt(document.getElementById('max_concurrent').value);
+    const retryAttempts = parseInt(document.getElementById('retry_attempts').value);
+    
+    if (timeout < 1 || timeout > 1440) {
+        showAlert('Timeout must be between 1 and 1440 minutes', 'warning');
+        return false;
+    }
+    
+    if (maxConcurrent < 1 || maxConcurrent > 100) {
+        showAlert('Max concurrent executions must be between 1 and 100', 'warning');
+        return false;
+    }
+    
+    if (retryAttempts < 0 || retryAttempts > 10) {
+        showAlert('Retry attempts must be between 0 and 10', 'warning');
+        return false;
+    }
+    
+    return true;
+}
+
+// Workflow steps management
+function addWorkflowStep(type) {
+    const stepId = generateUniqueId();
+    const step = {
+        id: stepId,
+        name: `${type.charAt(0).toUpperCase() + type.slice(1)} Step`,
+        type: type,
+        description: '',
+        config: {},
+        timeout_seconds: 300,
+        retry_attempts: 3,
+        continue_on_error: false,
+        next_steps: []
+    };
+    
+    workflowSteps.push(step);
+    renderWorkflowCanvas();
+    openStepConfigModal(step);
+}
+
+function editWorkflowStep(stepId) {
+    const step = workflowSteps.find(s => s.id === stepId);
+    if (step) {
+        openStepConfigModal(step);
+    }
+}
+
+function deleteWorkflowStep(stepId) {
+    if (confirm('Are you sure you want to delete this step?')) {
+        workflowSteps = workflowSteps.filter(s => s.id !== stepId);
+        renderWorkflowCanvas();
+        updateStepsJSON();
+    }
+}
+
+function moveStepUp(stepId) {
+    const index = workflowSteps.findIndex(s => s.id === stepId);
+    if (index > 0) {
+        [workflowSteps[index], workflowSteps[index - 1]] = [workflowSteps[index - 1], workflowSteps[index]];
+        renderWorkflowCanvas();
+        updateStepsJSON();
+    }
+}
+
+function moveStepDown(stepId) {
+    const index = workflowSteps.findIndex(s => s.id === stepId);
+    if (index < workflowSteps.length - 1) {
+        [workflowSteps[index], workflowSteps[index + 1]] = [workflowSteps[index + 1], workflowSteps[index]];
+        renderWorkflowCanvas();
+        updateStepsJSON();
+    }
+}
+
+function renderWorkflowCanvas() {
+    const canvas = document.getElementById('workflow-canvas');
+    
+    if (workflowSteps.length === 0) {
+        canvas.innerHTML = `
+            <div class="canvas-placeholder">
+                <i class="bi bi-diagram-3" style="font-size: 3rem; color: #6c757d;"></i>
+                <h5 class="mt-3">Design Your Workflow</h5>
+                <p class="text-muted">Click on the step types above to add them to your workflow</p>
+            </div>
+        `;
+        return;
+    }
+    
+    let html = '';
+    workflowSteps.forEach((step, index) => {
+        const stepTypeIcon = getStepTypeIcon(step.type);
+        const isLast = index === workflowSteps.length - 1;
+        
+        html += `
+            <div class="workflow-step-item" data-step-id="${step.id}">
+                <div class="d-flex align-items-center justify-content-between">
+                    <div class="d-flex align-items-center">
+                        <div class="step-number-circle">${index + 1}</div>
+                        <i class="bi bi-${stepTypeIcon} step-type-icon me-3"></i>
+                        <div>
+                            <h6 class="mb-1">${step.name}</h6>
+                            <small class="text-muted">${step.type}</small>
+                            ${step.description ? `<p class="mb-0 small text-muted">${step.description}</p>` : ''}
+                        </div>
+                    </div>
+                    <div class="step-actions">
+                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="editWorkflowStep('${step.id}')" title="Edit">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="moveStepUp('${step.id}')" ${index === 0 ? 'disabled' : ''} title="Move Up">
+                            <i class="bi bi-arrow-up"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="moveStepDown('${step.id}')" ${isLast ? 'disabled' : ''} title="Move Down">
+                            <i class="bi bi-arrow-down"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-danger" onclick="deleteWorkflowStep('${step.id}')" title="Delete">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </div>
+                ${!isLast ? '<div class="step-connector-line"></div>' : ''}
+            </div>
+        `;
+    });
+    
+    canvas.innerHTML = html;
+    updateStepsJSON();
+}
+
+function getStepTypeIcon(type) {
+    const icons = {
+        'http': 'globe',
+        'email': 'envelope',
+        'slack': 'slack',
+        'condition': 'diamond',
+        'delay': 'clock',
+        'transform': 'gear',
+        'database': 'database',
+        'webhook': 'link',
+        'notification': 'bell'
+    };
+    return icons[type] || 'gear';
+}
+
+// Step configuration modal
+function openStepConfigModal(step) {
+    currentStepConfig = step;
+    const modal = new bootstrap.Modal(document.getElementById('stepConfigModal'));
+    
+    // Generate step configuration form based on step type
+    const configContent = generateStepConfigForm(step);
+    document.getElementById('step-config-content').innerHTML = configContent;
+    
+    // Populate form with existing values
+    populateStepConfigForm(step);
+    
+    modal.show();
+}
+
+function generateStepConfigForm(step) {
+    switch (step.type) {
+        case 'http':
+            return generateHTTPStepConfig(step);
+        case 'email':
+            return generateEmailStepConfig(step);
+        case 'slack':
+            return generateSlackStepConfig(step);
+        case 'condition':
+            return generateConditionStepConfig(step);
+        case 'delay':
+            return generateDelayStepConfig(step);
+        case 'transform':
+            return generateTransformStepConfig(step);
+        default:
+            return generateGenericStepConfig(step);
+    }
+}
+
+function generateHTTPStepConfig(step) {
+    return `
+        <div class="row">
+            <div class="col-md-6">
+                <div class="mb-3">
+                    <label class="form-label">Step Name</label>
+                    <input type="text" class="form-control" id="step-name" value="${step.name}">
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="mb-3">
+                    <label class="form-label">HTTP Method</label>
+                    <select class="form-select" id="http-method">">
+                                                <input class="form-check-input" type="checkbox" id="trigger-manual" name="triggers[]" value="manual">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="col-md-6 mb-3">
+                                <div class="trigger-option" data-type="webhook">
+                                    <div class="trigger-card">
+                                        <div class="trigger-header">
+                                            <i class="bi bi-link trigger-icon"></i>
+                                            <div class="trigger-info">
+                                                <h6>Webhook</h6>
+                                                <p>Trigger via HTTP webhook endpoint</p>
+                                            </div>
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="trigger-webhook" name="triggers[]" value="webhook">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="col-md-6 mb-3">
+                                <div class="trigger-option" data-type="scheduled">
+                                    <div class="trigger-card">
+                                        <div class="trigger-header">
+                                            <i class="bi bi-clock trigger-icon"></i>
+                                            <div class="trigger-info">
+                                                <h6>Scheduled</h6>
+                                                <p>Run on a schedule (cron expression)</p>
+                                            </div>
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="trigger-scheduled" name="triggers[]" value="scheduled">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="col-md-6 mb-3">
+                                <div class="trigger-option" data-type="event">
+                                    <div class="trigger-card">
+                                        <div class="trigger-header">
+                                            <i class="bi bi-lightning trigger-icon"></i>
+                                            <div class="trigger-info">
+                                                <h6>Event-Based</h6>
+                                                <p>Trigger on specific system events</p>
+                                            </div>
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="trigger-event" name="triggers[]" value="event">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Trigger Configuration Panels -->
+                    <div class="trigger-configurations mt-4">
+                        <!-- Manual Trigger Config -->
+                        <div class="trigger-config" data-type="manual" style="display: none;">
+                            <div class="card border-primary">
+                                <div class="card-header bg-primary text-white">
+                                    <h6 class="mb-0">Manual Trigger Configuration</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label class="form-label">Description</label>
+                                        <input type="text" class="form-control" name="manual_description" 
+                                               placeholder="Button label or description">
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="manual_require_confirmation" id="manual_confirm">
+                                        <label class="form-check-label" for="manual_confirm">
+                                            Require confirmation before execution
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Webhook Trigger Config -->
+                        <div class="trigger-config" data-type="webhook" style="display: none;">
+                            <div class="card border-info">
+                                <div class="card-header bg-info text-white">
+                                    <h6 class="mb-0">Webhook Trigger Configuration</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <div class="mb-3">
+                                                <label class="form-label">HTTP Method</label>
+                                                <select class="form-select" name="webhook_method">
+                                                    <option value="POST" selected>POST</option>
+                                                    <option value="PUT">PUT</option>
+                                                    <option value="GET">GET</option>
+                                                    <option value="PATCH">PATCH</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="mb-3">
+                                                <label class="form-label">Content Type</label>
+                                                <select class="form-select" name="webhook_content_type">
+                                                    <option value="application/json" selected>application/json</option>
+                                                    <option value="application/x-www-form-urlencoded">form-urlencoded</option>
+                                                    <option value="text/plain">text/plain</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Authentication</label>
+                                        <select class="form-select" name="webhook_auth">
+                                            <option value="none" selected>No Authentication</option>
+                                            <option value="api_key">API Key</option>
+                                            <option value="bearer">Bearer Token</option>
+                                            <option value="basic">Basic Auth</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="webhook_validate_payload" id="webhook_validate">
+                                        <label class="form-check-label" for="webhook_validate">
+                                            Validate webhook payload
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Scheduled Trigger Config -->
+                        <div class="trigger-config" data-type="scheduled" style="display: none;">
+                            <div class="card border-warning">
+                                <div class="card-header bg-warning text-dark">
+                                    <h6 class="mb-0">Scheduled Trigger Configuration</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label class="form-label">Schedule Type</label>
+                                        <select class="form-select" name="schedule_type" onchange="toggleScheduleType(this)">
+                                            <option value="interval" selected>Simple Interval</option>
+                                            <option value="cron">Advanced Cron Expression</option>
+                                        </select>
+                                    </div>
+
+                                    <!-- Simple Interval -->
+                                    <div class="schedule-simple">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <div class="mb-3">
+                                                    <label class="form-label">Frequency</label>
+                                                    <select class="form-select" name="schedule_frequency">
+                                                        <option value="minutes">Every X minutes</option>
+                                                        <option value="hours" selected>Every X hours</option>
+                                                        <option value="days">Every X days</option>
+                                                        <option value="weeks">Every X weeks</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="mb-3">
+                                                    <label class="form-label">Interval</label>
+                                                    <input type="number" class="form-control" name="schedule_interval" 
+                                                           min="1" value="1" placeholder="1">
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Cron Expression -->
+                                    <div class="schedule-cron" style="display: none;">
+                                        <div class="mb-3">
+                                            <label class="form-label">Cron Expression</label>
+                                            <input type="text" class="form-control" name="schedule_cron" 
+                                                   placeholder="0 */6 * * *">
+                                            <div class="form-text">
+                                                Examples: "0 */6 * * *" (every 6 hours), "0 9 * * 1-5" (weekdays at 9 AM)
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <div class="mb-3">
+                                                <label class="form-label">Start Date (Optional)</label>
+                                                <input type="datetime-local" class="form-control" name="schedule_start">
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="mb-3">
+                                                <label class="form-label">End Date (Optional)</label>
+                                                <input type="datetime-local" class="form-control" name="schedule_end">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Event Trigger Config -->
+                        <div class="trigger-config" data-type="event" style="display: none;">
+                            <div class="card border-success">
+                                <div class="card-header bg-success text-white">
+                                    <h6 class="mb-0">Event-Based Trigger Configuration</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label class="form-label">Event Type</label>
+                                        <select class="form-select" name="event_type">
+                                            <option value="file_upload">File Upload</option>
+                                            <option value="database_change">Database Change</option>
+                                            <option value="user_action">User Action</option>
+                                            <option value="system_alert">System Alert</option>
+                                            <option value="external_api">External API Event</option>
+                                        </select>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Event Filter (Optional)</label>
+                                        <textarea class="form-control" name="event_filter" rows="3" 
+                                                  placeholder="JSON filter conditions"></textarea>
+                                        <div class="form-text">JSON object to filter specific events</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Triggers JSON (Hidden) -->
+                    <input type="hidden" id="triggers-json" name="triggers">
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 4: Settings -->
+        <div class="wizard-step" data-step="4">
+            <div class="row">
+                <div class="col-lg-6">
+                    <div class="card shadow mb-4">
+                        <div class="card-header">
+                            <h6 class="m-0 font-weight-bold text-primary">Execution Settings</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label for="timeout_minutes" class="form-label">Timeout (minutes)</label>
+                                <input type="number" class="form-control" id="timeout_minutes" name="timeout_minutes" 
+                                       min="1" max="1440" value="30">
+                                <div class="form-text">Maximum time allowed for workflow execution</div>
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="max_concurrent" class="form-label">Max Concurrent Executions</label>
+                                <input type="number" class="form-control" id="max_concurrent" name="max_concurrent" 
+                                       min="1" max="100" value="10">
+                                <div class="form-text">Maximum number of simultaneous executions</div>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="retry_attempts" class="form-label">Retry Attempts</label>
+                                        <input type="number" class="form-control" id="retry_attempts" name="retry_attempts" 
+                                               min="0" max="10" value="3">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="retry_delay" class="form-label">Retry Delay (ms)</label>
+                                        <input type="number" class="form-control" id="retry_delay" name="retry_delay" 
+                                               min="1000" max="300000" value="5000" step="1000">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card shadow">
+                        <div class="card-header">
+                            <h6 class="m-0 font-weight-bold text-primary">Notification Settings</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="notify_on_success" name="notify_on_success">
+                                <label class="form-check-label" for="notify_on_success">
+                                    Notify on successful completion
+                                </label>
+                            </div>
+
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="notify_on_failure" name="notify_on_failure" checked>
+                                <label class="form-check-label" for="notify_on_failure">
+                                    Notify on failure
+                                </label>
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="notification_emails" class="form-label">Notification Emails</label>
+                                <input type="text" class="form-control" id="notification_emails" name="notification_emails" 
+                                       placeholder="email1@example.com, email2@example.com">
+                                <div class="form-text">Comma-separated email addresses</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-lg-6">
+                    <div class="card shadow mb-4">
+                        <div class="card-header">
+                            <h6 class="m-0 font-weight-bold text-primary">Security & Access</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label">Execution Permission</label>
+                                <select class="form-select" name="execution_permission">
+                                    <option value="owner" selected>Only owner can execute</option>
+                                    <option value="team">Team members can execute</option>
+                                    <option value="public">Anyone with access can execute</option>
+                                </select>
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Edit Permission</label>
+                                <select class="form-select" name="edit_permission">
+                                    <option value="owner" selected>Only owner can edit</option>
+                                    <option value="team">Team members can edit</option>
+                                    <option value="collaborators">Specific collaborators can edit</option>
+                                </select>
+                            </div>
+
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="enable_audit_log" name="enable_audit_log" checked>
+                                <label class="form-check-label" for="enable_audit_log">
+                                    Enable detailed audit logging
+                                </label>
+                            </div>
+
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="encrypt_sensitive_data" name="encrypt_sensitive_data" checked>
+                                <label class="form-check-label" for="encrypt_sensitive_data">
+                                    Encrypt sensitive data in logs
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card shadow">
+                        <div class="card-header">
+                            <h6 class="m-0 font-weight-bold text-primary">Advanced Options</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-check

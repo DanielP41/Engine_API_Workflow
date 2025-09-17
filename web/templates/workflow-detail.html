@@ -1,0 +1,692 @@
+{{template "layout.html" .}}
+
+{{define "content"}}
+<div class="container-fluid py-4">
+    <!-- Page Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="/workflows">Workflows</a></li>
+                    <li class="breadcrumb-item active">{{.Workflow.Name}}</li>
+                </ol>
+            </nav>
+            <h1 class="h3 mb-0">{{.Workflow.Name}}</h1>
+            <p class="text-muted">{{.Workflow.Description}}</p>
+        </div>
+        <div class="d-flex gap-2">
+            {{if .IsOwner}}
+            <a href="/workflows/{{.Workflow.ID.Hex}}/edit" class="btn btn-outline-primary">
+                <i class="bi bi-pencil me-2"></i>Edit
+            </a>
+            {{end}}
+            {{if eq .Workflow.Status "active"}}
+            <button class="btn btn-success" onclick="triggerWorkflow('{{.Workflow.ID.Hex}}')">
+                <i class="bi bi-play me-2"></i>Run Now
+            </button>
+            {{else}}
+            <button class="btn btn-outline-success" onclick="activateWorkflow('{{.Workflow.ID.Hex}}')">
+                <i class="bi bi-play me-2"></i>Activate
+            </button>
+            {{end}}
+            <button class="btn btn-outline-secondary" onclick="cloneWorkflow('{{.Workflow.ID.Hex}}')">
+                <i class="bi bi-files me-2"></i>Clone
+            </button>
+        </div>
+    </div>
+
+    <!-- Status and Tags Row -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="d-flex align-items-center gap-3 mb-3">
+                <div>
+                    <span class="badge bg-{{if eq .Workflow.Status "active"}}success{{else if eq .Workflow.Status "draft"}}secondary{{else if eq .Workflow.Status "inactive"}}warning{{else}}danger{{end}} fs-6">
+                        {{.Workflow.Status | title}}
+                    </span>
+                </div>
+                <div>
+                    <span class="text-muted">Priority:</span>
+                    <span class="badge bg-{{if le .Workflow.Priority 2}}danger{{else if le .Workflow.Priority 4}}warning{{else}}success{{end}}">
+                        {{.Workflow.Priority}}
+                    </span>
+                </div>
+                <div>
+                    <span class="text-muted">Environment:</span>
+                    <span class="badge bg-info">{{.Workflow.Environment}}</span>
+                </div>
+                <div>
+                    <span class="text-muted">Version:</span>
+                    <span class="badge bg-light text-dark">v{{.Workflow.Version}}</span>
+                </div>
+            </div>
+            {{if .Workflow.Tags}}
+            <div class="d-flex flex-wrap gap-1">
+                {{range .Workflow.Tags}}
+                <span class="badge bg-light text-dark border">{{.}}</span>
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+    </div>
+
+    <!-- Main Content Row -->
+    <div class="row">
+        <!-- Left Column - Workflow Details -->
+        <div class="col-lg-8">
+            <!-- Statistics Card -->
+            {{if .Stats}}
+            <div class="card shadow mb-4">
+                <div class="card-header">
+                    <h6 class="m-0 font-weight-bold text-primary">Statistics (Last 30 days)</h6>
+                </div>
+                <div class="card-body">
+                    <div class="row text-center">
+                        <div class="col-md-3">
+                            <div class="stat-item">
+                                <div class="stat-value text-primary">{{.Stats.TotalExecutions}}</div>
+                                <div class="stat-label">Total Runs</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-item">
+                                <div class="stat-value text-success">{{.Stats.SuccessfulRuns}}</div>
+                                <div class="stat-label">Successful</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-item">
+                                <div class="stat-value text-danger">{{.Stats.FailedRuns}}</div>
+                                <div class="stat-label">Failed</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-item">
+                                <div class="stat-value text-info">{{printf "%.1f" .Stats.AverageExecutionTime}}ms</div>
+                                <div class="stat-label">Avg Time</div>
+                            </div>
+                        </div>
+                    </div>
+                    {{if gt .Stats.TotalExecutions 0}}
+                    <div class="mt-3">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <small class="text-muted">Success Rate</small>
+                                <div class="progress" style="height: 8px;">
+                                    {{$successRate := mul (div .Stats.SuccessfulRuns .Stats.TotalExecutions) 100}}
+                                    <div class="progress-bar bg-success" style="width: {{printf "%.1f" $successRate}}%"></div>
+                                </div>
+                                <small class="text-muted">{{printf "%.1f" $successRate}}%</small>
+                            </div>
+                            <div class="col-md-6">
+                                <small class="text-muted">Error Rate</small>
+                                <div class="progress" style="height: 8px;">
+                                    {{$errorRate := mul (div .Stats.FailedRuns .Stats.TotalExecutions) 100}}
+                                    <div class="progress-bar bg-danger" style="width: {{printf "%.1f" $errorRate}}%"></div>
+                                </div>
+                                <small class="text-muted">{{printf "%.1f" $errorRate}}%</small>
+                            </div>
+                        </div>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Workflow Steps -->
+            <div class="card shadow mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h6 class="m-0 font-weight-bold text-primary">Workflow Steps</h6>
+                    <span class="badge bg-light text-dark">{{len .Workflow.Steps}} steps</span>
+                </div>
+                <div class="card-body">
+                    {{if .Workflow.Steps}}
+                    <div class="workflow-steps">
+                        {{range $index, $step := .Workflow.Steps}}
+                        <div class="step-item {{if eq $step.Type "condition"}}step-condition{{else}}step-action{{end}}" data-step="{{$index}}">
+                            <div class="step-connector">
+                                {{if ne $index 0}}<div class="connector-line"></div>{{end}}
+                                <div class="step-number">{{add $index 1}}</div>
+                                {{if ne $index (sub (len $.Workflow.Steps) 1)}}<div class="connector-line"></div>{{end}}
+                            </div>
+                            <div class="step-content">
+                                <div class="step-header">
+                                    <div class="d-flex align-items-center">
+                                        <i class="bi bi-{{if eq $step.Type "http"}}globe{{else if eq $step.Type "email"}}envelope{{else if eq $step.Type "slack"}}slack{{else if eq $step.Type "condition"}}diamond{{else if eq $step.Type "delay"}}clock{{else}}gear{{end}} me-2"></i>
+                                        <h6 class="mb-0">{{$step.Name}}</h6>
+                                        <span class="badge bg-light text-dark ms-2">{{$step.Type}}</span>
+                                    </div>
+                                    {{if $step.Description}}
+                                    <p class="text-muted small mb-0 mt-1">{{$step.Description}}</p>
+                                    {{end}}
+                                </div>
+                                
+                                <!-- Step Configuration -->
+                                <div class="step-config mt-2">
+                                    <div class="row">
+                                        {{if $step.Config}}
+                                        <div class="col-md-6">
+                                            <small class="text-muted">Configuration:</small>
+                                            <div class="config-preview">
+                                                {{range $key, $value := $step.Config}}
+                                                <div class="config-item">
+                                                    <code>{{$key}}</code>: <span class="text-muted">{{$value}}</span>
+                                                </div>
+                                                {{end}}
+                                            </div>
+                                        </div>
+                                        {{end}}
+                                        <div class="col-md-6">
+                                            <small class="text-muted">Settings:</small>
+                                            <div class="step-settings">
+                                                {{if $step.TimeoutSeconds}}
+                                                <div><i class="bi bi-clock me-1"></i>Timeout: {{$step.TimeoutSeconds}}s</div>
+                                                {{end}}
+                                                {{if $step.RetryAttempts}}
+                                                <div><i class="bi bi-arrow-clockwise me-1"></i>Retries: {{$step.RetryAttempts}}</div>
+                                                {{end}}
+                                                {{if $step.ContinueOnError}}
+                                                <div><i class="bi bi-check-circle me-1"></i>Continue on error</div>
+                                                {{end}}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Next Steps -->
+                                {{if $step.NextSteps}}
+                                <div class="next-steps mt-2">
+                                    <small class="text-muted">Next steps:</small>
+                                    <div class="d-flex flex-wrap gap-1 mt-1">
+                                        {{range $step.NextSteps}}
+                                        <span class="badge bg-outline-primary">{{.}}</span>
+                                        {{end}}
+                                    </div>
+                                </div>
+                                {{end}}
+                            </div>
+                        </div>
+                        {{end}}
+                    </div>
+                    {{else}}
+                    <div class="text-center py-4">
+                        <i class="bi bi-diagram-3" style="font-size: 3rem; color: #6c757d;"></i>
+                        <h6 class="mt-3">No steps configured</h6>
+                        <p class="text-muted">This workflow doesn't have any steps yet.</p>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+
+            <!-- Triggers -->
+            <div class="card shadow mb-4">
+                <div class="card-header">
+                    <h6 class="m-0 font-weight-bold text-primary">Triggers</h6>
+                </div>
+                <div class="card-body">
+                    {{if .Workflow.Triggers}}
+                    <div class="triggers-list">
+                        {{range .Workflow.Triggers}}
+                        <div class="trigger-item mb-3 p-3 border rounded">
+                            <div class="d-flex align-items-center mb-2">
+                                <i class="bi bi-{{if eq .Type "manual"}}hand-index{{else if eq .Type "webhook"}}link{{else if eq .Type "scheduled"}}clock{{else if eq .Type "event"}}lightning{{else}}gear{{end}} me-2"></i>
+                                <h6 class="mb-0">{{.Name | title}}</h6>
+                                <span class="badge bg-light text-dark ms-2">{{.Type}}</span>
+                                <span class="badge bg-{{if .Enabled}}success{{else}}secondary{{end}} ms-2">
+                                    {{if .Enabled}}Enabled{{else}}Disabled{{end}}
+                                </span>
+                            </div>
+                            {{if .Description}}
+                            <p class="text-muted small mb-2">{{.Description}}</p>
+                            {{end}}
+                            {{if .Config}}
+                            <div class="trigger-config">
+                                {{range $key, $value := .Config}}
+                                <div class="config-item">
+                                    <code>{{$key}}</code>: <span class="text-muted">{{$value}}</span>
+                                </div>
+                                {{end}}
+                            </div>
+                            {{end}}
+                        </div>
+                        {{end}}
+                    </div>
+                    {{else}}
+                    <div class="text-center py-4">
+                        <i class="bi bi-lightning" style="font-size: 3rem; color: #6c757d;"></i>
+                        <h6 class="mt-3">No triggers configured</h6>
+                        <p class="text-muted">This workflow doesn't have any triggers yet.</p>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column - Activity and Info -->
+        <div class="col-lg-4">
+            <!-- Workflow Info -->
+            <div class="card shadow mb-4">
+                <div class="card-header">
+                    <h6 class="m-0 font-weight-bold text-primary">Workflow Information</h6>
+                </div>
+                <div class="card-body">
+                    <div class="workflow-info">
+                        <div class="info-item">
+                            <strong>Created:</strong>
+                            <div class="text-muted">{{.Workflow.CreatedAt.Format "Jan 2, 2006 at 3:04 PM"}}</div>
+                        </div>
+                        <div class="info-item">
+                            <strong>Last Updated:</strong>
+                            <div class="text-muted">{{.Workflow.UpdatedAt.Format "Jan 2, 2006 at 3:04 PM"}}</div>
+                        </div>
+                        {{if .Workflow.Stats.LastExecutionAt}}
+                        <div class="info-item">
+                            <strong>Last Execution:</strong>
+                            <div class="text-muted">{{.Workflow.Stats.LastExecutionAt.Format "Jan 2, 2006 at 3:04 PM"}}</div>
+                        </div>
+                        {{end}}
+                        <div class="info-item">
+                            <strong>Timeout:</strong>
+                            <div class="text-muted">{{.Workflow.TimeoutMinutes}} minutes</div>
+                        </div>
+                        <div class="info-item">
+                            <strong>Max Concurrent:</strong>
+                            <div class="text-muted">{{.Workflow.MaxConcurrent}}</div>
+                        </div>
+                        <div class="info-item">
+                            <strong>Retry Attempts:</strong>
+                            <div class="text-muted">{{.Workflow.RetryAttempts}}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Executions -->
+            <div class="card shadow mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h6 class="m-0 font-weight-bold text-primary">Recent Executions</h6>
+                    <a href="/logs?workflow_id={{.Workflow.ID.Hex}}" class="btn btn-sm btn-outline-primary">View All</a>
+                </div>
+                <div class="card-body">
+                    {{if .Logs}}
+                    <div class="execution-list">
+                        {{range .Logs}}
+                        <div class="execution-item d-flex align-items-center justify-content-between mb-3 p-2 border rounded">
+                            <div class="d-flex align-items-center">
+                                <i class="bi bi-{{if eq .Status "completed"}}check-circle text-success{{else if eq .Status "failed"}}x-circle text-danger{{else if eq .Status "running"}}play-circle text-primary{{else}}clock text-warning{{end}} me-2"></i>
+                                <div>
+                                    <div class="fw-bold small">{{.ExecutionID}}</div>
+                                    <div class="text-muted small">{{.StartedAt.Format "Jan 2, 3:04 PM"}}</div>
+                                </div>
+                            </div>
+                            <div class="text-end">
+                                {{if .Duration}}
+                                <div class="small text-muted">{{.Duration}}ms</div>
+                                {{end}}
+                                <a href="/logs/{{.ID.Hex}}" class="btn btn-sm btn-outline-secondary">
+                                    <i class="bi bi-eye"></i>
+                                </a>
+                            </div>
+                        </div>
+                        {{end}}
+                    </div>
+                    {{else}}
+                    <div class="text-center py-4">
+                        <i class="bi bi-clock-history" style="font-size: 2rem; color: #6c757d;"></i>
+                        <p class="text-muted mt-2 mb-0">No executions yet</p>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+
+            <!-- Quick Actions -->
+            <div class="card shadow">
+                <div class="card-header">
+                    <h6 class="m-0 font-weight-bold text-primary">Quick Actions</h6>
+                </div>
+                <div class="card-body">
+                    <div class="d-grid gap-2">
+                        {{if eq .Workflow.Status "active"}}
+                        <button class="btn btn-success" onclick="triggerWorkflow('{{.Workflow.ID.Hex}}')">
+                            <i class="bi bi-play me-2"></i>Execute Now
+                        </button>
+                        <button class="btn btn-outline-warning" onclick="deactivateWorkflow('{{.Workflow.ID.Hex}}')">
+                            <i class="bi bi-pause me-2"></i>Deactivate
+                        </button>
+                        {{else}}
+                        <button class="btn btn-outline-success" onclick="activateWorkflow('{{.Workflow.ID.Hex}}')">
+                            <i class="bi bi-play me-2"></i>Activate
+                        </button>
+                        {{end}}
+                        
+                        {{if .IsOwner}}
+                        <a href="/workflows/{{.Workflow.ID.Hex}}/edit" class="btn btn-outline-primary">
+                            <i class="bi bi-pencil me-2"></i>Edit Workflow
+                        </a>
+                        {{end}}
+                        
+                        <button class="btn btn-outline-secondary" onclick="cloneWorkflow('{{.Workflow.ID.Hex}}')">
+                            <i class="bi bi-files me-2"></i>Clone Workflow
+                        </button>
+                        
+                        <button class="btn btn-outline-info" onclick="exportWorkflow('{{.Workflow.ID.Hex}}')">
+                            <i class="bi bi-download me-2"></i>Export
+                        </button>
+                        
+                        {{if .IsOwner}}
+                        <hr>
+                        <button class="btn btn-outline-danger" onclick="deleteWorkflow('{{.Workflow.ID.Hex}}', '{{.Workflow.Name}}')">
+                            <i class="bi bi-trash me-2"></i>Delete Workflow
+                        </button>
+                        {{end}}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Success/Error Alerts Container -->
+<div id="alerts-container" class="position-fixed" style="top: 20px; right: 20px; z-index: 9999;"></div>
+{{end}}
+
+{{define "scripts"}}
+<style>
+/* Workflow Detail Styles */
+.stat-item {
+    padding: 1rem 0;
+}
+
+.stat-value {
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+.stat-label {
+    font-size: 0.875rem;
+    color: #6c757d;
+    margin-top: 0.25rem;
+}
+
+.workflow-steps {
+    position: relative;
+}
+
+.step-item {
+    display: flex;
+    margin-bottom: 1.5rem;
+}
+
+.step-connector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-right: 1rem;
+    min-width: 40px;
+}
+
+.connector-line {
+    width: 2px;
+    height: 20px;
+    background-color: #dee2e6;
+}
+
+.step-number {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background-color: #007bff;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 0.875rem;
+}
+
+.step-condition .step-number {
+    background-color: #ffc107;
+    color: #000;
+}
+
+.step-content {
+    flex: 1;
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 1rem;
+}
+
+.step-header h6 {
+    color: #495057;
+}
+
+.config-preview {
+    background-color: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: 0.25rem;
+    padding: 0.5rem;
+    font-size: 0.875rem;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.config-item {
+    margin-bottom: 0.25rem;
+}
+
+.config-item:last-child {
+    margin-bottom: 0;
+}
+
+.step-settings {
+    font-size: 0.875rem;
+    color: #6c757d;
+}
+
+.step-settings > div {
+    margin-bottom: 0.25rem;
+}
+
+.trigger-item {
+    background-color: #f8f9fa;
+}
+
+.trigger-config {
+    background-color: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: 0.25rem;
+    padding: 0.5rem;
+    font-size: 0.875rem;
+}
+
+.execution-item {
+    background-color: #f8f9fa;
+    transition: background-color 0.2s;
+}
+
+.execution-item:hover {
+    background-color: #e9ecef;
+}
+
+.workflow-info .info-item {
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.workflow-info .info-item:last-child {
+    margin-bottom: 0;
+    border-bottom: none;
+}
+
+.badge.bg-outline-primary {
+    color: #007bff;
+    border: 1px solid #007bff;
+    background-color: transparent;
+}
+</style>
+
+<script>
+// Workflow actions
+async function triggerWorkflow(workflowId) {
+    try {
+        const response = await fetch(`/api/v1/workflows/${workflowId}/execute`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+
+        if (response.ok) {
+            showAlert('Workflow execution started!', 'success');
+            // Refresh page after a short delay to show updated logs
+            setTimeout(() => location.reload(), 2000);
+        } else {
+            const error = await response.json();
+            showAlert(error.message || 'Failed to start workflow execution', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error executing workflow', 'danger');
+    }
+}
+
+async function activateWorkflow(workflowId) {
+    try {
+        const response = await fetch(`/api/v1/workflows/${workflowId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ status: 'active' })
+        });
+
+        if (response.ok) {
+            showAlert('Workflow activated successfully!', 'success');
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            showAlert('Failed to activate workflow', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error activating workflow', 'danger');
+    }
+}
+
+async function deactivateWorkflow(workflowId) {
+    try {
+        const response = await fetch(`/api/v1/workflows/${workflowId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ status: 'inactive' })
+        });
+
+        if (response.ok) {
+            showAlert('Workflow deactivated successfully!', 'success');
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            showAlert('Failed to deactivate workflow', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error deactivating workflow', 'danger');
+    }
+}
+
+async function cloneWorkflow(workflowId) {
+    try {
+        const response = await fetch(`/api/v1/workflows/${workflowId}/clone`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+
+        if (response.ok) {
+            const result = await response.json();
+            showAlert('Workflow cloned successfully!', 'success');
+            setTimeout(() => {
+                window.location.href = `/workflows/${result.data.id}`;
+            }, 1500);
+        } else {
+            showAlert('Failed to clone workflow', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error cloning workflow', 'danger');
+    }
+}
+
+async function exportWorkflow(workflowId) {
+    try {
+        const response = await fetch(`/api/v1/workflows/${workflowId}`);
+        
+        if (response.ok) {
+            const workflow = await response.json();
+            const dataStr = JSON.stringify(workflow.data, null, 2);
+            const dataBlob = new Blob([dataStr], {type:'application/json'});
+            
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(dataBlob);
+            link.download = `workflow-${workflow.data.name}-${new Date().toISOString().split('T')[0]}.json`;
+            link.click();
+            
+            showAlert('Workflow exported successfully!', 'success');
+        } else {
+            showAlert('Failed to export workflow', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error exporting workflow', 'danger');
+    }
+}
+
+async function deleteWorkflow(workflowId, workflowName) {
+    if (!confirm(`Are you sure you want to delete the workflow "${workflowName}"?\n\nThis action cannot be undone.`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/v1/workflows/${workflowId}`, {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+
+        if (response.ok) {
+            showAlert('Workflow deleted successfully!', 'success');
+            setTimeout(() => {
+                window.location.href = '/workflows';
+            }, 1500);
+        } else {
+            showAlert('Failed to delete workflow', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error deleting workflow', 'danger');
+    }
+}
+
+function showAlert(message, type) {
+    const alertsContainer = document.getElementById('alerts-container');
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+    alertDiv.style.cssText = 'min-width: 300px; margin-bottom: 10px;';
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    alertsContainer.appendChild(alertDiv);
+    
+    // Auto remove after 5 seconds
+    setTimeout(() => {
+        if (alertDiv.parentNode) {
+            alertDiv.remove();
+        }
+    }, 5000);
+}
+
+// Helper functions for templates (these are used in Go templates)
+function add(a, b) { return a + b; }
+function sub(a, b) { return a - b; }
+function mul(a, b) { return a * b; }
+function div(a, b) { return b !== 0 ? a / b : 0; }
+</script>
+{{end}}

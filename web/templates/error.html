@@ -1,0 +1,819 @@
+{{template "layout.html" .}}
+
+{{define "content"}}
+<div class="container-fluid">
+    <div class="error-page">
+        <div class="row justify-content-center align-items-center min-vh-100">
+            <div class="col-lg-8 col-xl-6">
+                <div class="error-content text-center">
+                    <!-- Error Icon and Code -->
+                    <div class="error-icon mb-4">
+                        <div class="error-animation">
+                            {{if eq .ErrorCode "404"}}
+                            <i class="bi bi-file-earmark-x error-icon-main"></i>
+                            {{else if eq .ErrorCode "403"}}
+                            <i class="bi bi-shield-exclamation error-icon-main"></i>
+                            {{else if eq .ErrorCode "500"}}
+                            <i class="bi bi-exclamation-triangle error-icon-main"></i>
+                            {{else if eq .ErrorCode "503"}}
+                            <i class="bi bi-tools error-icon-main"></i>
+                            {{else}}
+                            <i class="bi bi-bug error-icon-main"></i>
+                            {{end}}
+                        </div>
+                        <div class="error-code">
+                            {{if .ErrorCode}}{{.ErrorCode}}{{else}}Error{{end}}
+                        </div>
+                    </div>
+
+                    <!-- Error Message -->
+                    <div class="error-message mb-4">
+                        <h2 class="error-title">
+                            {{if .Title}}
+                            {{.Title}}
+                            {{else if eq .ErrorCode "404"}}
+                            Page Not Found
+                            {{else if eq .ErrorCode "403"}}
+                            Access Denied
+                            {{else if eq .ErrorCode "500"}}
+                            Internal Server Error
+                            {{else if eq .ErrorCode "503"}}
+                            Service Unavailable
+                            {{else}}
+                            Something Went Wrong
+                            {{end}}
+                        </h2>
+                        
+                        <p class="error-description">
+                            {{if .Error}}
+                            {{.Error}}
+                            {{else if eq .ErrorCode "404"}}
+                            The page you're looking for doesn't exist or has been moved.
+                            {{else if eq .ErrorCode "403"}}
+                            You don't have permission to access this resource.
+                            {{else if eq .ErrorCode "500"}}
+                            We're experiencing some technical difficulties. Please try again later.
+                            {{else if eq .ErrorCode "503"}}
+                            The service is temporarily unavailable due to maintenance or high load.
+                            {{else}}
+                            An unexpected error occurred. Our team has been notified.
+                            {{end}}
+                        </p>
+                    </div>
+
+                    <!-- Error Details (for debugging) -->
+                    {{if and .Details .IsDevelopment}}
+                    <div class="error-details mb-4">
+                        <div class="card border-warning">
+                            <div class="card-header bg-warning text-dark">
+                                <h6 class="mb-0">
+                                    <i class="bi bi-bug me-2"></i>Debug Information
+                                    <small class="text-muted">(Development Mode)</small>
+                                </h6>
+                            </div>
+                            <div class="card-body text-start">
+                                <div class="debug-info">
+                                    {{if .Details.RequestID}}
+                                    <div class="debug-item">
+                                        <strong>Request ID:</strong> <code>{{.Details.RequestID}}</code>
+                                    </div>
+                                    {{end}}
+                                    {{if .Details.Timestamp}}
+                                    <div class="debug-item">
+                                        <strong>Timestamp:</strong> <code>{{.Details.Timestamp}}</code>
+                                    </div>
+                                    {{end}}
+                                    {{if .Details.Path}}
+                                    <div class="debug-item">
+                                        <strong>Path:</strong> <code>{{.Details.Path}}</code>
+                                    </div>
+                                    {{end}}
+                                    {{if .Details.Method}}
+                                    <div class="debug-item">
+                                        <strong>Method:</strong> <code>{{.Details.Method}}</code>
+                                    </div>
+                                    {{end}}
+                                    {{if .Details.UserAgent}}
+                                    <div class="debug-item">
+                                        <strong>User Agent:</strong> <code class="small">{{.Details.UserAgent}}</code>
+                                    </div>
+                                    {{end}}
+                                    {{if .Details.Stack}}
+                                    <div class="debug-item">
+                                        <strong>Stack Trace:</strong>
+                                        <pre class="small mt-2 bg-light p-2 rounded"><code>{{.Details.Stack}}</code></pre>
+                                    </div>
+                                    {{end}}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {{end}}
+
+                    <!-- Action Buttons -->
+                    <div class="error-actions">
+                        <div class="d-flex flex-column flex-sm-row gap-3 justify-content-center">
+                            <!-- Primary Actions -->
+                            <button class="btn btn-primary btn-lg" onclick="goBack()">
+                                <i class="bi bi-arrow-left me-2"></i>Go Back
+                            </button>
+                            
+                            <a href="/" class="btn btn-outline-primary btn-lg">
+                                <i class="bi bi-house me-2"></i>Home
+                            </a>
+
+                            <!-- Secondary Actions -->
+                            {{if eq .ErrorCode "404"}}
+                            <a href="/workflows" class="btn btn-outline-secondary">
+                                <i class="bi bi-diagram-3 me-2"></i>View Workflows
+                            </a>
+                            {{else if eq .ErrorCode "403"}}
+                            <a href="/login" class="btn btn-outline-warning">
+                                <i class="bi bi-person me-2"></i>Login
+                            </a>
+                            {{else}}
+                            <button class="btn btn-outline-secondary" onclick="refreshPage()">
+                                <i class="bi bi-arrow-clockwise me-2"></i>Try Again
+                            </button>
+                            {{end}}
+                        </div>
+
+                        <!-- Additional Help -->
+                        <div class="error-help mt-4">
+                            <div class="help-links">
+                                {{if eq .ErrorCode "404"}}
+                                <p class="text-muted mb-3">Looking for something specific?</p>
+                                <div class="quick-links">
+                                    <a href="/dashboard" class="help-link">
+                                        <i class="bi bi-speedometer2 me-1"></i>Dashboard
+                                    </a>
+                                    <a href="/workflows" class="help-link">
+                                        <i class="bi bi-diagram-3 me-1"></i>Workflows
+                                    </a>
+                                    <a href="/logs" class="help-link">
+                                        <i class="bi bi-list-ul me-1"></i>Logs
+                                    </a>
+                                    {{if .IsAdmin}}
+                                    <a href="/users" class="help-link">
+                                        <i class="bi bi-people me-1"></i>Users
+                                    </a>
+                                    {{end}}
+                                </div>
+                                {{else if eq .ErrorCode "500"}}
+                                <p class="text-muted mb-3">If this problem persists:</p>
+                                <div class="support-info">
+                                    <div class="support-item">
+                                        <i class="bi bi-envelope me-2"></i>
+                                        <span>Contact support: <a href="mailto:support@example.com">support@example.com</a></span>
+                                    </div>
+                                    <div class="support-item">
+                                        <i class="bi bi-github me-2"></i>
+                                        <span>Report issue: <a href="https://github.com/DanielP41/Engine_API_Workflow/issues" target="_blank">GitHub Issues</a></span>
+                                    </div>
+                                </div>
+                                {{else if eq .ErrorCode "503"}}
+                                <p class="text-muted mb-3">Service status:</p>
+                                <div class="status-check">
+                                    <button class="btn btn-sm btn-outline-info" onclick="checkServiceStatus()">
+                                        <i class="bi bi-activity me-1"></i>Check Status
+                                    </button>
+                                    <span class="status-indicator ms-3">
+                                        <span class="status-dot"></span>
+                                        <span id="status-text">Checking...</span>
+                                    </span>
+                                </div>
+                                {{end}}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Search Box for 404 errors -->
+                    {{if eq .ErrorCode "404"}}
+                    <div class="error-search mt-5">
+                        <div class="card bg-light border-0">
+                            <div class="card-body">
+                                <h6 class="mb-3">
+                                    <i class="bi bi-search me-2"></i>Search for what you need
+                                </h6>
+                                <form onsubmit="performSearch(event)" class="d-flex">
+                                    <input type="text" class="form-control me-2" id="search-input" 
+                                           placeholder="Search workflows, logs, or documentation...">
+                                    <button type="submit" class="btn btn-primary">
+                                        <i class="bi bi-search"></i>
+                                    </button>
+                                </form>
+                                <div class="search-suggestions mt-3">
+                                    <small class="text-muted">Popular searches:</small>
+                                    <div class="suggestion-tags mt-1">
+                                        <button class="badge bg-secondary suggestion-tag" onclick="quickSearch('create workflow')">
+                                            create workflow
+                                        </button>
+                                        <button class="badge bg-secondary suggestion-tag" onclick="quickSearch('view logs')">
+                                            view logs
+                                        </button>
+                                        <button class="badge bg-secondary suggestion-tag" onclick="quickSearch('user profile')">
+                                            user profile
+                                        </button>
+                                        <button class="badge bg-secondary suggestion-tag" onclick="quickSearch('api documentation')">
+                                            api docs
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Auto-retry for server errors -->
+{{if or (eq .ErrorCode "500") (eq .ErrorCode "503")}}
+<div class="auto-retry" style="display: none;">
+    <div class="position-fixed bottom-0 end-0 p-3">
+        <div class="toast" id="retry-toast" role="alert">
+            <div class="toast-header">
+                <i class="bi bi-arrow-clockwise text-primary me-2"></i>
+                <strong class="me-auto">Auto Retry</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body">
+                Automatically retrying in <span id="retry-countdown">30</span> seconds...
+                <div class="mt-2">
+                    <button class="btn btn-sm btn-primary" onclick="retryNow()">Retry Now</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="cancelRetry()">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}
+{{end}}
+
+{{define "scripts"}}
+<style>
+/* Error Page Styles */
+.error-page {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    position: relative;
+    overflow: hidden;
+}
+
+.error-page::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="0.5"/></pattern></defs><rect width="100" height="100" fill="url(%23grid)"/></svg>');
+    opacity: 0.3;
+}
+
+.error-content {
+    position: relative;
+    z-index: 2;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    border-radius: 20px;
+    padding: 3rem 2rem;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+    margin: 2rem 0;
+}
+
+.error-icon {
+    position: relative;
+}
+
+.error-animation {
+    display: inline-block;
+    animation: float 3s ease-in-out infinite;
+}
+
+.error-icon-main {
+    font-size: 6rem;
+    color: #6c757d;
+    margin-bottom: 1rem;
+    display: block;
+}
+
+.error-code {
+    font-size: 4rem;
+    font-weight: 900;
+    color: #495057;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.1);
+    margin-bottom: 1rem;
+    font-family: 'Courier New', monospace;
+}
+
+.error-title {
+    color: #495057;
+    font-weight: 700;
+    margin-bottom: 1rem;
+    font-size: 2.5rem;
+}
+
+.error-description {
+    color: #6c757d;
+    font-size: 1.1rem;
+    line-height: 1.6;
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.error-details {
+    text-align: left;
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.debug-info {
+    font-family: 'Courier New', monospace;
+}
+
+.debug-item {
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #f1f3f4;
+}
+
+.debug-item:last-child {
+    border-bottom: none;
+}
+
+.error-actions {
+    margin-top: 2rem;
+}
+
+.btn-lg {
+    padding: 0.75rem 2rem;
+    font-size: 1.1rem;
+    border-radius: 50px;
+    transition: all 0.3s ease;
+}
+
+.btn-lg:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+}
+
+.help-links {
+    margin-top: 2rem;
+    padding-top: 2rem;
+    border-top: 1px solid #dee2e6;
+}
+
+.quick-links {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 1rem;
+}
+
+.help-link {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    background: #f8f9fa;
+    color: #495057;
+    text-decoration: none;
+    border-radius: 25px;
+    transition: all 0.3s ease;
+    border: 1px solid #dee2e6;
+}
+
+.help-link:hover {
+    background: #e9ecef;
+    color: #007bff;
+    text-decoration: none;
+    transform: translateY(-2px);
+}
+
+.support-info {
+    text-align: left;
+    display: inline-block;
+}
+
+.support-item {
+    margin-bottom: 0.5rem;
+    color: #6c757d;
+}
+
+.status-check {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    font-size: 0.9rem;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ffc107;
+    margin-right: 0.5rem;
+    animation: pulse 2s infinite;
+}
+
+.status-dot.online {
+    background: #28a745;
+}
+
+.status-dot.offline {
+    background: #dc3545;
+}
+
+.error-search {
+    max-width: 500px;
+    margin: 0 auto;
+}
+
+.suggestion-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: center;
+}
+
+.suggestion-tag {
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s ease;
+}
+
+.suggestion-tag:hover {
+    transform: scale(1.05);
+    background: #007bff !important;
+}
+
+.auto-retry {
+    z-index: 1050;
+}
+
+/* Animations */
+@keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-10px); }
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    75% { transform: translateX(5px); }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .error-content {
+        padding: 2rem 1rem;
+        margin: 1rem;
+    }
+    
+    .error-code {
+        font-size: 3rem;
+    }
+    
+    .error-title {
+        font-size: 2rem;
+    }
+    
+    .error-icon-main {
+        font-size: 4rem;
+    }
+    
+    .btn-lg {
+        width: 100%;
+        margin-bottom: 0.5rem;
+    }
+    
+    .quick-links {
+        flex-direction: column;
+        align-items: center;
+    }
+    
+    .help-link {
+        width: 100%;
+        justify-content: center;
+    }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+    .error-content {
+        background: rgba(33, 37, 41, 0.95);
+        color: #f8f9fa;
+    }
+    
+    .error-code,
+    .error-title {
+        color: #f8f9fa;
+    }
+    
+    .error-description {
+        color: #adb5bd;
+    }
+    
+    .help-link {
+        background: #495057;
+        color: #f8f9fa;
+        border-color: #6c757d;
+    }
+    
+    .help-link:hover {
+        background: #6c757d;
+    }
+}
+</style>
+
+<script>
+let retryTimer;
+let retryCountdown = 30;
+
+// Initialize page
+document.addEventListener('DOMContentLoaded', function() {
+    initializeErrorPage();
+    setupAutoRetry();
+    checkServiceStatus();
+});
+
+function initializeErrorPage() {
+    // Add some visual effects
+    const errorIcon = document.querySelector('.error-icon-main');
+    if (errorIcon) {
+        // Add shake animation for certain errors
+        const errorCode = '{{.ErrorCode}}';
+        if (errorCode === '500' || errorCode === '503') {
+            setTimeout(() => {
+                errorIcon.style.animation = 'shake 0.5s ease-in-out';
+            }, 1000);
+        }
+    }
+    
+    // Focus search input if it exists
+    const searchInput = document.getElementById('search-input');
+    if (searchInput) {
+        setTimeout(() => searchInput.focus(), 500);
+    }
+}
+
+function setupAutoRetry() {
+    const errorCode = '{{.ErrorCode}}';
+    if (errorCode === '500' || errorCode === '503') {
+        // Show auto-retry toast after 5 seconds
+        setTimeout(() => {
+            const autoRetryElement = document.querySelector('.auto-retry');
+            if (autoRetryElement) {
+                autoRetryElement.style.display = 'block';
+                const toast = new bootstrap.Toast(document.getElementById('retry-toast'));
+                toast.show();
+                startRetryCountdown();
+            }
+        }, 5000);
+    }
+}
+
+function startRetryCountdown() {
+    const countdownElement = document.getElementById('retry-countdown');
+    
+    retryTimer = setInterval(() => {
+        retryCountdown--;
+        if (countdownElement) {
+            countdownElement.textContent = retryCountdown;
+        }
+        
+        if (retryCountdown <= 0) {
+            clearInterval(retryTimer);
+            retryNow();
+        }
+    }, 1000);
+}
+
+function retryNow() {
+    clearInterval(retryTimer);
+    showRetryLoading();
+    setTimeout(() => {
+        window.location.reload();
+    }, 1000);
+}
+
+function cancelRetry() {
+    clearInterval(retryTimer);
+    const toast = bootstrap.Toast.getInstance(document.getElementById('retry-toast'));
+    if (toast) {
+        toast.hide();
+    }
+}
+
+function showRetryLoading() {
+    const retryToast = document.getElementById('retry-toast');
+    if (retryToast) {
+        retryToast.querySelector('.toast-body').innerHTML = `
+            <div class="d-flex align-items-center">
+                <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                Retrying...
+            </div>
+        `;
+    }
+}
+
+// Navigation functions
+function goBack() {
+    if (window.history.length > 1) {
+        window.history.back();
+    } else {
+        window.location.href = '/';
+    }
+}
+
+function refreshPage() {
+    window.location.reload();
+}
+
+// Search functionality
+function performSearch(event) {
+    event.preventDefault();
+    const searchInput = document.getElementById('search-input');
+    const query = searchInput.value.trim();
+    
+    if (query) {
+        // Redirect to search results or dashboard with search query
+        window.location.href = `/search?q=${encodeURIComponent(query)}`;
+    }
+}
+
+function quickSearch(query) {
+    document.getElementById('search-input').value = query;
+    performSearch({ preventDefault: () => {} });
+}
+
+// Service status check
+async function checkServiceStatus() {
+    const statusDot = document.querySelector('.status-dot');
+    const statusText = document.getElementById('status-text');
+    
+    if (!statusDot || !statusText) return;
+    
+    try {
+        const response = await fetch('/api/v1/health', {
+            method: 'GET',
+            timeout: 5000
+        });
+        
+        if (response.ok) {
+            statusDot.className = 'status-dot online';
+            statusText.textContent = 'Service Online';
+            
+            // If service is back online, offer to retry
+            if ('{{.ErrorCode}}' === '503') {
+                setTimeout(() => {
+                    if (confirm('Service appears to be back online. Would you like to retry?')) {
+                        window.location.reload();
+                    }
+                }, 2000);
+            }
+        } else {
+            statusDot.className = 'status-dot offline';
+            statusText.textContent = 'Service Offline';
+        }
+    } catch (error) {
+        statusDot.className = 'status-dot offline';
+        statusText.textContent = 'Cannot reach service';
+    }
+}
+
+// Report error (for production)
+function reportError() {
+    const errorData = {
+        code: '{{.ErrorCode}}',
+        message: '{{.Error}}',
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        timestamp: new Date().toISOString()
+    };
+    
+    // Send error report to analytics or error tracking service
+    fetch('/api/v1/errors/report', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(errorData)
+    }).catch(() => {
+        // Silently fail if error reporting fails
+    });
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(event) {
+    // Escape key - go back
+    if (event.key === 'Escape') {
+        goBack();
+    }
+    
+    // R key - refresh
+    if (event.key === 'r' || event.key === 'R') {
+        if (!event.ctrlKey && !event.metaKey) {
+            event.preventDefault();
+            refreshPage();
+        }
+    }
+    
+    // H key - go home
+    if (event.key === 'h' || event.key === 'H') {
+        if (!event.ctrlKey && !event.metaKey) {
+            event.preventDefault();
+            window.location.href = '/';
+        }
+    }
+    
+    // / key - focus search
+    if (event.key === '/') {
+        const searchInput = document.getElementById('search-input');
+        if (searchInput) {
+            event.preventDefault();
+            searchInput.focus();
+        }
+    }
+});
+
+// Auto-report error in production
+if ('{{.Environment}}' === 'production') {
+    setTimeout(reportError, 2000);
+}
+
+// Add some fun easter eggs for 404 errors
+if ('{{.ErrorCode}}' === '404') {
+    let konamiCode = [];
+    const konamiSequence = [
+        'ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown',
+        'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight',
+        'KeyB', 'KeyA'
+    ];
+    
+    document.addEventListener('keydown', function(event) {
+        konamiCode.push(event.code);
+        if (konamiCode.length > konamiSequence.length) {
+            konamiCode.shift();
+        }
+        
+        if (konamiCode.join(',') === konamiSequence.join(',')) {
+            showEasterEgg();
+        }
+    });
+}
+
+function showEasterEgg() {
+    const errorIcon = document.querySelector('.error-icon-main');
+    if (errorIcon) {
+        errorIcon.classList.add('bi-emoji-smile');
+        errorIcon.classList.remove('bi-file-earmark-x');
+        errorIcon.style.color = '#28a745';
+        
+        // Add confetti effect
+        for (let i = 0; i < 50; i++) {
+            createConfetti();
+        }
+    }
+}
+
+function createConfetti() {
+    const confetti = document.createElement('div');
+    confetti.style.position = 'fixed';
+    confetti.style.width = '10px';
+    confetti.style.height = '10px';
+    confetti.style.background = `hsl(${Math.random() * 360}, 70%, 60%)`;
+    confetti.style.left = Math.random() * 100 + 'vw';
+    confetti.style.top = '-10px';
+    confetti.style.zIndex = '9999';
+    confetti.style.borderRadius = '50%';
+    confetti.style.pointerEvents = 'none';
+    
+    document.body.appendChild(confetti);
+    
+    const animation = confetti.animate([
+        { transform: 'translateY(0) rotate(0deg)', opacity: 1 },
+        { transform: `translateY(100vh) rotate(${Math.random() * 360}deg)`, opacity: 0 }
+    ], {
+        duration: Math.random() * 2000 + 1000,
+        easing: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+    });
+    
+    animation.onfinish = () => confetti.remove();s
+}
+</script>
+{{end}}
