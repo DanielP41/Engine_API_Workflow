@@ -66,6 +66,29 @@ type Config struct {
 	EnableWebInterface bool
 	StaticFilesPath    string
 	TemplatesPath      string
+
+	// 🆕 BACKUP CONFIGURATION - AGREGADO
+	BackupEnabled       bool          `json:"backup_enabled"`
+	BackupInterval      time.Duration `json:"backup_interval"`
+	BackupRetentionDays int           `json:"backup_retention_days"`
+	BackupStorageType   string        `json:"backup_storage_type"`
+	BackupStoragePath   string        `json:"backup_storage_path"`
+	
+	// 🆕 Configuración avanzada de backup
+	BackupCompressionEnabled bool   `json:"backup_compression_enabled"`
+	BackupCompressionLevel   int    `json:"backup_compression_level"`
+	BackupValidationEnabled  bool   `json:"backup_validation_enabled"`
+	BackupNotifyOnSuccess    bool   `json:"backup_notify_on_success"`
+	BackupNotifyOnFailure    bool   `json:"backup_notify_on_failure"`
+	BackupNotificationEmail  string `json:"backup_notification_email"`
+	BackupNotificationWebhook string `json:"backup_notification_webhook"`
+	
+	// 🆕 Configuración de almacenamiento remoto
+	BackupRemoteEnabled bool   `json:"backup_remote_enabled"`
+	BackupS3Bucket      string `json:"backup_s3_bucket"`
+	BackupS3Region      string `json:"backup_s3_region"`
+	BackupS3AccessKey   string `json:"backup_s3_access_key"`
+	BackupS3SecretKey   string `json:"backup_s3_secret_key"`
 }
 
 // ✅ JWTConfig estructura específica para configuración JWT
@@ -88,6 +111,27 @@ type CORSConfig struct {
 	PreflightContinue bool
 }
 
+// 🆕 BackupConfig estructura específica para configuración de backup
+type BackupConfig struct {
+	Enabled            bool          `json:"enabled"`
+	Interval           time.Duration `json:"interval"`
+	RetentionDays      int           `json:"retention_days"`
+	StorageType        string        `json:"storage_type"`
+	StoragePath        string        `json:"storage_path"`
+	CompressionEnabled bool          `json:"compression_enabled"`
+	CompressionLevel   int           `json:"compression_level"`
+	ValidationEnabled  bool          `json:"validation_enabled"`
+	NotifyOnSuccess    bool          `json:"notify_on_success"`
+	NotifyOnFailure    bool          `json:"notify_on_failure"`
+	NotificationEmail  string        `json:"notification_email"`
+	NotificationWebhook string       `json:"notification_webhook"`
+	RemoteEnabled      bool          `json:"remote_enabled"`
+	S3Bucket           string        `json:"s3_bucket"`
+	S3Region           string        `json:"s3_region"`
+	S3AccessKey        string        `json:"s3_access_key"`
+	S3SecretKey        string        `json:"s3_secret_key"`
+}
+
 func Load() *Config {
 	// Cargar archivo .env si existe
 	if err := godotenv.Load(); err != nil {
@@ -98,6 +142,9 @@ func Load() *Config {
 	accessTTL := parseDuration("JWT_ACCESS_TTL", "15m")
 	refreshTTL := parseDuration("JWT_REFRESH_TTL", "168h") // 7 días
 	rateLimitWindow := parseDuration("RATE_LIMIT_WINDOW", "1m")
+
+	// 🆕 Parsear duraciones de backup
+	backupInterval := parseDuration("BACKUP_INTERVAL", "24h")
 
 	// Configuración principal
 	cfg := &Config{
@@ -136,6 +183,29 @@ func Load() *Config {
 		EnableWebInterface: getEnvAsBool("ENABLE_WEB_INTERFACE", true),
 		StaticFilesPath:    getEnv("STATIC_FILES_PATH", "./web/static"),
 		TemplatesPath:      getEnv("TEMPLATES_PATH", "./web/templates"),
+
+		// 🆕 BACKUP CONFIGURATION - NUEVOS CAMPOS
+		BackupEnabled:       getEnvAsBool("BACKUP_ENABLED", false),
+		BackupInterval:      backupInterval,
+		BackupRetentionDays: getEnvAsInt("BACKUP_RETENTION_DAYS", 30),
+		BackupStorageType:   getEnv("BACKUP_STORAGE_TYPE", "local"),
+		BackupStoragePath:   getEnv("BACKUP_STORAGE_PATH", "./backups"),
+		
+		// Configuración avanzada de backup
+		BackupCompressionEnabled: getEnvAsBool("BACKUP_COMPRESSION_ENABLED", true),
+		BackupCompressionLevel:   getEnvAsInt("BACKUP_COMPRESSION_LEVEL", 6),
+		BackupValidationEnabled:  getEnvAsBool("BACKUP_VALIDATION_ENABLED", true),
+		BackupNotifyOnSuccess:    getEnvAsBool("BACKUP_NOTIFY_ON_SUCCESS", false),
+		BackupNotifyOnFailure:    getEnvAsBool("BACKUP_NOTIFY_ON_FAILURE", true),
+		BackupNotificationEmail:  getEnv("BACKUP_NOTIFICATION_EMAIL", ""),
+		BackupNotificationWebhook: getEnv("BACKUP_NOTIFICATION_WEBHOOK", ""),
+		
+		// Configuración de almacenamiento remoto
+		BackupRemoteEnabled: getEnvAsBool("BACKUP_REMOTE_ENABLED", false),
+		BackupS3Bucket:      getEnv("BACKUP_S3_BUCKET", ""),
+		BackupS3Region:      getEnv("BACKUP_S3_REGION", "us-east-1"),
+		BackupS3AccessKey:   getEnv("BACKUP_S3_ACCESS_KEY", ""),
+		BackupS3SecretKey:   getEnv("BACKUP_S3_SECRET_KEY", ""),
 	}
 
 	// Configuración MongoDB con validación
@@ -185,6 +255,11 @@ func (c *Config) Validate() error {
 	// 🆕 Validar CORS
 	if err := c.ValidateCORS(); err != nil {
 		return fmt.Errorf("CORS validation failed: %w", err)
+	}
+
+	// 🆕 Validar Backup
+	if err := c.ValidateBackup(); err != nil {
+		return fmt.Errorf("Backup validation failed: %w", err)
 	}
 
 	return nil
@@ -364,6 +439,101 @@ func (c *Config) ValidateCORS() error {
 	return nil
 }
 
+// 🆕 ValidateBackup valida la configuración de backup
+func (c *Config) ValidateBackup() error {
+	if !c.BackupEnabled {
+		return nil // Backup deshabilitado, no validar
+	}
+
+	// Validar intervalo de backup
+	if c.BackupInterval < 1*time.Hour {
+		return fmt.Errorf("BACKUP_INTERVAL must be at least 1 hour, got %v", c.BackupInterval)
+	}
+
+	if c.BackupInterval > 30*24*time.Hour { // 30 días máximo
+		return fmt.Errorf("BACKUP_INTERVAL should not exceed 30 days, got %v", c.BackupInterval)
+	}
+
+	// Validar días de retención
+	if c.BackupRetentionDays < 1 {
+		return fmt.Errorf("BACKUP_RETENTION_DAYS must be at least 1, got %d", c.BackupRetentionDays)
+	}
+
+	if c.BackupRetentionDays > 365*2 { // 2 años máximo
+		return fmt.Errorf("BACKUP_RETENTION_DAYS should not exceed 730 days, got %d", c.BackupRetentionDays)
+	}
+
+	// Validar tipo de almacenamiento
+	validStorageTypes := []string{"local", "s3", "gcs", "azure"}
+	isValidStorage := false
+	for _, storageType := range validStorageTypes {
+		if c.BackupStorageType == storageType {
+			isValidStorage = true
+			break
+		}
+	}
+	if !isValidStorage {
+		return fmt.Errorf("invalid BACKUP_STORAGE_TYPE: %s (valid: %v)", c.BackupStorageType, validStorageTypes)
+	}
+
+	// Validar ruta de almacenamiento local
+	if c.BackupStorageType == "local" {
+		if c.BackupStoragePath == "" {
+			return fmt.Errorf("BACKUP_STORAGE_PATH cannot be empty for local storage")
+		}
+		
+		// Verificar que la ruta no sea un directorio del sistema crítico
+		dangerousPaths := []string{"/", "/bin", "/boot", "/dev", "/etc", "/lib", "/proc", "/root", "/sbin", "/sys", "/usr", "/var"}
+		for _, dangerousPath := range dangerousPaths {
+			if strings.HasPrefix(c.BackupStoragePath, dangerousPath) {
+				return fmt.Errorf("BACKUP_STORAGE_PATH cannot be in system directory: %s", c.BackupStoragePath)
+			}
+		}
+	}
+
+	// Validar configuración de S3 si está habilitado
+	if c.BackupStorageType == "s3" || c.BackupRemoteEnabled {
+		if c.BackupS3Bucket == "" {
+			return fmt.Errorf("BACKUP_S3_BUCKET is required for S3 storage")
+		}
+		if c.BackupS3AccessKey == "" {
+			return fmt.Errorf("BACKUP_S3_ACCESS_KEY is required for S3 storage")
+		}
+		if c.BackupS3SecretKey == "" {
+			return fmt.Errorf("BACKUP_S3_SECRET_KEY is required for S3 storage")
+		}
+	}
+
+	// Validar nivel de compresión
+	if c.BackupCompressionLevel < 1 || c.BackupCompressionLevel > 9 {
+		return fmt.Errorf("BACKUP_COMPRESSION_LEVEL must be between 1 and 9, got %d", c.BackupCompressionLevel)
+	}
+
+	// Validar configuración de notificaciones
+	if c.BackupNotifyOnSuccess || c.BackupNotifyOnFailure {
+		if c.BackupNotificationEmail == "" && c.BackupNotificationWebhook == "" {
+			return fmt.Errorf("BACKUP_NOTIFICATION_EMAIL or BACKUP_NOTIFICATION_WEBHOOK required when notifications are enabled")
+		}
+	}
+
+	// Advertir sobre configuraciones en producción
+	if c.IsProduction() {
+		if c.BackupStorageType == "local" {
+			log.Printf("Warning: Using local backup storage in production. Consider using remote storage for better reliability.")
+		}
+		
+		if !c.BackupValidationEnabled {
+			log.Printf("Warning: Backup validation is disabled in production. This is not recommended.")
+		}
+		
+		if c.BackupRetentionDays < 7 {
+			log.Printf("Warning: Backup retention is less than 7 days in production. Consider increasing for better recovery options.")
+		}
+	}
+
+	return nil
+}
+
 // ✅ GetJWTConfig retorna configuración específica para JWT
 func (c *Config) GetJWTConfig() JWTConfig {
 	return JWTConfig{
@@ -385,6 +555,29 @@ func (c *Config) GetCORSConfig() CORSConfig {
 		AllowCredentials:  c.CORSAllowCredentials,
 		MaxAge:            c.CORSMaxAge,
 		PreflightContinue: c.CORSPreflightContinue,
+	}
+}
+
+// 🆕 GetBackupConfig retorna configuración específica para backup
+func (c *Config) GetBackupConfig() BackupConfig {
+	return BackupConfig{
+		Enabled:            c.BackupEnabled,
+		Interval:           c.BackupInterval,
+		RetentionDays:      c.BackupRetentionDays,
+		StorageType:        c.BackupStorageType,
+		StoragePath:        c.BackupStoragePath,
+		CompressionEnabled: c.BackupCompressionEnabled,
+		CompressionLevel:   c.BackupCompressionLevel,
+		ValidationEnabled:  c.BackupValidationEnabled,
+		NotifyOnSuccess:    c.BackupNotifyOnSuccess,
+		NotifyOnFailure:    c.BackupNotifyOnFailure,
+		NotificationEmail:  c.BackupNotificationEmail,
+		NotificationWebhook: c.BackupNotificationWebhook,
+		RemoteEnabled:      c.BackupRemoteEnabled,
+		S3Bucket:           c.BackupS3Bucket,
+		S3Region:           c.BackupS3Region,
+		S3AccessKey:        c.BackupS3AccessKey,
+		S3SecretKey:        c.BackupS3SecretKey,
 	}
 }
 
@@ -505,10 +698,6 @@ func calculateEntropy(s string) float64 {
 		return 0
 	}
 
-	// Contar frecuencia de caracteres
-	freq := make(map[rune]float64)
-	for _, char := range s {
-		freq[char]++
 	}
 
 	// Calcular entropía usando fórmula de Shannon
@@ -596,11 +785,32 @@ func (c *Config) LogConfig() {
 		log.Printf("  CORS Methods: %v", c.CORSAllowedMethods)
 	}
 
+	// 🆕 Backup Configuration Log
+	if c.BackupEnabled {
+		log.Printf("  Backup Enabled: %v", c.BackupEnabled)
+		log.Printf("  Backup Interval: %v", c.BackupInterval)
+		log.Printf("  Backup Retention: %d days", c.BackupRetentionDays)
+		log.Printf("  Backup Storage: %s (%s)", c.BackupStorageType, c.BackupStoragePath)
+		log.Printf("  Backup Compression: %v (level %d)", c.BackupCompressionEnabled, c.BackupCompressionLevel)
+		log.Printf("  Backup Validation: %v", c.BackupValidationEnabled)
+		log.Printf("  Backup Notifications: Success=%v, Failure=%v", c.BackupNotifyOnSuccess, c.BackupNotifyOnFailure)
+		if c.BackupRemoteEnabled {
+			log.Printf("  Backup Remote Storage: S3 Bucket=%s, Region=%s", c.BackupS3Bucket, c.BackupS3Region)
+		}
+	} else {
+		log.Printf("  Backup: Disabled")
+	}
+
 	// ✅ Nunca logear secrets
 	secretLength := len(c.JWTSecret)
 	if secretLength >= 4 {
 		log.Printf("  JWT Secret: [%d characters] %s***", secretLength, c.JWTSecret[:4])
 	} else {
 		log.Printf("  JWT Secret: [%d characters] ***", secretLength)
+	}
+
+	// 🆕 Backup secrets logging (solo longitud)
+	if c.BackupS3SecretKey != "" {
+		log.Printf("  Backup S3 Secret: [%d characters] ***", len(c.BackupS3SecretKey))
 	}
 }

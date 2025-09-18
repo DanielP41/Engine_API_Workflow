@@ -18,6 +18,7 @@ type RouteConfig struct {
 	TriggerHandler   *handlers.TriggerHandler
 	DashboardHandler *handlers.DashboardHandler
 	WorkerHandler    *handlers.WorkerHandler
+	BackupHandler    *handlers.BackupHandler
 	JWTService       jwt.JWTService
 	Logger           *zap.Logger
 }
@@ -63,6 +64,34 @@ func SetupRoutes(app *fiber.App, config *RouteConfig) {
 		workflows.Put("/:id", config.WorkflowHandler.UpdateWorkflow)
 		workflows.Delete("/:id", config.WorkflowHandler.DeleteWorkflow)
 		workflows.Post("/:id/clone", config.WorkflowHandler.CloneWorkflow)
+	}
+
+	// RUTAS DE BACKUP
+	if config.BackupHandler != nil {
+		backup := protected.Group("/backup")
+
+		// Rutas básicas de backup (requieren autenticación)
+		backup.Get("/status", config.BackupHandler.GetBackupStatus)
+		backup.Get("/list", config.BackupHandler.ListBackups)
+		backup.Get("/:id", config.BackupHandler.GetBackupInfo)
+		backup.Post("/:id/validate", config.BackupHandler.ValidateBackup)
+
+		// Middleware para operaciones que requieren rol admin
+		adminMiddleware := middleware.NewAuthMiddleware(config.JWTService, nil).RequireRole("admin")
+
+		// Rutas que requieren permisos de admin
+		backup.Post("/create", adminMiddleware, config.BackupHandler.CreateBackup)
+		backup.Delete("/:id", adminMiddleware, config.BackupHandler.DeleteBackup)
+		backup.Post("/:id/restore", adminMiddleware, config.BackupHandler.RestoreBackup)
+		backup.Get("/:id/download", adminMiddleware, config.BackupHandler.DownloadBackup)
+
+		// Rutas de automatización (solo admin)
+		backupAuto := backup.Group("/automated", adminMiddleware)
+		backupAuto.Post("/start", config.BackupHandler.StartAutomatedBackups)
+		backupAuto.Post("/stop", config.BackupHandler.StopAutomatedBackups)
+		backupAuto.Post("/cleanup", config.BackupHandler.CleanupOldBackups)
+
+		config.Logger.Info("Backup routes configured successfully")
 	}
 
 	// Rutas de workers
@@ -137,6 +166,12 @@ func SetupMonitoringRoutes(app *fiber.App, config *RouteConfig) {
 		// Health detallado para sistemas de monitoreo
 		monitoring.Get("/health/detailed", config.WorkerHandler.GetHealthStatus)
 	}
+
+	//  Métricas de backup para monitoreo externo (sin autenticación)
+	if config.BackupHandler != nil {
+		monitoring.Get("/backup/status", config.BackupHandler.GetBackupStatus)
+		config.Logger.Info("Backup monitoring routes configured")
+	}
 }
 
 // SetupAdminRoutes configurar rutas de administración
@@ -152,6 +187,16 @@ func SetupAdminRoutes(app *fiber.App, config *RouteConfig) {
 		system.Post("/workers/scale", config.WorkerHandler.ScaleWorkerPool)
 		system.Post("/metrics/reset", config.WorkerHandler.ResetMetrics)
 		system.Post("/queue/clear", config.WorkerHandler.ClearQueue)
+	}
+
+	//  Gestión de backup (solo admin)
+	if config.BackupHandler != nil {
+		backupAdmin := admin.Group("/backup")
+		backupAdmin.Post("/create", config.BackupHandler.CreateBackup)
+		backupAdmin.Post("/force-cleanup", config.BackupHandler.CleanupOldBackups)
+		backupAdmin.Get("/system-status", config.BackupHandler.GetBackupStatus)
+
+		config.Logger.Info("Admin backup routes configured")
 	}
 }
 
@@ -171,7 +216,8 @@ func SetupAllRoutes(app *fiber.App, config *RouteConfig) {
 		zap.Bool("auth_routes", config.AuthHandler != nil),
 		zap.Bool("workflow_routes", config.WorkflowHandler != nil),
 		zap.Bool("worker_routes", config.WorkerHandler != nil),
-		zap.Bool("dashboard_routes", config.DashboardHandler != nil))
+		zap.Bool("dashboard_routes", config.DashboardHandler != nil),
+		zap.Bool("backup_routes", config.BackupHandler != nil)) // AGREGADO
 }
 
 func ValidateRouteConfig(config *RouteConfig) error {
@@ -198,6 +244,10 @@ func ValidateRouteConfig(config *RouteConfig) error {
 	if config.DashboardHandler == nil {
 		config.Logger.Warn("Dashboard handler not configured - dashboard routes will be skipped")
 	}
+	//  AGREGADO
+	if config.BackupHandler == nil {
+		config.Logger.Warn("Backup handler not configured - backup routes will be skipped")
+	}
 
 	return nil
 }
@@ -214,6 +264,7 @@ func GetRouteInfo() map[string]interface{} {
 			"retries",
 			"monitoring",
 			"admin",
+			"backup", //  AGREGADO
 		},
 		"endpoints": map[string]interface{}{
 			"auth":       []string{"/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/refresh"},
@@ -221,6 +272,50 @@ func GetRouteInfo() map[string]interface{} {
 			"workers":    []string{"/api/v1/workers/stats", "/api/v1/workers/health", "/api/v1/workers/advanced/stats"},
 			"monitoring": []string{"/monitoring/health", "/monitoring/status", "/monitoring/metrics"},
 			"admin":      []string{"/admin/system/stats"},
+			"backup":     []string{"/api/v1/backup/status", "/api/v1/backup/list", "/api/v1/backup/create"}, //  AGREGADO
+		},
+	}
+}
+
+// GetBackupRouteInfo obtener información de rutas específicas de backup
+func GetBackupRouteInfo() map[string]interface{} {
+	return map[string]interface{}{
+		"public_routes": []string{
+			// Ninguna ruta de backup es pública por seguridad
+		},
+		"authenticated_routes": []string{
+			"GET /api/v1/backup/status",
+			"GET /api/v1/backup/list",
+			"GET /api/v1/backup/:id",
+			"POST /api/v1/backup/:id/validate",
+		},
+		"admin_only_routes": []string{
+			"POST /api/v1/backup/create",
+			"DELETE /api/v1/backup/:id",
+			"POST /api/v1/backup/:id/restore",
+			"GET /api/v1/backup/:id/download",
+			"POST /api/v1/backup/automated/start",
+			"POST /api/v1/backup/automated/stop",
+			"POST /api/v1/backup/automated/cleanup",
+		},
+		"monitoring_routes": []string{
+			"GET /monitoring/backup/status",
+		},
+		"admin_panel_routes": []string{
+			"POST /admin/backup/create",
+			"POST /admin/backup/force-cleanup",
+			"GET /admin/backup/system-status",
+		},
+		"supported_backup_types": []string{
+			"full", "incremental", "mongodb", "redis", "config",
+		},
+		"required_permissions": map[string]string{
+			"view_status":      "authenticated_user",
+			"list_backups":     "authenticated_user",
+			"create_backup":    "admin",
+			"delete_backup":    "admin",
+			"restore_backup":   "admin",
+			"manage_automated": "admin",
 		},
 	}
 }
@@ -261,6 +356,52 @@ func GetWorkerRouteInfo() map[string]interface{} {
 	}
 }
 
+// GetAllRouteInfo obtener información completa de todas las rutas
+func GetAllRouteInfo() map[string]interface{} {
+	return map[string]interface{}{
+		"api_version": "2.0.0",
+		"service":     "engine-api-workflow",
+		"routes": map[string]interface{}{
+			"general": GetRouteInfo(),
+			"workers": GetWorkerRouteInfo(),
+			"backup":  GetBackupRouteInfo(), // AGREGADO
+		},
+		"security": map[string]interface{}{
+			"authentication_required": []string{
+				"/api/v1/auth/profile",
+				"/api/v1/workflows/*",
+				"/api/v1/workers/*",
+				"/api/v1/backup/*", // AGREGADO
+			},
+			"admin_required": []string{
+				"/admin/*",
+				"/api/v1/backup/create",
+				"/api/v1/backup/*/restore",
+				"/api/v1/backup/*/delete",
+				"/api/v1/backup/automated/*", // AGREGADO
+			},
+			"public_endpoints": []string{
+				"/api/v1/health",
+				"/api/v1/auth/register",
+				"/api/v1/auth/login",
+				"/api/v1/auth/refresh",
+				"/monitoring/health",
+			},
+		},
+		"features": []string{
+			"jwt_authentication",
+			"role_based_access_control",
+			"workflow_management",
+			"worker_pool_management",
+			"advanced_metrics",
+			"automated_backups",  // AGREGADO
+			"backup_restoration", // AGREGADO
+			"system_monitoring",
+			"admin_panel",
+		},
+	}
+}
+
 // LogRouteAccess middleware de logging para rutas
 func LogRouteAccess(logger *zap.Logger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
@@ -269,12 +410,22 @@ func LogRouteAccess(logger *zap.Logger) fiber.Handler {
 		err := c.Next()
 
 		duration := time.Since(start)
-		logger.Info("Route accessed",
+
+		// MEJORADO: Logging especial para rutas críticas de backup
+		logLevel := zap.InfoLevel
+		if c.Path() == "/api/v1/backup/create" ||
+			c.Path() == "/api/v1/backup/*/restore" ||
+			c.Path() == "/api/v1/backup/*/delete" {
+			logLevel = zap.WarnLevel // Nivel de advertencia para operaciones críticas
+		}
+
+		logger.Log(logLevel, "Route accessed",
 			zap.String("method", c.Method()),
 			zap.String("path", c.Path()),
 			zap.Int("status", c.Response().StatusCode()),
 			zap.Duration("duration", duration),
-			zap.String("ip", c.IP()))
+			zap.String("ip", c.IP()),
+			zap.String("user_agent", c.Get("User-Agent")))
 
 		return err
 	}
