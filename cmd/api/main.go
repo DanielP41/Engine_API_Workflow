@@ -24,6 +24,7 @@ import (
 	"Engine_API_Workflow/internal/services"
 	"Engine_API_Workflow/internal/utils"
 	"Engine_API_Workflow/internal/worker"
+	"Engine_API_Workflow/pkg/cache"
 	"Engine_API_Workflow/pkg/database"
 	"Engine_API_Workflow/pkg/jwt"
 	"Engine_API_Workflow/pkg/logger"
@@ -43,7 +44,8 @@ func main() {
 
 	appLogger.Info("Starting Engine API Workflow",
 		"version", "2.0.0",
-		"environment", cfg.Environment)
+		"environment", cfg.Environment,
+		"cache_enabled", cfg.IsCacheEnabled())
 
 	// Conectar a MongoDB
 	appLogger.Info("Connecting to MongoDB...")
@@ -70,6 +72,35 @@ func main() {
 		}
 	}()
 	appLogger.Info("Connected to Redis successfully")
+
+	// 🆕 INICIALIZAR SISTEMA DE CACHÉ
+	var cacheManager *cache.CacheManager
+	if cfg.IsCacheEnabled() {
+		appLogger.Info("Initializing cache system...")
+
+		// Configurar caché
+		cacheConfig := cfg.GetCacheConfig()
+
+		// Validar configuración de caché
+		if err := cfg.ValidateCacheConfig(); err != nil {
+			appLogger.Fatal("Invalid cache configuration", "error", err)
+		}
+
+		// Crear cache manager
+		cacheManager = cache.NewCacheManager(redisClient, cacheConfig, zapLogger)
+
+		// Verificar conectividad del caché
+		if err := cacheManager.Ping(context.Background()); err != nil {
+			appLogger.Fatal("Failed to connect to cache", "error", err)
+		}
+
+		appLogger.Info("Cache system initialized successfully",
+			"default_ttl", cacheConfig.DefaultTTL,
+			"max_memory", cacheConfig.MaxMemory,
+			"serializer", cacheConfig.Serializer)
+	} else {
+		appLogger.Info("Cache system disabled")
+	}
 
 	// Inicializar base de datos MongoDB
 	mongoDB := mongoClient.Database(cfg.MongoDatabase)
@@ -111,10 +142,58 @@ func main() {
 		queueRepo,
 	)
 
-	// Inicializar servicios individuales
-	authService := services.NewAuthService(userRepo)
-	workflowService := services.NewWorkflowService(workflowRepo, userRepo)
-	logService := services.NewLogService(logRepo, workflowRepo, userRepo)
+	// 🆕 INICIALIZAR SERVICIOS BASE (SIN CACHÉ)
+	baseAuthService := services.NewAuthService(userRepo)
+	baseWorkflowService := services.NewWorkflowService(workflowRepo, userRepo)
+	baseLogService := services.NewLogService(logRepo, workflowRepo, userRepo)
+	baseDashboardService := services.NewDashboardService(
+		metricsService,
+		workflowRepo,
+		logRepo,
+		userRepo,
+		queueRepo,
+	)
+
+	// 🆕 CREAR SERVICIOS CON CACHÉ SI ESTÁ HABILITADO
+	var authService services.AuthService
+	var workflowService services.WorkflowService
+	var logService services.LogService
+	var dashboardService services.DashboardService
+
+	if cfg.IsCacheEnabled() && cacheManager != nil {
+		appLogger.Info("Creating cached services...")
+
+		// Crear servicios con caché
+		authService = baseAuthService // Auth service no necesita caché por seguridad
+		workflowService = services.NewCachedWorkflowService(
+			baseWorkflowService,
+			workflowRepo,
+			userRepo,
+			cacheManager,
+			zapLogger,
+		)
+		logService = baseLogService // Log service sin caché para consistencia
+		dashboardService = services.NewCachedDashboardService(
+			baseDashboardService,
+			metricsService,
+			workflowRepo,
+			logRepo,
+			userRepo,
+			queueRepo,
+			cacheManager,
+			zapLogger,
+		)
+
+		appLogger.Info("Cached services created successfully")
+	} else {
+		appLogger.Info("Using non-cached services")
+		authService = baseAuthService
+		workflowService = baseWorkflowService
+		logService = baseLogService
+		dashboardService = baseDashboardService
+	}
+
+	// Otros servicios sin caché
 	queueService := services.NewQueueService(redisClient, zapLogger)
 
 	// Inicializar BackupService
@@ -125,15 +204,6 @@ func main() {
 		userRepo,
 		workflowRepo,
 		logRepo,
-		queueRepo,
-	)
-
-	// Inicializar DashboardService con MetricsService
-	dashboardService := services.NewDashboardService(
-		metricsService,
-		workflowRepo,
-		logRepo,
-		userRepo,
 		queueRepo,
 	)
 
@@ -182,6 +252,13 @@ func main() {
 
 	// Crear BackupHandler
 	backupHandler := handlers.NewBackupHandler(backupService, zapLogger)
+
+	// 🆕 CREAR CACHE HANDLER SI ESTÁ HABILITADO
+	var cacheHandler *handlers.CacheHandler
+	if cfg.IsCacheEnabled() && cacheManager != nil {
+		cacheHandler = handlers.NewCacheHandler(cacheManager, zapLogger)
+		appLogger.Info("Cache handler created")
+	}
 
 	// Crear WebHandler
 	webHandler := handlers.NewWebHandler(
@@ -252,7 +329,7 @@ func main() {
 	// Configurar rutas básicas
 	setupBasicRoutes(app, appLogger)
 	setupWebHandlerRoutes(app, webHandler, authMiddleware)
-	setupAPIRoutes(app, authHandler, workflowHandler, dashboardHandler, workerHandler, triggerHandler, backupHandler, authMiddleware, appLogger)
+	setupAPIRoutes(app, authHandler, workflowHandler, dashboardHandler, workerHandler, triggerHandler, backupHandler, cacheHandler, authMiddleware, appLogger)
 
 	appLogger.Info("Routes configured successfully")
 
@@ -267,6 +344,19 @@ func main() {
 	if cfg.BackupEnabled {
 		if err := ensureBackupDirectoryExists(cfg.BackupStoragePath); err != nil {
 			appLogger.Warn("Backup directory setup failed", "error", err)
+		}
+	}
+
+	// 🆕 EJECUTAR WARMUP DE CACHÉ SI ESTÁ HABILITADO
+	if cfg.IsCacheEnabled() && cacheManager != nil {
+		appLogger.Info("Executing initial cache warmup...")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := cacheManager.ExecuteWarmup(ctx); err != nil {
+			appLogger.Warn("Initial cache warmup failed", "error", err)
+		} else {
+			appLogger.Info("Initial cache warmup completed successfully")
 		}
 	}
 
@@ -295,14 +385,15 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	// Iniciar servicios en background
-	go startBackgroundServices(dashboardService, backupService, appLogger, cfg)
+	go startBackgroundServices(dashboardService, backupService, cacheManager, appLogger, cfg)
 
 	// Iniciar servidor
 	go func() {
 		addr := fmt.Sprintf(":%s", cfg.ServerPort)
 		appLogger.Info("Starting HTTP server",
 			"address", addr,
-			"health_check", fmt.Sprintf("http://localhost:%s/api/v1/health", cfg.ServerPort))
+			"health_check", fmt.Sprintf("http://localhost:%s/api/v1/health", cfg.ServerPort),
+			"cache_enabled", cfg.IsCacheEnabled())
 
 		if err := app.Listen(addr); err != nil {
 			appLogger.Error("Server failed to start", "error", err)
@@ -313,6 +404,16 @@ func main() {
 	// Esperar señal
 	<-sigChan
 	appLogger.Info("Shutting down server...")
+
+	// 🆕 CERRAR SISTEMA DE CACHÉ
+	if cfg.IsCacheEnabled() && cacheManager != nil {
+		appLogger.Info("Closing cache system...")
+		if err := cacheManager.Close(); err != nil {
+			appLogger.Error("Error closing cache system", "error", err)
+		} else {
+			appLogger.Info("Cache system closed successfully")
+		}
+	}
 
 	// Parar backups automatizados
 	if cfg.BackupEnabled && cfg.BackupAutoEnabled {
@@ -336,6 +437,257 @@ func main() {
 	}
 
 	appLogger.Info("Server exited gracefully")
+}
+
+// setupAPIRoutes configura rutas de la API (actualizada con cache routes)
+func setupAPIRoutes(app *fiber.App,
+	authHandler *handlers.AuthHandler,
+	workflowHandler *handlers.WorkflowHandler,
+	dashboardHandler *handlers.DashboardHandler,
+	workerHandler *handlers.WorkerHandler,
+	triggerHandler *handlers.TriggerHandler,
+	backupHandler *handlers.BackupHandler,
+	cacheHandler *handlers.CacheHandler, // 🆕 NUEVO PARÁMETRO
+	authMiddleware *middleware.AuthMiddleware,
+	logger *logger.Logger) {
+
+	// API v1 group
+	api := app.Group("/api/v1")
+
+	// Health check (público)
+	api.Get("/health", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"status":    "ok",
+			"timestamp": time.Now(),
+			"version":   "2.0.0",
+			"features": []string{
+				"authentication",
+				"workflows",
+				"backup",
+				"cache", // 🆕 NUEVA FEATURE
+			},
+		})
+	})
+
+	// Rutas de autenticación (públicas)
+	auth := api.Group("/auth")
+	auth.Post("/register", authHandler.Register)
+	auth.Post("/login", authHandler.Login)
+	auth.Post("/refresh", authHandler.RefreshToken)
+
+	// Rutas protegidas
+	protected := api.Group("/")
+	protected.Use(authMiddleware.RequireAuth())
+
+	// Auth protegidas
+	protected.Post("/auth/logout", authHandler.Logout)
+	protected.Get("/auth/profile", authHandler.GetProfile)
+	protected.Put("/auth/profile", authHandler.UpdateProfile)
+	protected.Put("/auth/change-password", authHandler.ChangePassword)
+
+	// Workflows
+	workflows := protected.Group("/workflows")
+	workflows.Post("/", workflowHandler.CreateWorkflow)
+	workflows.Get("/", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"message": "List workflows - coming soon"})
+	})
+	workflows.Get("/:id", workflowHandler.GetWorkflow)
+	workflows.Put("/:id", workflowHandler.UpdateWorkflow)
+	workflows.Delete("/:id", workflowHandler.DeleteWorkflow)
+	workflows.Post("/:id/clone", workflowHandler.CloneWorkflow)
+	workflows.Post("/:id/execute", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"message": "Execute workflow - coming soon"})
+	})
+
+	// Dashboard
+	dashboard := protected.Group("/dashboard")
+	dashboard.Get("/", dashboardHandler.GetDashboard)
+	dashboard.Get("/stats", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"message": "Dashboard stats - coming soon"})
+	})
+	dashboard.Get("/summary", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"message": "Dashboard summary - coming soon"})
+	})
+	dashboard.Get("/health", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "healthy", "timestamp": time.Now()})
+	})
+	dashboard.Get("/recent-activity", dashboardHandler.GetRecentActivity)
+
+	// Workers
+	workers := protected.Group("/workers")
+	workers.Get("/stats", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"active_workers": 3,
+			"queue_length":   0,
+			"processed":      0,
+			"timestamp":      time.Now(),
+		})
+	})
+	workers.Get("/status", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"status": "running",
+			"workers": map[string]interface{}{
+				"total":  3,
+				"active": 3,
+				"idle":   0,
+			},
+		})
+	})
+	workers.Post("/start", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"message": "Workers started"})
+	})
+	workers.Post("/stop", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"message": "Workers stopped"})
+	})
+
+	// Backup routes (protegidas)
+	backups := protected.Group("/backups")
+	backups.Post("/", backupHandler.CreateBackup)
+	backups.Get("/", backupHandler.ListBackups)
+	backups.Get("/:id", backupHandler.GetBackup)
+	backups.Delete("/:id", backupHandler.DeleteBackup)
+	backups.Post("/:id/restore", backupHandler.RestoreBackup)
+	backups.Post("/:id/validate", backupHandler.ValidateBackup)
+	backups.Get("/status", backupHandler.GetBackupStatus)
+
+	// Backup management
+	backups.Post("/automated/start", backupHandler.StartAutomatedBackups)
+	backups.Post("/automated/stop", backupHandler.StopAutomatedBackups)
+	backups.Post("/cleanup", backupHandler.CleanupOldBackups)
+
+	// 🆕 CACHE ROUTES (SI ESTÁ HABILITADO)
+	if cacheHandler != nil {
+		cache := protected.Group("/cache")
+
+		// Operaciones básicas de caché
+		cache.Get("/stats", cacheHandler.GetStats)
+		cache.Get("/health", cacheHandler.GetHealth)
+		cache.Get("/keys", cacheHandler.GetKeys)
+
+		// Operaciones de administración (solo admin)
+		adminMiddleware := authMiddleware.RequireRole("admin")
+		cacheAdmin := cache.Group("/admin", adminMiddleware)
+		cacheAdmin.Delete("/clear", cacheHandler.ClearCache)
+		cacheAdmin.Delete("/pattern/:pattern", cacheHandler.ClearPattern)
+		cacheAdmin.Post("/warmup", cacheHandler.ExecuteWarmup)
+		cacheAdmin.Get("/metrics", cacheHandler.GetMetrics)
+
+		logger.Info("Cache routes configured")
+	}
+
+	// Triggers (públicos para webhooks)
+	triggers := api.Group("/triggers")
+	triggers.Post("/webhook/:webhook_id", func(c *fiber.Ctx) error {
+		webhookID := c.Params("webhook_id")
+		return c.JSON(fiber.Map{
+			"message":    "Webhook received",
+			"webhook_id": webhookID,
+			"timestamp":  time.Now(),
+		})
+	})
+
+	// Triggers protegidos
+	protectedTriggers := protected.Group("/triggers")
+	protectedTriggers.Post("/manual", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"message": "Manual trigger - coming soon"})
+	})
+
+	logger.Info("API routes configured with cache endpoints")
+}
+
+// startBackgroundServices servicios en background (actualizado con cache)
+func startBackgroundServices(dashboardService services.DashboardService, backupService services.BackupService, cacheManager *cache.CacheManager, appLogger *logger.Logger, cfg *config.Config) {
+	appLogger.Info("Starting background services")
+
+	// Ticker para servicios de dashboard
+	dashboardTicker := time.NewTicker(30 * time.Second)
+	defer dashboardTicker.Stop()
+
+	// Ticker para limpieza de backups (cada hora)
+	var backupCleanupTicker *time.Ticker
+	if cfg.BackupEnabled {
+		backupCleanupTicker = time.NewTicker(1 * time.Hour)
+		defer backupCleanupTicker.Stop()
+	}
+
+	// 🆕 TICKER PARA LIMPIEZA DE CACHÉ
+	var cacheCleanupTicker *time.Ticker
+	if cfg.IsCacheEnabled() && cacheManager != nil {
+		cacheCleanupTicker = time.NewTicker(cfg.Cache.CleanupInterval)
+		defer cacheCleanupTicker.Stop()
+		appLogger.Info("Cache cleanup scheduled", "interval", cfg.Cache.CleanupInterval)
+	}
+
+	// 🆕 TICKER PARA WARMUP PERIÓDICO DE CACHÉ
+	var cacheWarmupTicker *time.Ticker
+	if cfg.IsCacheEnabled() && cacheManager != nil && cfg.Cache.WarmupEnabled {
+		cacheWarmupTicker = time.NewTicker(5 * time.Minute) // Warmup cada 5 minutos
+		defer cacheWarmupTicker.Stop()
+		appLogger.Info("Cache warmup scheduled", "interval", "5m")
+	}
+
+	for {
+		select {
+		case <-dashboardTicker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := dashboardService.RefreshDashboardData(ctx); err != nil {
+				appLogger.Debug("Failed to refresh dashboard data", "error", err)
+			}
+			cancel()
+
+		case <-func() <-chan time.Time {
+			if backupCleanupTicker != nil {
+				return backupCleanupTicker.C
+			}
+			return make(<-chan time.Time)
+		}():
+			if cfg.BackupEnabled {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				if err := backupService.CleanupOldBackups(ctx); err != nil {
+					appLogger.Debug("Failed to cleanup old backups", "error", err)
+				}
+				cancel()
+			}
+
+		// 🆕 LIMPIEZA PERIÓDICA DE CACHÉ
+		case <-func() <-chan time.Time {
+			if cacheCleanupTicker != nil {
+				return cacheCleanupTicker.C
+			}
+			return make(<-chan time.Time)
+		}():
+			if cfg.IsCacheEnabled() && cacheManager != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+				// Obtener estadísticas del caché
+				if stats, err := cacheManager.GetStats(ctx); err == nil {
+					appLogger.Debug("Cache statistics",
+						"hit_rate", fmt.Sprintf("%.2f%%", stats.HitRate*100),
+						"total_keys", stats.TotalKeys,
+						"used_memory_mb", stats.UsedMemory/(1024*1024))
+				}
+
+				cancel()
+			}
+
+		// 🆕 WARMUP PERIÓDICO DE CACHÉ
+		case <-func() <-chan time.Time {
+			if cacheWarmupTicker != nil {
+				return cacheWarmupTicker.C
+			}
+			return make(<-chan time.Time)
+		}():
+			if cfg.IsCacheEnabled() && cacheManager != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				if err := cacheManager.ExecuteWarmup(ctx); err != nil {
+					appLogger.Debug("Periodic cache warmup failed", "error", err)
+				} else {
+					appLogger.Debug("Periodic cache warmup completed")
+				}
+				cancel()
+			}
+		}
+	}
 }
 
 // setupBasicRoutes configura rutas básicas
@@ -374,144 +726,6 @@ func setupWebHandlerRoutes(app *fiber.App, webHandler *handlers.WebHandler, auth
 	})
 }
 
-// setupAPIRoutes configura rutas de la API (actualizada con backup routes)
-func setupAPIRoutes(app *fiber.App,
-	authHandler *handlers.AuthHandler,
-	workflowHandler *handlers.WorkflowHandler,
-	dashboardHandler *handlers.DashboardHandler,
-	workerHandler *handlers.WorkerHandler,
-	triggerHandler *handlers.TriggerHandler,
-	backupHandler *handlers.BackupHandler,
-	authMiddleware *middleware.AuthMiddleware,
-	logger *logger.Logger) {
-
-	// API v1 group
-	api := app.Group("/api/v1")
-
-	// Health check (público)
-	api.Get("/health", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
-			"status":    "ok",
-			"timestamp": time.Now(),
-			"version":   "2.0.0",
-		})
-	})
-
-	// Rutas de autenticación (públicas)
-	auth := api.Group("/auth")
-	auth.Post("/register", authHandler.Register)
-	auth.Post("/login", authHandler.Login)
-	auth.Post("/refresh", authHandler.RefreshToken)
-
-	// Rutas protegidas
-	protected := api.Group("/")
-	protected.Use(authMiddleware.RequireAuth())
-
-	// Auth protegidas
-	protected.Post("/auth/logout", authHandler.Logout)
-	protected.Get("/auth/profile", authHandler.GetProfile)
-	protected.Put("/auth/profile", authHandler.UpdateProfile)
-	protected.Put("/auth/change-password", authHandler.ChangePassword)
-
-	// Workflows
-	workflows := protected.Group("/workflows")
-	workflows.Post("/", workflowHandler.CreateWorkflow)
-	workflows.Get("/", func(c *fiber.Ctx) error {
-		// Implementación básica para ListWorkflows
-		return c.JSON(fiber.Map{"message": "List workflows - coming soon"})
-	})
-	workflows.Get("/:id", workflowHandler.GetWorkflow)
-	workflows.Put("/:id", workflowHandler.UpdateWorkflow)
-	workflows.Delete("/:id", workflowHandler.DeleteWorkflow)
-	workflows.Post("/:id/clone", workflowHandler.CloneWorkflow)
-	workflows.Post("/:id/execute", func(c *fiber.Ctx) error {
-		// Implementación básica para ExecuteWorkflow
-		return c.JSON(fiber.Map{"message": "Execute workflow - coming soon"})
-	})
-
-	// Dashboard
-	dashboard := protected.Group("/dashboard")
-	dashboard.Get("/", dashboardHandler.GetDashboard)
-	dashboard.Get("/stats", func(c *fiber.Ctx) error {
-		// Implementación básica para GetStats
-		return c.JSON(fiber.Map{"message": "Dashboard stats - coming soon"})
-	})
-	dashboard.Get("/summary", func(c *fiber.Ctx) error {
-		// Implementación básica para GetSummary
-		return c.JSON(fiber.Map{"message": "Dashboard summary - coming soon"})
-	})
-	dashboard.Get("/health", func(c *fiber.Ctx) error {
-		// Implementación básica para GetSystemHealth
-		return c.JSON(fiber.Map{"status": "healthy", "timestamp": time.Now()})
-	})
-	dashboard.Get("/recent-activity", dashboardHandler.GetRecentActivity)
-
-	// Workers
-	workers := protected.Group("/workers")
-	workers.Get("/stats", func(c *fiber.Ctx) error {
-		// Implementación básica para worker stats
-		return c.JSON(fiber.Map{
-			"active_workers": 3,
-			"queue_length":   0,
-			"processed":      0,
-			"timestamp":      time.Now(),
-		})
-	})
-	workers.Get("/status", func(c *fiber.Ctx) error {
-		// Implementación básica para worker status
-		return c.JSON(fiber.Map{
-			"status": "running",
-			"workers": map[string]interface{}{
-				"total":  3,
-				"active": 3,
-				"idle":   0,
-			},
-		})
-	})
-	workers.Post("/start", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"message": "Workers started"})
-	})
-	workers.Post("/stop", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"message": "Workers stopped"})
-	})
-
-	// Backup routes (protegidas)
-	backups := protected.Group("/backups")
-	backups.Post("/", backupHandler.CreateBackup)
-	backups.Get("/", backupHandler.ListBackups)
-	backups.Get("/:id", backupHandler.GetBackup)
-	backups.Delete("/:id", backupHandler.DeleteBackup)
-	backups.Post("/:id/restore", backupHandler.RestoreBackup)
-	backups.Post("/:id/validate", backupHandler.ValidateBackup)
-	backups.Get("/status", backupHandler.GetBackupStatus)
-
-	// Backup management
-	backups.Post("/automated/start", backupHandler.StartAutomatedBackups)
-	backups.Post("/automated/stop", backupHandler.StopAutomatedBackups)
-	backups.Post("/cleanup", backupHandler.CleanupOldBackups)
-
-	// Triggers (públicos para webhooks)
-	triggers := api.Group("/triggers")
-	triggers.Post("/webhook/:webhook_id", func(c *fiber.Ctx) error {
-		// Implementación básica para HandleWebhook
-		webhookID := c.Params("webhook_id")
-		return c.JSON(fiber.Map{
-			"message":    "Webhook received",
-			"webhook_id": webhookID,
-			"timestamp":  time.Now(),
-		})
-	})
-
-	// Triggers protegidos
-	protectedTriggers := protected.Group("/triggers")
-	protectedTriggers.Post("/manual", func(c *fiber.Ctx) error {
-		// Implementación básica para TriggerManual
-		return c.JSON(fiber.Map{"message": "Manual trigger - coming soon"})
-	})
-
-	logger.Info("API routes configured with backup endpoints")
-}
-
 // customErrorHandler maneja errores
 func customErrorHandler(zapLogger *zap.Logger) fiber.ErrorHandler {
 	return func(c *fiber.Ctx, err error) error {
@@ -543,7 +757,7 @@ func ensureWebDirectoryExists() error {
 		}
 	}
 
-	// HTML básico
+	// HTML básico actualizado con caché
 	indexPath := "./web/templates/dashboard.html"
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
 		basicHTML := `<!DOCTYPE html>
@@ -557,20 +771,22 @@ func ensureWebDirectoryExists() error {
         .header { background: white; padding: 30px; border-radius: 8px; margin-bottom: 20px; }
         h1 { color: #333; margin: 0; }
         .status { color: #28a745; font-weight: bold; }
-        .links { display: flex; gap: 10px; margin: 20px 0; }
+        .links { display: flex; gap: 10px; margin: 20px 0; flex-wrap: wrap; }
         .links a { background: #007bff; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px; }
+        .cache-indicator { background: #17a2b8; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>Engine API Workflow v2.0</h1>
-            <p class="status">Sistema Operacional</p>
+            <p class="status">Sistema Operacional con Caché Activo</p>
             <div class="links">
                 <a href="/api/v1/health">Health Check</a>
                 <a href="/api/v1/workers/stats">Workers</a>
                 <a href="/api/v1/dashboard/stats">Dashboard</a>
                 <a href="/api/v1/backups/status">Backup Status</a>
+                <a href="/api/v1/cache/stats" class="cache-indicator">Cache Stats</a>
             </div>
         </div>
     </div>
@@ -590,48 +806,6 @@ func ensureBackupDirectoryExists(backupPath string) error {
 	}
 
 	return os.MkdirAll(backupPath, 0755)
-}
-
-// startBackgroundServices servicios en background (actualizado con backup)
-func startBackgroundServices(dashboardService services.DashboardService, backupService services.BackupService, appLogger *logger.Logger, cfg *config.Config) {
-	appLogger.Info("Starting background services")
-
-	// Ticker para servicios de dashboard
-	dashboardTicker := time.NewTicker(30 * time.Second)
-	defer dashboardTicker.Stop()
-
-	// Ticker para limpieza de backups (cada hora)
-	var backupCleanupTicker *time.Ticker
-	if cfg.BackupEnabled {
-		backupCleanupTicker = time.NewTicker(1 * time.Hour)
-		defer backupCleanupTicker.Stop()
-	}
-
-	for {
-		select {
-		case <-dashboardTicker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			if err := dashboardService.RefreshDashboardData(ctx); err != nil {
-				appLogger.Debug("Failed to refresh dashboard data", "error", err)
-			}
-			cancel()
-
-		case <-func() <-chan time.Time {
-			if backupCleanupTicker != nil {
-				return backupCleanupTicker.C
-			}
-			// Return a channel that never sends if backup is disabled
-			return make(<-chan time.Time)
-		}():
-			if cfg.BackupEnabled {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				if err := backupService.CleanupOldBackups(ctx); err != nil {
-					appLogger.Debug("Failed to cleanup old backups", "error", err)
-				}
-				cancel()
-			}
-		}
-	}
 }
 
 // Helper functions
