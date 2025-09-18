@@ -117,6 +117,17 @@ func main() {
 	logService := services.NewLogService(logRepo, workflowRepo, userRepo)
 	queueService := services.NewQueueService(redisClient, zapLogger)
 
+	// Inicializar BackupService
+	appLogger.Info("Initializing backup service...")
+	backupService := services.NewBackupService(
+		cfg,
+		zapLogger,
+		userRepo,
+		workflowRepo,
+		logRepo,
+		queueRepo,
+	)
+
 	// Inicializar DashboardService con MetricsService
 	dashboardService := services.NewDashboardService(
 		metricsService,
@@ -168,6 +179,9 @@ func main() {
 	dashboardHandler := handlers.NewDashboardHandler(dashboardService, zapLogger)
 	workerHandler := handlers.NewWorkerHandler(queueRepo, workerEngine, zapLogger)
 	triggerHandler := handlers.NewTriggerHandler(workflowRepo, logRepo, queueService, zapLogger)
+
+	// Crear BackupHandler
+	backupHandler := handlers.NewBackupHandler(backupService, zapLogger)
 
 	// Crear WebHandler
 	webHandler := handlers.NewWebHandler(
@@ -238,7 +252,7 @@ func main() {
 	// Configurar rutas básicas
 	setupBasicRoutes(app, appLogger)
 	setupWebHandlerRoutes(app, webHandler, authMiddleware)
-	setupAPIRoutes(app, authHandler, workflowHandler, dashboardHandler, workerHandler, triggerHandler, authMiddleware, appLogger)
+	setupAPIRoutes(app, authHandler, workflowHandler, dashboardHandler, workerHandler, triggerHandler, backupHandler, authMiddleware, appLogger)
 
 	appLogger.Info("Routes configured successfully")
 
@@ -246,6 +260,13 @@ func main() {
 	if cfg.EnableWebInterface {
 		if err := ensureWebDirectoryExists(); err != nil {
 			appLogger.Warn("Web directory setup failed", "error", err)
+		}
+	}
+
+	// Crear directorios de backup si es necesario
+	if cfg.BackupEnabled {
+		if err := ensureBackupDirectoryExists(cfg.BackupStoragePath); err != nil {
+			appLogger.Warn("Backup directory setup failed", "error", err)
 		}
 	}
 
@@ -259,12 +280,22 @@ func main() {
 		appLogger.Fatal("Failed to start worker engine", "error", err)
 	}
 
+	// Iniciar backups automatizados si está habilitado
+	if cfg.BackupEnabled && cfg.BackupAutoEnabled {
+		appLogger.Info("Starting automated backups...")
+		if err := backupService.StartAutomatedBackups(ctx); err != nil {
+			appLogger.Error("Failed to start automated backups", "error", err)
+		} else {
+			appLogger.Info("Automated backups started successfully")
+		}
+	}
+
 	// Canal para señales
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	// Iniciar servicios en background
-	go startBackgroundServices(dashboardService, appLogger)
+	go startBackgroundServices(dashboardService, backupService, appLogger, cfg)
 
 	// Iniciar servidor
 	go func() {
@@ -282,6 +313,14 @@ func main() {
 	// Esperar señal
 	<-sigChan
 	appLogger.Info("Shutting down server...")
+
+	// Parar backups automatizados
+	if cfg.BackupEnabled && cfg.BackupAutoEnabled {
+		appLogger.Info("Stopping automated backups...")
+		if err := backupService.StopAutomatedBackups(); err != nil {
+			appLogger.Error("Error stopping automated backups", "error", err)
+		}
+	}
 
 	// Shutdown Worker Engine
 	if err := workerEngine.Stop(); err != nil {
@@ -335,13 +374,14 @@ func setupWebHandlerRoutes(app *fiber.App, webHandler *handlers.WebHandler, auth
 	})
 }
 
-// setupAPIRoutes configura rutas de la API
+// setupAPIRoutes configura rutas de la API (actualizada con backup routes)
 func setupAPIRoutes(app *fiber.App,
 	authHandler *handlers.AuthHandler,
 	workflowHandler *handlers.WorkflowHandler,
 	dashboardHandler *handlers.DashboardHandler,
 	workerHandler *handlers.WorkerHandler,
 	triggerHandler *handlers.TriggerHandler,
+	backupHandler *handlers.BackupHandler,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logger.Logger) {
 
@@ -435,6 +475,21 @@ func setupAPIRoutes(app *fiber.App,
 		return c.JSON(fiber.Map{"message": "Workers stopped"})
 	})
 
+	// Backup routes (protegidas)
+	backups := protected.Group("/backups")
+	backups.Post("/", backupHandler.CreateBackup)
+	backups.Get("/", backupHandler.ListBackups)
+	backups.Get("/:id", backupHandler.GetBackup)
+	backups.Delete("/:id", backupHandler.DeleteBackup)
+	backups.Post("/:id/restore", backupHandler.RestoreBackup)
+	backups.Post("/:id/validate", backupHandler.ValidateBackup)
+	backups.Get("/status", backupHandler.GetBackupStatus)
+
+	// Backup management
+	backups.Post("/automated/start", backupHandler.StartAutomatedBackups)
+	backups.Post("/automated/stop", backupHandler.StopAutomatedBackups)
+	backups.Post("/cleanup", backupHandler.CleanupOldBackups)
+
 	// Triggers (públicos para webhooks)
 	triggers := api.Group("/triggers")
 	triggers.Post("/webhook/:webhook_id", func(c *fiber.Ctx) error {
@@ -454,7 +509,7 @@ func setupAPIRoutes(app *fiber.App,
 		return c.JSON(fiber.Map{"message": "Manual trigger - coming soon"})
 	})
 
-	logger.Info("API routes configured")
+	logger.Info("API routes configured with backup endpoints")
 }
 
 // customErrorHandler maneja errores
@@ -515,6 +570,7 @@ func ensureWebDirectoryExists() error {
                 <a href="/api/v1/health">Health Check</a>
                 <a href="/api/v1/workers/stats">Workers</a>
                 <a href="/api/v1/dashboard/stats">Dashboard</a>
+                <a href="/api/v1/backups/status">Backup Status</a>
             </div>
         </div>
     </div>
@@ -527,20 +583,53 @@ func ensureWebDirectoryExists() error {
 	return nil
 }
 
-// startBackgroundServices servicios en background
-func startBackgroundServices(dashboardService services.DashboardService, appLogger *logger.Logger) {
+// ensureBackupDirectoryExists crea el directorio de backups
+func ensureBackupDirectoryExists(backupPath string) error {
+	if backupPath == "" {
+		backupPath = "./backups"
+	}
+
+	return os.MkdirAll(backupPath, 0755)
+}
+
+// startBackgroundServices servicios en background (actualizado con backup)
+func startBackgroundServices(dashboardService services.DashboardService, backupService services.BackupService, appLogger *logger.Logger, cfg *config.Config) {
 	appLogger.Info("Starting background services")
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+
+	// Ticker para servicios de dashboard
+	dashboardTicker := time.NewTicker(30 * time.Second)
+	defer dashboardTicker.Stop()
+
+	// Ticker para limpieza de backups (cada hora)
+	var backupCleanupTicker *time.Ticker
+	if cfg.BackupEnabled {
+		backupCleanupTicker = time.NewTicker(1 * time.Hour)
+		defer backupCleanupTicker.Stop()
+	}
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-dashboardTicker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			if err := dashboardService.RefreshDashboardData(ctx); err != nil {
 				appLogger.Debug("Failed to refresh dashboard data", "error", err)
 			}
 			cancel()
+
+		case <-func() <-chan time.Time {
+			if backupCleanupTicker != nil {
+				return backupCleanupTicker.C
+			}
+			// Return a channel that never sends if backup is disabled
+			return make(<-chan time.Time)
+		}():
+			if cfg.BackupEnabled {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				if err := backupService.CleanupOldBackups(ctx); err != nil {
+					appLogger.Debug("Failed to cleanup old backups", "error", err)
+				}
+				cancel()
+			}
 		}
 	}
 }
