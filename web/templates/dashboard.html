@@ -10,6 +10,14 @@
             <small class="text-muted">Last updated: <span id="last-refresh-time">Loading...</span></small>
         </div>
         <div>
+            <!-- Time Range Selector -->
+            <div class="time-range-selector me-3">
+                <button class="time-range-btn active" data-range="1h" title="Last Hour">1H</button>
+                <button class="time-range-btn" data-range="6h" title="Last 6 Hours">6H</button>
+                <button class="time-range-btn" data-range="24h" title="Last 24 Hours">24H</button>
+                <button class="time-range-btn" data-range="7d" title="Last 7 Days">7D</button>
+                <button class="time-range-btn" data-range="30d" title="Last 30 Days">30D</button>
+            </div>
             <button type="button" class="btn btn-outline-secondary me-2" data-action="refresh-dashboard" title="Refresh Dashboard">
                 <i class="bi bi-arrow-clockwise"></i>
                 Refresh
@@ -171,7 +179,162 @@
         </div>
     </div>
 
-    <!-- Main Content Row -->
+    <!-- ======================================= -->
+    <!-- NUEVA SECCIÓN: GRÁFICOS INTERACTIVOS -->
+    <!-- ======================================= -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h4 class="text-dark">
+                    <i class="bi bi-graph-up text-primary me-2"></i>
+                    Performance Analytics
+                </h4>
+                <button class="btn btn-outline-primary btn-sm" onclick="refreshCharts()" title="Refresh Charts">
+                    <i class="bi bi-arrow-clockwise me-1"></i>
+                    Update Charts
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts Row 1: Main Performance Charts -->
+    <div class="row mb-4">
+        <div class="col-xl-8 col-lg-7">
+            <div class="card shadow chart-card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h6 class="m-0 font-weight-bold text-primary">
+                        <i class="bi bi-activity me-2"></i>
+                        Execution Timeline
+                    </h6>
+                    <div class="chart-controls">
+                        <button class="chart-toggle-btn active" data-chart-type="executions">Executions</button>
+                        <button class="chart-toggle-btn" data-chart-type="success-rate">Success Rate</button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="executionTrendChart"></canvas>
+                        <div class="chart-loading" id="execution-chart-loading">
+                            <div class="spinner-border text-primary" role="status"></div>
+                            <div class="chart-loading-text">Loading execution data...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-4 col-lg-5">
+            <div class="card shadow chart-card">
+                <div class="card-header">
+                    <h6 class="m-0 font-weight-bold text-primary">
+                        <i class="bi bi-speedometer2 me-2"></i>
+                        Performance Overview
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="performanceGaugeChart"></canvas>
+                        <div class="chart-loading" id="performance-gauge-loading">
+                            <div class="spinner-border text-success" role="status"></div>
+                            <div class="chart-loading-text">Loading performance data...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts Row 2: Distribution Charts -->
+    <div class="row mb-4">
+        <div class="col-xl-4 col-lg-6">
+            <div class="card shadow chart-card">
+                <div class="card-header">
+                    <h6 class="m-0 font-weight-bold text-primary">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        Error Distribution
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="errorDistributionChart"></canvas>
+                        <div class="chart-loading" id="error-chart-loading">
+                            <div class="spinner-border text-danger" role="status"></div>
+                            <div class="chart-loading-text">Loading error data...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-4 col-lg-6">
+            <div class="card shadow chart-card">
+                <div class="card-header">
+                    <h6 class="m-0 font-weight-bold text-primary">
+                        <i class="bi bi-diagram-3 me-2"></i>
+                        Top Workflows
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="workflowDistributionChart"></canvas>
+                        <div class="chart-loading" id="workflow-chart-loading">
+                            <div class="spinner-border text-info" role="status"></div>
+                            <div class="chart-loading-text">Loading workflow data...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-4 col-lg-12">
+            <div class="card shadow chart-card">
+                <div class="card-header">
+                    <h6 class="m-0 font-weight-bold text-primary">
+                        <i class="bi bi-clock me-2"></i>
+                        Response Time
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="responseTimeChart"></canvas>
+                        <div class="chart-loading" id="response-time-loading">
+                            <div class="spinner-border text-warning" role="status"></div>
+                            <div class="chart-loading-text">Loading response time...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts Row 3: Hourly Activity Heatmap -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card shadow chart-card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h6 class="m-0 font-weight-bold text-primary">
+                        <i class="bi bi-calendar3 me-2"></i>
+                        Hourly Activity Pattern (Last 24 Hours)
+                    </h6>
+                    <small class="text-muted">Activity intensity by hour</small>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container" style="height: 200px;">
+                        <canvas id="hourlyActivityChart"></canvas>
+                        <div class="chart-loading" id="hourly-activity-loading">
+                            <div class="spinner-border text-secondary" role="status"></div>
+                            <div class="chart-loading-text">Loading hourly activity...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- ======================================= -->
+    <!-- FIN SECCIÓN GRÁFICOS -->
+    <!-- ======================================= -->
+
+    <!-- Main Content Row (Original) -->
     <div class="row">
         <!-- Workflows Section -->
         <div class="col-xl-8 col-lg-7">
@@ -356,6 +519,10 @@
 </div>
 
 <style>
+/* ===================================== */
+/* ESTILOS ORIGINALES MANTENIDOS */
+/* ===================================== */
+
 /* Enhanced Dashboard Styles */
 .border-left-primary {
     border-left: 4px solid #4e73df !important;
@@ -485,10 +652,233 @@
 .btn:hover {
     transform: translateY(-1px);
 }
+
+/* ===================================== */
+/* NUEVOS ESTILOS PARA CHARTS */
+/* ===================================== */
+
+/* Time Range Selector */
+.time-range-selector {
+    display: inline-flex;
+    background: white;
+    border-radius: 0.5rem;
+    padding: 0.25rem;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    gap: 0.25rem;
+}
+
+.time-range-btn {
+    border: none;
+    background: transparent;
+    padding: 0.375rem 0.75rem;
+    border-radius: 0.25rem;
+    transition: all 0.3s ease;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #6c757d;
+    cursor: pointer;
+}
+
+.time-range-btn:hover {
+    background: #f8f9fa;
+    color: #4e73df;
+}
+
+.time-range-btn.active {
+    background: #4e73df;
+    color: white;
+    box-shadow: 0 2px 6px rgba(78, 115, 223, 0.3);
+}
+
+/* Chart Cards */
+.chart-card {
+    border: none;
+    border-radius: 1rem;
+    box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, 0.15);
+    margin-bottom: 2rem;
+    transition: all 0.3s ease;
+}
+
+.chart-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 0.5rem 2rem 0 rgba(58, 59, 69, 0.3);
+}
+
+.chart-card .card-header {
+    background: white;
+    border-bottom: 1px solid #e3e6f0;
+    font-weight: 600;
+    padding: 1.5rem;
+    border-radius: 1rem 1rem 0 0;
+}
+
+.chart-card .card-body {
+    padding: 1.5rem;
+    border-radius: 0 0 1rem 1rem;
+}
+
+/* Chart Containers */
+.chart-container {
+    position: relative;
+    height: 300px;
+    margin: 0;
+    background: white;
+    border-radius: 0.5rem;
+}
+
+.chart-container canvas {
+    max-width: 100%;
+    height: auto !important;
+}
+
+/* Chart Controls */
+.chart-controls {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.chart-toggle-btn {
+    border: none;
+    background: transparent;
+    color: #6c757d;
+    padding: 0.25rem 0.75rem;
+    border-radius: 0.25rem;
+    transition: all 0.3s ease;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.chart-toggle-btn:hover {
+    background: #f8f9fa;
+    color: #4e73df;
+}
+
+.chart-toggle-btn.active {
+    background: #4e73df;
+    color: white;
+}
+
+/* Chart Loading States */
+.chart-loading {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    border-radius: 0.5rem;
+    z-index: 10;
+}
+
+.chart-loading-text {
+    font-size: 0.875rem;
+    color: #6c757d;
+    margin-top: 0.75rem;
+}
+
+/* Chart Error States */
+.chart-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 300px;
+    flex-direction: column;
+    color: #e74a3b;
+    text-align: center;
+    padding: 2rem;
+}
+
+.chart-error i {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+    opacity: 0.5;
+}
+
+/* Responsive Charts */
+@media (max-width: 768px) {
+    .time-range-selector {
+        flex-direction: column;
+        width: 100%;
+        margin-bottom: 1rem;
+    }
+    
+    .chart-container {
+        height: 250px;
+    }
+    
+    .chart-card .card-header,
+    .chart-card .card-body {
+        padding: 1rem;
+    }
+    
+    .chart-controls {
+        flex-direction: column;
+        gap: 0.25rem;
+    }
+}
+
+@media (max-width: 576px) {
+    .chart-container {
+        height: 200px;
+    }
+    
+    .time-range-btn {
+        padding: 0.5rem;
+        text-align: center;
+    }
+}
+
+/* Chart Animation */
+@keyframes chartFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.chart-card {
+    animation: chartFadeIn 0.5s ease-out;
+}
+
+/* Chart Status Indicators */
+.chart-status-indicator {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #1cc88a;
+    box-shadow: 0 0 8px rgba(28, 200, 138, 0.4);
+}
+
+.chart-status-indicator.loading {
+    background: #f6c23e;
+    box-shadow: 0 0 8px rgba(246, 194, 62, 0.4);
+    animation: pulse 2s infinite;
+}
+
+.chart-status-indicator.error {
+    background: #e74a3b;
+    box-shadow: 0 0 8px rgba(231, 74, 59, 0.4);
+}
 </style>
 {{end}}
 
 {{define "scripts"}}
+<!-- Chart.js CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.min.js"></script>
+
 <script>
 // Legacy trigger function for backward compatibility
 async function triggerWorkflow(workflowId) {
@@ -542,6 +932,16 @@ function showAlert(message, type) {
     }, 5000);
 }
 
+// Global function for refreshing charts
+window.refreshCharts = function() {
+    console.log('Refreshing charts...');
+    if (window.dashboardCharts) {
+        window.dashboardCharts.refreshAll();
+    } else {
+        showAlert('Charts are loading, please wait...', 'info');
+    }
+};
+
 // Initialize dashboard when DOM is ready
 document.addEventListener('DOMContentLoaded', function() {
     // Add loading state to initial stats
@@ -552,8 +952,432 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
     
-    // Dashboard will be initialized by the main dashboard.js file
-    console.log('Dashboard HTML initialized');
+    // Verify Chart.js is loaded
+    if (typeof Chart === 'undefined') {
+        console.error('Chart.js is not loaded!');
+        showAlert('Chart library failed to load. Please refresh the page.', 'warning');
+        return;
+    }
+    
+    // Configure Chart.js defaults
+    Chart.defaults.font.family = "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif";
+    Chart.defaults.color = '#858796';
+    Chart.defaults.elements.line.tension = 0.4;
+    
+    console.log('Dashboard HTML initialized with Chart.js support');
+    console.log('Chart.js version:', Chart.version);
+    
+    // Initialize charts after short delay to ensure all scripts are loaded
+    setTimeout(initializeDashboardCharts, 500);
 });
+
+// Dashboard Charts Initialization
+function initializeDashboardCharts() {
+    console.log('Initializing Dashboard Charts...');
+    
+    // Dashboard Charts Manager
+    window.dashboardCharts = {
+        charts: {},
+        currentTimeRange: '24h',
+        
+        // Initialize all charts
+        async init() {
+            try {
+                console.log('Starting charts initialization...');
+                
+                // Setup time range selector
+                this.setupTimeRangeSelector();
+                
+                // Load initial data
+                await this.loadData();
+                
+                // Initialize individual charts
+                this.initExecutionTrendChart();
+                this.initPerformanceGaugeChart();
+                this.initErrorDistributionChart();
+                this.initWorkflowDistributionChart();
+                this.initResponseTimeChart();
+                this.initHourlyActivityChart();
+                
+                // Hide loading indicators
+                this.hideAllLoadingIndicators();
+                
+                console.log('Charts initialized successfully');
+            } catch (error) {
+                console.error('Failed to initialize charts:', error);
+                this.showChartsError(error.message);
+            }
+        },
+        
+        // Setup time range selector
+        setupTimeRangeSelector() {
+            document.querySelectorAll('.time-range-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    document.querySelectorAll('.time-range-btn').forEach(b => b.classList.remove('active'));
+                    e.target.classList.add('active');
+                    this.currentTimeRange = e.target.dataset.range;
+                    this.refreshAll();
+                });
+            });
+        },
+        
+        // Load data from API
+        async loadData() {
+            try {
+                // Mock data for now - replace with real API calls
+                this.data = {
+                    executions: this.generateMockTimeSeriesData(24),
+                    successRate: this.generateMockSuccessRateData(24),
+                    responseTime: this.generateMockResponseTimeData(24),
+                    errorDistribution: [
+                        { type: 'Timeout', count: 12 },
+                        { type: 'API Error', count: 8 },
+                        { type: 'Validation', count: 6 },
+                        { type: 'Network', count: 4 }
+                    ],
+                    workflowDistribution: [
+                        { name: 'User Onboarding', count: 245 },
+                        { name: 'Data Processing', count: 189 },
+                        { name: 'Email Campaigns', count: 156 },
+                        { name: 'Report Generation', count: 98 }
+                    ],
+                    hourlyActivity: this.generateMockHourlyData()
+                };
+                
+                console.log('Mock data loaded successfully');
+            } catch (error) {
+                console.error('Failed to load data:', error);
+                throw error;
+            }
+        },
+        
+        // Generate mock time series data
+        generateMockTimeSeriesData(hours) {
+            const data = [];
+            const now = new Date();
+            for (let i = hours; i >= 0; i--) {
+                const time = new Date(now.getTime() - i * 60 * 60 * 1000);
+                data.push({
+                    timestamp: time,
+                    value: Math.floor(Math.random() * 100) + 20
+                });
+            }
+            return data;
+        },
+        
+        // Generate mock success rate data
+        generateMockSuccessRateData(hours) {
+            const data = [];
+            const now = new Date();
+            for (let i = hours; i >= 0; i--) {
+                const time = new Date(now.getTime() - i * 60 * 60 * 1000);
+                data.push({
+                    timestamp: time,
+                    value: 95 + Math.random() * 4 // 95-99%
+                });
+            }
+            return data;
+        },
+        
+        // Generate mock response time data
+        generateMockResponseTimeData(hours) {
+            const data = [];
+            const now = new Date();
+            for (let i = hours; i >= 0; i--) {
+                const time = new Date(now.getTime() - i * 60 * 60 * 1000);
+                data.push({
+                    timestamp: time,
+                    value: Math.floor(Math.random() * 2000) + 200 // 200-2200ms
+                });
+            }
+            return data;
+        },
+        
+        // Generate mock hourly data
+        generateMockHourlyData() {
+            const data = [];
+            for (let hour = 0; hour < 24; hour++) {
+                data.push({
+                    hour: hour,
+                    value: Math.floor(Math.random() * 150) + 20
+                });
+            }
+            return data;
+        },
+        
+        // Initialize Execution Trend Chart
+        initExecutionTrendChart() {
+            const ctx = document.getElementById('executionTrendChart');
+            if (!ctx) return;
+            
+            const data = this.data.executions;
+            
+            this.charts.executionTrend = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.map(d => d.timestamp.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })),
+                    datasets: [{
+                        label: 'Executions',
+                        data: data.map(d => d.value),
+                        borderColor: '#4e73df',
+                        backgroundColor: 'rgba(78, 115, 223, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grid: { color: 'rgba(0,0,0,0.1)' }
+                        }
+                    }
+                }
+            });
+        },
+        
+        // Initialize Performance Gauge Chart
+        initPerformanceGaugeChart() {
+            const ctx = document.getElementById('performanceGaugeChart');
+            if (!ctx) return;
+            
+            const avgSuccessRate = this.data.successRate.reduce((sum, item) => sum + item.value, 0) / this.data.successRate.length;
+            
+            this.charts.performanceGauge = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    datasets: [{
+                        data: [avgSuccessRate, 100 - avgSuccessRate],
+                        backgroundColor: ['#1cc88a', '#f8f9fc'],
+                        borderWidth: 0,
+                        cutout: '75%'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    }
+                },
+                plugins: [{
+                    beforeDraw: function(chart) {
+                        const ctx = chart.ctx;
+                        const centerX = (chart.chartArea.left + chart.chartArea.right) / 2;
+                        const centerY = (chart.chartArea.top + chart.chartArea.bottom) / 2;
+                        
+                        ctx.save();
+                        ctx.font = 'bold 24px Arial';
+                        ctx.fillStyle = '#1cc88a';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(`${avgSuccessRate.toFixed(1)}%`, centerX, centerY - 10);
+                        
+                        ctx.font = '12px Arial';
+                        ctx.fillStyle = '#6c757d';
+                        ctx.fillText('Success Rate', centerX, centerY + 15);
+                        ctx.restore();
+                    }
+                }]
+            });
+        },
+        
+        // Initialize Error Distribution Chart
+        initErrorDistributionChart() {
+            const ctx = document.getElementById('errorDistributionChart');
+            if (!ctx) return;
+            
+            const data = this.data.errorDistribution;
+            
+            this.charts.errorDistribution = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: data.map(d => d.type),
+                    datasets: [{
+                        data: data.map(d => d.count),
+                        backgroundColor: ['#e74a3b', '#f6c23e', '#36b9cc', '#6f42c1']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                padding: 20,
+                                font: { size: 11 }
+                            }
+                        }
+                    }
+                }
+            });
+        },
+        
+        // Initialize Workflow Distribution Chart
+        initWorkflowDistributionChart() {
+            const ctx = document.getElementById('workflowDistributionChart');
+            if (!ctx) return;
+            
+            const data = this.data.workflowDistribution;
+            
+            this.charts.workflowDistribution = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.map(d => d.name.length > 15 ? d.name.substring(0, 15) + '...' : d.name),
+                    datasets: [{
+                        data: data.map(d => d.count),
+                        backgroundColor: '#4e73df',
+                        borderRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: { maxRotation: 45 }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grid: { color: 'rgba(0,0,0,0.1)' }
+                        }
+                    }
+                }
+            });
+        },
+        
+        // Initialize Response Time Chart
+        initResponseTimeChart() {
+            const ctx = document.getElementById('responseTimeChart');
+            if (!ctx) return;
+            
+            const data = this.data.responseTime;
+            
+            this.charts.responseTime = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.map(d => d.timestamp.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })),
+                    datasets: [{
+                        label: 'Response Time (ms)',
+                        data: data.map(d => d.value),
+                        borderColor: '#f6c23e',
+                        backgroundColor: 'rgba(246, 194, 62, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grid: { color: 'rgba(0,0,0,0.1)' }
+                        }
+                    }
+                }
+            });
+        },
+        
+        // Initialize Hourly Activity Chart
+        initHourlyActivityChart() {
+            const ctx = document.getElementById('hourlyActivityChart');
+            if (!ctx) return;
+            
+            const data = this.data.hourlyActivity;
+            
+            this.charts.hourlyActivity = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.map(d => `${d.hour}:00`),
+                    datasets: [{
+                        label: 'Activity',
+                        data: data.map(d => d.value),
+                        backgroundColor: data.map(d => {
+                            const intensity = d.value / Math.max(...data.map(item => item.value));
+                            return `rgba(78, 115, 223, ${0.3 + intensity * 0.7})`;
+                        }),
+                        borderColor: '#4e73df',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grid: { color: 'rgba(0,0,0,0.1)' }
+                        }
+                    }
+                }
+            });
+        },
+        
+        // Hide all loading indicators
+        hideAllLoadingIndicators() {
+            document.querySelectorAll('.chart-loading').forEach(loader => {
+                loader.style.display = 'none';
+            });
+        },
+        
+        // Show charts error
+        showChartsError(message) {
+            console.error('Charts Error:', message);
+            showAlert(`Charts Error: ${message}`, 'danger');
+        },
+        
+        // Refresh all charts
+        async refreshAll() {
+            console.log('Refreshing all charts...');
+            try {
+                await this.loadData();
+                
+                // Update each chart with new data
+                Object.values(this.charts).forEach(chart => {
+                    if (chart && typeof chart.update === 'function') {
+                        chart.update();
+                    }
+                });
+                
+                console.log('Charts refreshed successfully');
+                showAlert('Charts updated successfully!', 'success');
+            } catch (error) {
+                console.error('Failed to refresh charts:', error);
+                showAlert('Failed to refresh charts', 'danger');
+            }
+        }
+    };
+    
+    // Initialize the charts
+    window.dashboardCharts.init();
+}
 </script>
 {{end}}
