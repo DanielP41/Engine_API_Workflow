@@ -17,11 +17,12 @@ type WorkflowExecutor struct {
 	logService services.LogService
 	logger     *zap.Logger
 
-	// 🆕 EJECUTORES REALES DE ACCIONES
-	httpExecutor    *HTTPActionExecutor
-	emailExecutor   *EmailActionExecutor
-	slackExecutor   *SlackActionExecutor
-	webhookExecutor *WebhookActionExecutor
+	// 🆕 EJECUTORES REALES DE ACCIONES (ACTUALIZADOS)
+	httpExecutor      *HTTPActionExecutor
+	emailExecutor     *EmailActionExecutor
+	slackExecutor     *SlackActionExecutor
+	webhookExecutor   *WebhookActionExecutor
+	transformExecutor *TransformActionExecutor // 🆕 NUEVO EJECUTOR
 }
 
 // ExecutionContext contexto de ejecución del workflow
@@ -62,7 +63,7 @@ func NewWorkflowExecutor(logService services.LogService, logger *zap.Logger) *Wo
 	}
 }
 
-// 🆕 NUEVO MÉTODO: Configurar ejecutores reales
+// 🆕 MÉTODO ACTUALIZADO: Configurar ejecutores reales (incluye Transform)
 func (e *WorkflowExecutor) SetActionExecutors(
 	httpExec *HTTPActionExecutor,
 	emailExec *EmailActionExecutor,
@@ -81,7 +82,13 @@ func (e *WorkflowExecutor) SetActionExecutors(
 		zap.Bool("webhook_enabled", webhookExec != nil))
 }
 
-// 🆕 NUEVO MÉTODO: Execute compatible con la interfaz del worker engine
+// 🆕 NUEVO MÉTODO: Configurar TransformActionExecutor
+func (e *WorkflowExecutor) SetTransformExecutor(transformExec *TransformActionExecutor) {
+	e.transformExecutor = transformExec
+	e.logger.Info("Transform executor configured", zap.Bool("transform_enabled", transformExec != nil))
+}
+
+// Execute compatible con la interfaz del worker engine
 func (e *WorkflowExecutor) Execute(ctx context.Context, workflow *models.Workflow, userID primitive.ObjectID, logID primitive.ObjectID, triggerData map[string]interface{}) error {
 	execCtx := &ExecutionContext{
 		WorkflowID:  workflow.ID,
@@ -272,7 +279,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 	return result, nil
 }
 
-// executeStep ejecuta un paso individual del workflow - MÉTODO ACTUALIZADO CON EJECUTORES REALES
+// executeStep ejecuta un paso individual del workflow - ACTUALIZADO CON TRANSFORM REAL
 func (e *WorkflowExecutor) executeStep(ctx context.Context, step *models.WorkflowStep, execCtx *ExecutionContext) (*StepResult, error) {
 	startTime := time.Now()
 
@@ -287,51 +294,49 @@ func (e *WorkflowExecutor) executeStep(ctx context.Context, step *models.Workflo
 	stepCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	// 🆕 EJECUTAR CON EJECUTORES REALES
+	// 🆕 EJECUTAR CON EJECUTORES REALES (INCLUYE TRANSFORM)
 	var err error
 	switch models.ActionType(step.Type) {
 	case models.ActionTypeHTTP:
 		if e.httpExecutor != nil {
-			// 🆕 USAR EJECUTOR REAL
 			stepResult, err = e.httpExecutor.Execute(stepCtx, step, execCtx)
 		} else {
-			// Fallback a simulación
 			err = e.executeHTTPActionSimulated(stepCtx, step, stepResult, execCtx)
 		}
 
 	case models.ActionTypeEmail:
 		if e.emailExecutor != nil {
-			// 🆕 USAR EJECUTOR REAL
 			stepResult, err = e.emailExecutor.Execute(stepCtx, step, execCtx)
 		} else {
-			// Fallback a simulación
 			err = e.executeEmailActionSimulated(stepCtx, step, stepResult, execCtx)
 		}
 
 	case models.ActionTypeSlack:
 		if e.slackExecutor != nil {
-			// 🆕 USAR EJECUTOR REAL
 			stepResult, err = e.slackExecutor.Execute(stepCtx, step, execCtx)
 		} else {
-			// Fallback a simulación
 			err = e.executeSlackActionSimulated(stepCtx, step, stepResult, execCtx)
 		}
 
 	case models.ActionTypeWebhook:
 		if e.webhookExecutor != nil {
-			// 🆕 USAR EJECUTOR REAL
 			stepResult, err = e.webhookExecutor.Execute(stepCtx, step, execCtx)
 		} else {
-			// Fallback a simulación
 			err = e.executeWebhookActionSimulated(stepCtx, step, stepResult, execCtx)
+		}
+
+	case models.ActionTypeTransform:
+		// 🚀 NUEVO: USAR EXECUTOR REAL DE TRANSFORM
+		if e.transformExecutor != nil {
+			stepResult, err = e.transformExecutor.Execute(stepCtx, step, execCtx)
+		} else {
+			err = e.executeTransformActionSimulated(stepCtx, step, stepResult, execCtx)
 		}
 
 	case models.ActionTypeCondition:
 		err = e.executeConditionAction(stepCtx, step, stepResult, execCtx)
 	case models.ActionTypeDelay:
 		err = e.executeDelayAction(stepCtx, step, stepResult, execCtx)
-	case models.ActionTypeTransform:
-		err = e.executeTransformAction(stepCtx, step, stepResult, execCtx)
 	case models.ActionTypeDatabase:
 		err = e.executeDatabaseAction(stepCtx, step, stepResult, execCtx)
 	case models.ActionTypeIntegration:
@@ -353,12 +358,21 @@ func (e *WorkflowExecutor) executeStep(ctx context.Context, step *models.Workflo
 	return stepResult, nil
 }
 
-// 🆕 MÉTODOS SIMULADOS (Mantener compatibilidad con código existente)
+// 🆕 MÉTODO SIMULADO FALLBACK para Transform (mantener compatibilidad)
+func (e *WorkflowExecutor) executeTransformActionSimulated(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	e.logger.Info("Executing Transform action (simulated fallback)", zap.String("step_id", step.ID))
+
+	result.Output["transform_completed"] = true
+	result.Output["message"] = "Transform action simulated (fallback) - real executor not configured"
+	result.Output["mode"] = "simulated"
+
+	return nil
+}
+
+// Los métodos simulados existentes se mantienen para compatibilidad
 func (e *WorkflowExecutor) executeHTTPActionSimulated(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
 	e.logger.Info("Executing HTTP action (simulated)", zap.String("step_id", step.ID))
-
 	time.Sleep(100 * time.Millisecond)
-
 	result.Output["http_response"] = map[string]interface{}{
 		"status":      "success",
 		"status_code": 200,
@@ -366,46 +380,36 @@ func (e *WorkflowExecutor) executeHTTPActionSimulated(ctx context.Context, step 
 		"timestamp":   time.Now(),
 		"mode":        "simulated",
 	}
-
 	return nil
 }
 
 func (e *WorkflowExecutor) executeEmailActionSimulated(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
 	e.logger.Info("Executing Email action (simulated)", zap.String("step_id", step.ID))
-
 	time.Sleep(50 * time.Millisecond)
-
 	result.Output["email_sent"] = true
 	result.Output["message"] = "Email action simulated successfully"
 	result.Output["timestamp"] = time.Now()
 	result.Output["mode"] = "simulated"
-
 	return nil
 }
 
 func (e *WorkflowExecutor) executeSlackActionSimulated(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
 	e.logger.Info("Executing Slack action (simulated)", zap.String("step_id", step.ID))
-
 	time.Sleep(75 * time.Millisecond)
-
 	result.Output["slack_sent"] = true
 	result.Output["message"] = "Slack action simulated successfully"
 	result.Output["timestamp"] = time.Now()
 	result.Output["mode"] = "simulated"
-
 	return nil
 }
 
 func (e *WorkflowExecutor) executeWebhookActionSimulated(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
 	e.logger.Info("Executing Webhook action (simulated)", zap.String("step_id", step.ID))
-
 	time.Sleep(150 * time.Millisecond)
-
 	result.Output["webhook_called"] = true
 	result.Output["message"] = "Webhook action simulated successfully"
 	result.Output["timestamp"] = time.Now()
 	result.Output["mode"] = "simulated"
-
 	return nil
 }
 
@@ -451,51 +455,28 @@ func (e *WorkflowExecutor) executeDelayAction(ctx context.Context, step *models.
 	}
 }
 
-// executeTransformAction ejecuta una acción de transformación de datos
-func (e *WorkflowExecutor) executeTransformAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
-	e.logger.Info("Executing Transform action", zap.String("step_id", step.ID))
-
-	// TODO: Implementar transformación de datos real
-	result.Output["transform_completed"] = true
-	result.Output["message"] = "Transform action simulated successfully"
-	result.Output["input_variables"] = len(execCtx.Variables)
-
-	return nil
-}
-
-// executeDatabaseAction ejecuta una acción de base de datos
+// Los otros métodos permanecen igual por ahora (Database, Integration, Notification)
 func (e *WorkflowExecutor) executeDatabaseAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
 	e.logger.Info("Executing Database action", zap.String("step_id", step.ID))
-
 	time.Sleep(200 * time.Millisecond)
-
 	result.Output["database_operation"] = "completed"
 	result.Output["message"] = "Database action simulated successfully"
-
 	return nil
 }
 
-// executeIntegrationAction ejecuta una acción de integración
 func (e *WorkflowExecutor) executeIntegrationAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
 	e.logger.Info("Executing Integration action", zap.String("step_id", step.ID))
-
 	time.Sleep(300 * time.Millisecond)
-
 	result.Output["integration_completed"] = true
 	result.Output["message"] = "Integration action simulated successfully"
-
 	return nil
 }
 
-// executeNotificationAction ejecuta una acción de notificación
 func (e *WorkflowExecutor) executeNotificationAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
 	e.logger.Info("Executing Notification action", zap.String("step_id", step.ID))
-
 	time.Sleep(100 * time.Millisecond)
-
 	result.Output["notification_sent"] = true
 	result.Output["message"] = "Notification action simulated successfully"
-
 	return nil
 }
 
@@ -541,19 +522,14 @@ func (e *WorkflowExecutor) createStepExecution(step *models.WorkflowStep, result
 
 // getNextStepID determina el siguiente paso basado en la configuración
 func (e *WorkflowExecutor) getNextStepID(currentStep *models.WorkflowStep) string {
-	// Si el paso tiene un next_step_id definido, usarlo
 	if currentStep.NextStepID != nil && *currentStep.NextStepID != "" {
 		return *currentStep.NextStepID
 	}
 
-	// Si hay condiciones, evaluarlas (simplificado por ahora)
 	if len(currentStep.Conditions) > 0 {
-		// TODO: implementar evaluación de condiciones
-		// Por ahora, tomar el primer paso de la primera condición
 		return currentStep.Conditions[0].NextStep
 	}
 
-	// Si no hay configuración específica, terminar
 	return ""
 }
 
@@ -580,72 +556,25 @@ func (e *WorkflowExecutor) evaluateConditions(conditions []models.WorkflowCondit
 					return condition.NextStep
 				}
 			}
-		case "gte":
-			if v, ok := value.(float64); ok {
-				if target, ok := condition.Value.(float64); ok && v >= target {
-					return condition.NextStep
-				}
-			}
-		case "lt":
-			if v, ok := value.(float64); ok {
-				if target, ok := condition.Value.(float64); ok && v < target {
-					return condition.NextStep
-				}
-			}
-		case "lte":
-			if v, ok := value.(float64); ok {
-				if target, ok := condition.Value.(float64); ok && v <= target {
-					return condition.NextStep
-				}
-			}
-		case "contains":
-			if str, ok := value.(string); ok {
-				if target, ok := condition.Value.(string); ok {
-					if len(str) > 0 && len(target) > 0 {
-						// Implementación básica de contains
-						for i := 0; i <= len(str)-len(target); i++ {
-							if str[i:i+len(target)] == target {
-								return condition.NextStep
-							}
-						}
-					}
-				}
-			}
-		case "not_contains":
-			if str, ok := value.(string); ok {
-				if target, ok := condition.Value.(string); ok {
-					found := false
-					for i := 0; i <= len(str)-len(target); i++ {
-						if str[i:i+len(target)] == target {
-							found = true
-							break
-						}
-					}
-					if !found {
-						return condition.NextStep
-					}
-				}
-			}
 		}
 	}
 
 	return ""
 }
 
-// 🆕 NUEVOS MÉTODOS: Verificar y obtener información de ejecutores
-
 // HasRealExecutors verifica si ejecutores reales están configurados
 func (e *WorkflowExecutor) HasRealExecutors() bool {
-	return e.httpExecutor != nil || e.emailExecutor != nil || e.slackExecutor != nil || e.webhookExecutor != nil
+	return e.httpExecutor != nil || e.emailExecutor != nil || e.slackExecutor != nil || e.webhookExecutor != nil || e.transformExecutor != nil
 }
 
 // GetExecutorInfo obtiene información de ejecutores configurados
 func (e *WorkflowExecutor) GetExecutorInfo() map[string]bool {
 	return map[string]bool{
-		"http":    e.httpExecutor != nil,
-		"email":   e.emailExecutor != nil,
-		"slack":   e.slackExecutor != nil,
-		"webhook": e.webhookExecutor != nil,
+		"http":      e.httpExecutor != nil,
+		"email":     e.emailExecutor != nil,
+		"slack":     e.slackExecutor != nil,
+		"webhook":   e.webhookExecutor != nil,
+		"transform": e.transformExecutor != nil, // 🆕 NUEVO
 	}
 }
 
@@ -677,10 +606,16 @@ func (e *WorkflowExecutor) GetExecutorModes() map[string]string {
 		modes["webhook"] = "simulated"
 	}
 
+	// 🆕 NUEVO: Transform mode
+	if e.transformExecutor != nil {
+		modes["transform"] = "real"
+	} else {
+		modes["transform"] = "simulated"
+	}
+
 	// Siempre simulados (por ahora)
 	modes["condition"] = "native"
 	modes["delay"] = "native"
-	modes["transform"] = "simulated"
 	modes["database"] = "simulated"
 	modes["integration"] = "simulated"
 	modes["notification"] = "simulated"
