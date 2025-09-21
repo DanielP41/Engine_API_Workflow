@@ -15,6 +15,10 @@ import (
 	"go.uber.org/zap"
 )
 
+// ================================
+// ESTRUCTURA PRINCIPAL DEL HANDLER
+// ================================
+
 // NotificationHandler maneja las operaciones de notificaciones por email
 type NotificationHandler struct {
 	notificationService *services.NotificationService
@@ -23,7 +27,11 @@ type NotificationHandler struct {
 }
 
 // NewNotificationHandler crea una nueva instancia del handler
-func NewNotificationHandler(notificationService *services.NotificationService, validator *utils.Validator, logger *zap.Logger) *NotificationHandler {
+func NewNotificationHandler(
+	notificationService *services.NotificationService,
+	validator *utils.Validator,
+	logger *zap.Logger,
+) *NotificationHandler {
 	return &NotificationHandler{
 		notificationService: notificationService,
 		validator:           validator,
@@ -32,7 +40,7 @@ func NewNotificationHandler(notificationService *services.NotificationService, v
 }
 
 // ================================
-// EMAIL SENDING ENDPOINTS
+// ESTRUCTURAS DE REQUEST/RESPONSE
 // ================================
 
 // SendEmailRequest estructura para la solicitud de envío de email via API
@@ -76,12 +84,64 @@ type SendTemplatedEmailRequest struct {
 	Priority     models.NotificationPriority `json:"priority,omitempty"`
 }
 
-// SendEmail envía un email directo
+// SendSimpleEmailRequest estructura para email simple
+type SendSimpleEmailRequest struct {
+	To      []string `json:"to" validate:"required,min=1"`
+	Subject string   `json:"subject" validate:"required"`
+	Body    string   `json:"body" validate:"required"`
+	IsHTML  bool     `json:"is_html,omitempty"`
+}
+
+// CreateTemplateRequest estructura para crear template
+type CreateTemplateRequest struct {
+	Name        string                    `json:"name" validate:"required,min=1,max=100"`
+	Type        models.NotificationType   `json:"type" validate:"required"`
+	Language    string                    `json:"language,omitempty"`
+	Subject     string                    `json:"subject" validate:"required"`
+	BodyText    string                    `json:"body_text" validate:"required"`
+	BodyHTML    string                    `json:"body_html,omitempty"`
+	Description string                    `json:"description,omitempty"`
+	Tags        []string                  `json:"tags,omitempty"`
+	Variables   []models.TemplateVariable `json:"variables,omitempty"`
+}
+
+// UpdateTemplateRequest estructura para actualizar template
+type UpdateTemplateRequest struct {
+	Subject     string                    `json:"subject,omitempty"`
+	BodyText    string                    `json:"body_text,omitempty"`
+	BodyHTML    string                    `json:"body_html,omitempty"`
+	Description string                    `json:"description,omitempty"`
+	Tags        []string                  `json:"tags,omitempty"`
+	Variables   []models.TemplateVariable `json:"variables,omitempty"`
+	IsActive    *bool                     `json:"is_active,omitempty"`
+}
+
+// PreviewTemplateRequest estructura para vista previa
+type PreviewTemplateRequest struct {
+	Data map[string]interface{} `json:"data" validate:"required"`
+}
+
+// ================================
+// ENDPOINTS DE ENVÍO DE EMAILS
+// ================================
+
+// SendEmail envía un email
+// @Summary Enviar email
+// @Description Envía un email directo o usando template
+// @Tags notifications
+// @Accept json
+// @Produce json
+// @Param request body SendEmailRequest true "Datos del email"
+// @Security BearerAuth
+// @Success 201 {object} utils.Response{data=models.EmailNotification}
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/send [post]
 func (h *NotificationHandler) SendEmail(c *fiber.Ctx) error {
 	var req SendEmailRequest
 
 	if err := c.BodyParser(&req); err != nil {
-		h.logger.Warn("Invalid request body", zap.Error(err))
 		return utils.BadRequestResponse(c, "Invalid JSON format", err)
 	}
 
@@ -89,10 +149,16 @@ func (h *NotificationHandler) SendEmail(c *fiber.Ctx) error {
 		return utils.ValidationErrorResponse(c, "Validation failed", err)
 	}
 
-	// Obtener información del usuario del contexto
-	userID := h.getUserIDFromContext(c)
+	// Validar que se proporcione contenido o template
+	if req.Subject == "" && req.TemplateName == "" {
+		return utils.BadRequestResponse(c, "Subject or template_name is required", nil)
+	}
 
-	// Convertir a request de servicio
+	if req.Body == "" && req.TemplateName == "" {
+		return utils.BadRequestResponse(c, "Body or template_name is required", nil)
+	}
+
+	// Convertir a modelo de servicio
 	serviceReq := &models.SendEmailRequest{
 		Type:         req.Type,
 		Priority:     req.Priority,
@@ -106,9 +172,9 @@ func (h *NotificationHandler) SendEmail(c *fiber.Ctx) error {
 		TemplateData: req.TemplateData,
 		ScheduledAt:  req.ScheduledAt,
 		MaxAttempts:  req.MaxAttempts,
-		UserID:       userID,
 		WorkflowID:   req.WorkflowID,
 		ExecutionID:  req.ExecutionID,
+		UserID:       h.getUserIDFromContext(c),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -116,27 +182,34 @@ func (h *NotificationHandler) SendEmail(c *fiber.Ctx) error {
 
 	notification, err := h.notificationService.SendEmail(ctx, serviceReq)
 	if err != nil {
-		h.logger.Error("Failed to send email", zap.Error(err))
+		h.logError(c, "send_email", err)
 		return utils.InternalServerErrorResponse(c, "Failed to send email", err)
 	}
 
-	h.logger.Info("Email sent successfully",
+	h.logInfo(c, "send_email", "Email sent successfully",
 		zap.String("notification_id", notification.ID.Hex()),
-		zap.Strings("to", req.To))
+		zap.Strings("to", notification.To))
 
-	return utils.SuccessResponse(c, "Email sent successfully", fiber.Map{
-		"notification_id": notification.ID.Hex(),
-		"status":          notification.Status,
-		"created_at":      notification.CreatedAt,
-	})
+	return utils.CreatedResponse(c, "Email sent successfully", notification)
 }
 
-// SendTemplatedEmail envía un email usando un template
-func (h *NotificationHandler) SendTemplatedEmail(c *fiber.Ctx) error {
-	var req SendTemplatedEmailRequest
+// SendSimpleEmail envía un email simple
+// @Summary Enviar email simple
+// @Description Envía un email simple sin template
+// @Tags notifications
+// @Accept json
+// @Produce json
+// @Param request body SendSimpleEmailRequest true "Datos del email simple"
+// @Security BearerAuth
+// @Success 201 {object} utils.Response{data=models.EmailNotification}
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/send/simple [post]
+func (h *NotificationHandler) SendSimpleEmail(c *fiber.Ctx) error {
+	var req SendSimpleEmailRequest
 
 	if err := c.BodyParser(&req); err != nil {
-		h.logger.Warn("Invalid request body", zap.Error(err))
 		return utils.BadRequestResponse(c, "Invalid JSON format", err)
 	}
 
@@ -147,31 +220,181 @@ func (h *NotificationHandler) SendTemplatedEmail(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Si no se especifica prioridad, usar normal
+	notification, err := h.notificationService.SendSimpleEmail(ctx, req.To, req.Subject, req.Body, req.IsHTML)
+	if err != nil {
+		h.logError(c, "send_simple_email", err)
+		return utils.InternalServerErrorResponse(c, "Failed to send simple email", err)
+	}
+
+	h.logInfo(c, "send_simple_email", "Simple email sent successfully",
+		zap.String("notification_id", notification.ID.Hex()),
+		zap.Strings("to", req.To))
+
+	return utils.CreatedResponse(c, "Simple email sent successfully", notification)
+}
+
+// SendTemplatedEmail envía un email usando template
+// @Summary Enviar email con template
+// @Description Envía un email usando un template predefinido
+// @Tags notifications
+// @Accept json
+// @Produce json
+// @Param request body SendTemplatedEmailRequest true "Datos del email con template"
+// @Security BearerAuth
+// @Success 201 {object} utils.Response
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 404 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/send/template [post]
+func (h *NotificationHandler) SendTemplatedEmail(c *fiber.Ctx) error {
+	var req SendTemplatedEmailRequest
+
+	if err := c.BodyParser(&req); err != nil {
+		return utils.BadRequestResponse(c, "Invalid JSON format", err)
+	}
+
+	if err := h.validator.Validate(&req); err != nil {
+		return utils.ValidationErrorResponse(c, "Validation failed", err)
+	}
+
+	// Establecer prioridad por defecto
 	if req.Priority == "" {
 		req.Priority = models.NotificationPriorityNormal
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	err := h.notificationService.SendTemplatedEmail(ctx, req.TemplateName, req.To, req.Data)
 	if err != nil {
-		h.logger.Error("Failed to send templated email",
-			zap.String("template", req.TemplateName),
-			zap.Error(err))
+		if repository.IsNotFoundError(err) {
+			return utils.NotFoundResponse(c, "Template not found")
+		}
+		h.logError(c, "send_templated_email", err)
 		return utils.InternalServerErrorResponse(c, "Failed to send templated email", err)
 	}
 
-	h.logger.Info("Templated email sent successfully",
+	h.logInfo(c, "send_templated_email", "Templated email sent successfully",
 		zap.String("template", req.TemplateName),
 		zap.Strings("to", req.To))
 
-	return utils.SuccessResponse(c, "Templated email sent successfully", nil)
+	return utils.CreatedResponse(c, "Templated email sent successfully", nil)
+}
+
+// SendWelcomeEmail envía email de bienvenida
+// @Summary Enviar email de bienvenida
+// @Description Envía un email de bienvenida a un nuevo usuario
+// @Tags notifications
+// @Accept json
+// @Produce json
+// @Param request body fiber.Map true "Email y nombre del usuario"
+// @Security BearerAuth
+// @Success 201 {object} utils.Response
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/send/welcome [post]
+func (h *NotificationHandler) SendWelcomeEmail(c *fiber.Ctx) error {
+	var req struct {
+		Email    string `json:"email" validate:"required,email"`
+		UserName string `json:"user_name" validate:"required"`
+	}
+
+	if err := c.BodyParser(&req); err != nil {
+		return utils.BadRequestResponse(c, "Invalid JSON format", err)
+	}
+
+	if err := h.validator.Validate(&req); err != nil {
+		return utils.ValidationErrorResponse(c, "Validation failed", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := h.notificationService.SendWelcomeEmail(ctx, req.Email, req.UserName)
+	if err != nil {
+		h.logError(c, "send_welcome_email", err)
+		return utils.InternalServerErrorResponse(c, "Failed to send welcome email", err)
+	}
+
+	h.logInfo(c, "send_welcome_email", "Welcome email sent successfully",
+		zap.String("email", req.Email),
+		zap.String("user_name", req.UserName))
+
+	return utils.CreatedResponse(c, "Welcome email sent successfully", nil)
+}
+
+// SendSystemAlert envía alerta del sistema
+// @Summary Enviar alerta del sistema
+// @Description Envía una alerta del sistema a los administradores
+// @Tags notifications
+// @Accept json
+// @Produce json
+// @Param request body fiber.Map true "Datos de la alerta"
+// @Security BearerAuth
+// @Success 201 {object} utils.Response
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/send/alert [post]
+func (h *NotificationHandler) SendSystemAlert(c *fiber.Ctx) error {
+	var req struct {
+		Level      string   `json:"level" validate:"required,oneof=info warning error critical"`
+		Message    string   `json:"message" validate:"required"`
+		Recipients []string `json:"recipients" validate:"required,min=1"`
+	}
+
+	if err := c.BodyParser(&req); err != nil {
+		return utils.BadRequestResponse(c, "Invalid JSON format", err)
+	}
+
+	if err := h.validator.Validate(&req); err != nil {
+		return utils.ValidationErrorResponse(c, "Validation failed", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := h.notificationService.SendSystemAlert(ctx, req.Level, req.Message, req.Recipients)
+	if err != nil {
+		h.logError(c, "send_system_alert", err)
+		return utils.InternalServerErrorResponse(c, "Failed to send system alert", err)
+	}
+
+	h.logInfo(c, "send_system_alert", "System alert sent successfully",
+		zap.String("level", req.Level),
+		zap.String("message", req.Message),
+		zap.Strings("recipients", req.Recipients))
+
+	return utils.CreatedResponse(c, "System alert sent successfully", nil)
 }
 
 // ================================
-// NOTIFICATION MANAGEMENT
+// GESTIÓN DE NOTIFICACIONES
 // ================================
 
 // GetNotifications obtiene lista de notificaciones con filtros
+// @Summary Listar notificaciones
+// @Description Obtiene una lista paginada de notificaciones con filtros opcionales
+// @Tags notifications
+// @Accept json
+// @Produce json
+// @Param status query string false "Estado de la notificación"
+// @Param type query string false "Tipo de notificación"
+// @Param priority query string false "Prioridad de la notificación"
+// @Param user_id query string false "ID del usuario"
+// @Param workflow_id query string false "ID del workflow"
+// @Param execution_id query string false "ID de ejecución"
+// @Param to_email query string false "Email del destinatario"
+// @Param page query int false "Número de página" default(1)
+// @Param limit query int false "Elementos por página" default(50)
+// @Security BearerAuth
+// @Success 200 {object} utils.Response{data=fiber.Map}
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications [get]
 func (h *NotificationHandler) GetNotifications(c *fiber.Ctx) error {
 	// Parámetros de consulta
 	status := c.Query("status")
@@ -187,6 +410,9 @@ func (h *NotificationHandler) GetNotifications(c *fiber.Ctx) error {
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
 	if limit > 100 {
 		limit = 100 // Límite máximo
+	}
+	if page < 1 {
+		page = 1
 	}
 
 	// Construir filtros
@@ -220,44 +446,61 @@ func (h *NotificationHandler) GetNotifications(c *fiber.Ctx) error {
 
 	// Opciones de paginación
 	opts := &repository.PaginationOptions{
-		Limit:     limit,
-		Offset:    (page - 1) * limit,
-		SortBy:    "created_at",
-		SortOrder: "desc",
+		Limit:    limit,
+		Skip:     (page - 1) * limit,
+		SortBy:   "created_at",
+		SortDesc: true,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Obtener repositorio directamente (en una implementación más limpia, esto iría en el servicio)
 	notifications, total, err := h.notificationService.GetNotifications(ctx, filters, opts)
 	if err != nil {
-		h.logger.Error("Failed to get notifications", zap.Error(err))
+		h.logError(c, "get_notifications", err)
 		return utils.InternalServerErrorResponse(c, "Failed to get notifications", err)
 	}
 
 	totalPages := (int(total) + limit - 1) / limit
 
-	return utils.SuccessResponse(c, "Notifications retrieved successfully", fiber.Map{
+	response := fiber.Map{
 		"notifications": notifications,
 		"pagination": fiber.Map{
-			"current_page":   page,
-			"total_pages":    totalPages,
-			"total_items":    total,
-			"items_per_page": limit,
+			"page":        page,
+			"limit":       limit,
+			"total":       total,
+			"total_pages": totalPages,
+			"has_next":    page < totalPages,
+			"has_prev":    page > 1,
 		},
-	})
+	}
+
+	return utils.SuccessResponse(c, "Notifications retrieved successfully", response)
 }
 
 // GetNotification obtiene una notificación específica
+// @Summary Obtener notificación
+// @Description Obtiene los detalles de una notificación específica
+// @Tags notifications
+// @Accept json
+// @Produce json
+// @Param id path string true "ID de la notificación"
+// @Security BearerAuth
+// @Success 200 {object} utils.Response{data=models.EmailNotification}
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 404 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/{id} [get]
 func (h *NotificationHandler) GetNotification(c *fiber.Ctx) error {
 	idParam := c.Params("id")
+
 	id, err := primitive.ObjectIDFromHex(idParam)
 	if err != nil {
 		return utils.BadRequestResponse(c, "Invalid notification ID", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	notification, err := h.notificationService.GetNotification(ctx, id)
@@ -265,41 +508,30 @@ func (h *NotificationHandler) GetNotification(c *fiber.Ctx) error {
 		if repository.IsNotFoundError(err) {
 			return utils.NotFoundResponse(c, "Notification not found")
 		}
-		h.logger.Error("Failed to get notification", zap.String("id", idParam), zap.Error(err))
+		h.logError(c, "get_notification", err)
 		return utils.InternalServerErrorResponse(c, "Failed to get notification", err)
 	}
 
 	return utils.SuccessResponse(c, "Notification retrieved successfully", notification)
 }
 
-// RetryNotification reintenta una notificación fallida
-func (h *NotificationHandler) RetryNotification(c *fiber.Ctx) error {
-	idParam := c.Params("id")
-	id, err := primitive.ObjectIDFromHex(idParam)
-	if err != nil {
-		return utils.BadRequestResponse(c, "Invalid notification ID", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	err = h.notificationService.RetryNotification(ctx, id)
-	if err != nil {
-		if repository.IsNotFoundError(err) {
-			return utils.NotFoundResponse(c, "Notification not found")
-		}
-		h.logger.Error("Failed to retry notification", zap.String("id", idParam), zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to retry notification", err)
-	}
-
-	h.logger.Info("Notification retry initiated", zap.String("id", idParam))
-
-	return utils.SuccessResponse(c, "Notification retry initiated", nil)
-}
-
 // CancelNotification cancela una notificación
+// @Summary Cancelar notificación
+// @Description Cancela una notificación pendiente o programada
+// @Tags notifications
+// @Accept json
+// @Produce json
+// @Param id path string true "ID de la notificación"
+// @Security BearerAuth
+// @Success 200 {object} utils.Response
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 404 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/{id}/cancel [post]
 func (h *NotificationHandler) CancelNotification(c *fiber.Ctx) error {
 	idParam := c.Params("id")
+
 	id, err := primitive.ObjectIDFromHex(idParam)
 	if err != nil {
 		return utils.BadRequestResponse(c, "Invalid notification ID", err)
@@ -313,44 +545,73 @@ func (h *NotificationHandler) CancelNotification(c *fiber.Ctx) error {
 		if repository.IsNotFoundError(err) {
 			return utils.NotFoundResponse(c, "Notification not found")
 		}
-		h.logger.Error("Failed to cancel notification", zap.String("id", idParam), zap.Error(err))
+		h.logError(c, "cancel_notification", err)
 		return utils.InternalServerErrorResponse(c, "Failed to cancel notification", err)
 	}
 
-	h.logger.Info("Notification cancelled", zap.String("id", idParam))
+	h.logInfo(c, "cancel_notification", "Notification cancelled successfully",
+		zap.String("id", idParam))
 
 	return utils.SuccessResponse(c, "Notification cancelled successfully", nil)
 }
 
-// ================================
-// TEMPLATE MANAGEMENT
-// ================================
+// ResendNotification reenvía una notificación
+// @Summary Reenviar notificación
+// @Description Reenvía una notificación fallida o cancelada
+// @Tags notifications
+// @Accept json
+// @Produce json
+// @Param id path string true "ID de la notificación"
+// @Security BearerAuth
+// @Success 200 {object} utils.Response
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 404 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/{id}/resend [post]
+func (h *NotificationHandler) ResendNotification(c *fiber.Ctx) error {
+	idParam := c.Params("id")
 
-// CreateTemplateRequest estructura para crear template
-type CreateTemplateRequest struct {
-	Name        string                    `json:"name" validate:"required,min=1,max=100"`
-	Type        models.NotificationType   `json:"type" validate:"required"`
-	Language    string                    `json:"language,omitempty"`
-	Subject     string                    `json:"subject" validate:"required"`
-	BodyText    string                    `json:"body_text" validate:"required"`
-	BodyHTML    string                    `json:"body_html,omitempty"`
-	Description string                    `json:"description,omitempty"`
-	Tags        []string                  `json:"tags,omitempty"`
-	Variables   []models.TemplateVariable `json:"variables,omitempty"`
+	id, err := primitive.ObjectIDFromHex(idParam)
+	if err != nil {
+		return utils.BadRequestResponse(c, "Invalid notification ID", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err = h.notificationService.ResendNotification(ctx, id)
+	if err != nil {
+		if repository.IsNotFoundError(err) {
+			return utils.NotFoundResponse(c, "Notification not found")
+		}
+		h.logError(c, "resend_notification", err)
+		return utils.InternalServerErrorResponse(c, "Failed to resend notification", err)
+	}
+
+	h.logInfo(c, "resend_notification", "Notification resent successfully",
+		zap.String("id", idParam))
+
+	return utils.SuccessResponse(c, "Notification resent successfully", nil)
 }
 
-// UpdateTemplateRequest estructura para actualizar template
-type UpdateTemplateRequest struct {
-	Subject     string                    `json:"subject,omitempty"`
-	BodyText    string                    `json:"body_text,omitempty"`
-	BodyHTML    string                    `json:"body_html,omitempty"`
-	Description string                    `json:"description,omitempty"`
-	Tags        []string                  `json:"tags,omitempty"`
-	Variables   []models.TemplateVariable `json:"variables,omitempty"`
-	IsActive    *bool                     `json:"is_active,omitempty"`
-}
+// ================================
+// GESTIÓN DE TEMPLATES
+// ================================
 
 // CreateTemplate crea un nuevo template
+// @Summary Crear template
+// @Description Crea un nuevo template de email
+// @Tags templates
+// @Accept json
+// @Produce json
+// @Param request body CreateTemplateRequest true "Datos del template"
+// @Security BearerAuth
+// @Success 201 {object} utils.Response{data=models.EmailTemplate}
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/templates [post]
 func (h *NotificationHandler) CreateTemplate(c *fiber.Ctx) error {
 	var req CreateTemplateRequest
 
@@ -388,42 +649,46 @@ func (h *NotificationHandler) CreateTemplate(c *fiber.Ctx) error {
 
 	err := h.notificationService.CreateTemplate(ctx, template)
 	if err != nil {
-		if repository.IsAlreadyExistsError(err) {
-			return utils.ConflictResponse(c, "Template already exists")
-		}
-		h.logger.Error("Failed to create template", zap.Error(err))
+		h.logError(c, "create_template", err)
 		return utils.InternalServerErrorResponse(c, "Failed to create template", err)
 	}
 
-	h.logger.Info("Template created successfully",
+	h.logInfo(c, "create_template", "Template created successfully",
 		zap.String("id", template.ID.Hex()),
 		zap.String("name", template.Name))
 
-	return utils.CreatedResponse(c, "Template created successfully", fiber.Map{
-		"id":      template.ID.Hex(),
-		"name":    template.Name,
-		"version": template.Version,
-	})
+	return utils.CreatedResponse(c, "Template created successfully", template)
 }
 
 // GetTemplates obtiene lista de templates
+// @Summary Listar templates
+// @Description Obtiene una lista de templates con filtros opcionales
+// @Tags templates
+// @Accept json
+// @Produce json
+// @Param type query string false "Tipo de notificación"
+// @Param language query string false "Idioma del template"
+// @Param active query bool false "Solo templates activos"
+// @Security BearerAuth
+// @Success 200 {object} utils.Response{data=[]models.EmailTemplate}
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/templates [get]
 func (h *NotificationHandler) GetTemplates(c *fiber.Ctx) error {
-	// Parámetros de consulta
-	templateType := c.Query("type")
-	language := c.Query("language")
-	isActive := c.Query("is_active")
-	search := c.Query("search")
-
+	// Construir filtros
 	filters := make(map[string]interface{})
 
-	if templateType != "" {
-		filters["type"] = models.NotificationType(templateType)
+	if notificationType := c.Query("type"); notificationType != "" {
+		filters["type"] = models.NotificationType(notificationType)
 	}
-	if language != "" {
+
+	if language := c.Query("language"); language != "" {
 		filters["language"] = language
 	}
-	if isActive != "" {
-		if active, err := strconv.ParseBool(isActive); err == nil {
+
+	if activeStr := c.Query("active"); activeStr != "" {
+		if active, err := strconv.ParseBool(activeStr); err == nil {
 			filters["is_active"] = active
 		}
 	}
@@ -431,36 +696,38 @@ func (h *NotificationHandler) GetTemplates(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var templates []*models.EmailTemplate
-	var err error
-
-	if search != "" {
-		// Búsqueda por texto
-		templates, err = h.notificationService.SearchTemplates(ctx, search, 50)
-	} else {
-		templates, err = h.notificationService.ListTemplates(ctx, filters)
-	}
-
+	templates, err := h.notificationService.ListTemplates(ctx, filters)
 	if err != nil {
-		h.logger.Error("Failed to get templates", zap.Error(err))
+		h.logError(c, "get_templates", err)
 		return utils.InternalServerErrorResponse(c, "Failed to get templates", err)
 	}
 
-	return utils.SuccessResponse(c, "Templates retrieved successfully", fiber.Map{
-		"templates": templates,
-		"count":     len(templates),
-	})
+	return utils.SuccessResponse(c, "Templates retrieved successfully", templates)
 }
 
 // GetTemplate obtiene un template específico
+// @Summary Obtener template
+// @Description Obtiene los detalles de un template específico
+// @Tags templates
+// @Accept json
+// @Produce json
+// @Param id path string true "ID del template"
+// @Security BearerAuth
+// @Success 200 {object} utils.Response{data=models.EmailTemplate}
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 404 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/templates/{id} [get]
 func (h *NotificationHandler) GetTemplate(c *fiber.Ctx) error {
 	idParam := c.Params("id")
+
 	id, err := primitive.ObjectIDFromHex(idParam)
 	if err != nil {
 		return utils.BadRequestResponse(c, "Invalid template ID", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	template, err := h.notificationService.GetTemplate(ctx, id)
@@ -468,7 +735,7 @@ func (h *NotificationHandler) GetTemplate(c *fiber.Ctx) error {
 		if repository.IsNotFoundError(err) {
 			return utils.NotFoundResponse(c, "Template not found")
 		}
-		h.logger.Error("Failed to get template", zap.String("id", idParam), zap.Error(err))
+		h.logError(c, "get_template", err)
 		return utils.InternalServerErrorResponse(c, "Failed to get template", err)
 	}
 
@@ -476,16 +743,36 @@ func (h *NotificationHandler) GetTemplate(c *fiber.Ctx) error {
 }
 
 // UpdateTemplate actualiza un template
+// @Summary Actualizar template
+// @Description Actualiza un template existente
+// @Tags templates
+// @Accept json
+// @Produce json
+// @Param id path string true "ID del template"
+// @Param request body UpdateTemplateRequest true "Datos de actualización"
+// @Security BearerAuth
+// @Success 200 {object} utils.Response{data=models.EmailTemplate}
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 404 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/templates/{id} [put]
 func (h *NotificationHandler) UpdateTemplate(c *fiber.Ctx) error {
 	idParam := c.Params("id")
+
 	id, err := primitive.ObjectIDFromHex(idParam)
 	if err != nil {
 		return utils.BadRequestResponse(c, "Invalid template ID", err)
 	}
 
 	var req UpdateTemplateRequest
+
 	if err := c.BodyParser(&req); err != nil {
 		return utils.BadRequestResponse(c, "Invalid JSON format", err)
+	}
+
+	if err := h.validator.Validate(&req); err != nil {
+		return utils.ValidationErrorResponse(c, "Validation failed", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -500,7 +787,7 @@ func (h *NotificationHandler) UpdateTemplate(c *fiber.Ctx) error {
 		return utils.InternalServerErrorResponse(c, "Failed to get template", err)
 	}
 
-	// Actualizar campos
+	// Actualizar campos proporcionados
 	if req.Subject != "" {
 		template.Subject = req.Subject
 	}
@@ -513,10 +800,10 @@ func (h *NotificationHandler) UpdateTemplate(c *fiber.Ctx) error {
 	if req.Description != "" {
 		template.Description = req.Description
 	}
-	if req.Tags != nil {
+	if len(req.Tags) > 0 {
 		template.Tags = req.Tags
 	}
-	if req.Variables != nil {
+	if len(req.Variables) > 0 {
 		template.Variables = req.Variables
 	}
 	if req.IsActive != nil {
@@ -525,18 +812,33 @@ func (h *NotificationHandler) UpdateTemplate(c *fiber.Ctx) error {
 
 	err = h.notificationService.UpdateTemplate(ctx, template)
 	if err != nil {
-		h.logger.Error("Failed to update template", zap.String("id", idParam), zap.Error(err))
+		h.logError(c, "update_template", err)
 		return utils.InternalServerErrorResponse(c, "Failed to update template", err)
 	}
 
-	h.logger.Info("Template updated successfully", zap.String("id", idParam))
+	h.logInfo(c, "update_template", "Template updated successfully",
+		zap.String("id", idParam))
 
 	return utils.SuccessResponse(c, "Template updated successfully", template)
 }
 
 // DeleteTemplate elimina un template
+// @Summary Eliminar template
+// @Description Elimina un template existente
+// @Tags templates
+// @Accept json
+// @Produce json
+// @Param id path string true "ID del template"
+// @Security BearerAuth
+// @Success 200 {object} utils.Response
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 404 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/templates/{id} [delete]
 func (h *NotificationHandler) DeleteTemplate(c *fiber.Ctx) error {
 	idParam := c.Params("id")
+
 	id, err := primitive.ObjectIDFromHex(idParam)
 	if err != nil {
 		return utils.BadRequestResponse(c, "Invalid template ID", err)
@@ -550,25 +852,42 @@ func (h *NotificationHandler) DeleteTemplate(c *fiber.Ctx) error {
 		if repository.IsNotFoundError(err) {
 			return utils.NotFoundResponse(c, "Template not found")
 		}
-		h.logger.Error("Failed to delete template", zap.String("id", idParam), zap.Error(err))
+		h.logError(c, "delete_template", err)
 		return utils.InternalServerErrorResponse(c, "Failed to delete template", err)
 	}
 
-	h.logger.Info("Template deleted successfully", zap.String("id", idParam))
+	h.logInfo(c, "delete_template", "Template deleted successfully",
+		zap.String("id", idParam))
 
 	return utils.SuccessResponse(c, "Template deleted successfully", nil)
 }
 
 // PreviewTemplate genera vista previa de un template
+// @Summary Vista previa de template
+// @Description Genera una vista previa de un template con datos de prueba
+// @Tags templates
+// @Accept json
+// @Produce json
+// @Param name path string true "Nombre del template"
+// @Param request body PreviewTemplateRequest true "Datos para la vista previa"
+// @Security BearerAuth
+// @Success 200 {object} utils.Response{data=models.TemplatePreview}
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 404 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/templates/{name}/preview [post]
 func (h *NotificationHandler) PreviewTemplate(c *fiber.Ctx) error {
 	templateName := c.Params("name")
 
-	var req struct {
-		Data map[string]interface{} `json:"data"`
-	}
+	var req PreviewTemplateRequest
 
 	if err := c.BodyParser(&req); err != nil {
 		return utils.BadRequestResponse(c, "Invalid JSON format", err)
+	}
+
+	if err := h.validator.Validate(&req); err != nil {
+		return utils.ValidationErrorResponse(c, "Validation failed", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -579,18 +898,30 @@ func (h *NotificationHandler) PreviewTemplate(c *fiber.Ctx) error {
 		if repository.IsNotFoundError(err) {
 			return utils.NotFoundResponse(c, "Template not found")
 		}
-		h.logger.Error("Failed to preview template", zap.String("template", templateName), zap.Error(err))
+		h.logError(c, "preview_template", err)
 		return utils.InternalServerErrorResponse(c, "Failed to preview template", err)
 	}
 
-	return utils.SuccessResponse(c, "Template preview generated", preview)
+	return utils.SuccessResponse(c, "Template preview generated successfully", preview)
 }
 
 // ================================
-// STATISTICS AND MONITORING
+// ESTADÍSTICAS Y MONITOREO
 // ================================
 
 // GetNotificationStats obtiene estadísticas de notificaciones
+// @Summary Estadísticas de notificaciones
+// @Description Obtiene estadísticas de notificaciones para un rango de tiempo
+// @Tags stats
+// @Accept json
+// @Produce json
+// @Param time_range query string false "Rango de tiempo (ej: 24h, 7d, 30d)" default(24h)
+// @Security BearerAuth
+// @Success 200 {object} utils.Response{data=models.NotificationStats}
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/stats [get]
 func (h *NotificationHandler) GetNotificationStats(c *fiber.Ctx) error {
 	timeRangeParam := c.Query("time_range", "24h")
 	timeRange, err := time.ParseDuration(timeRangeParam)
@@ -603,91 +934,214 @@ func (h *NotificationHandler) GetNotificationStats(c *fiber.Ctx) error {
 
 	stats, err := h.notificationService.GetNotificationStats(ctx, timeRange)
 	if err != nil {
-		h.logger.Error("Failed to get notification stats", zap.Error(err))
+		h.logError(c, "get_notification_stats", err)
 		return utils.InternalServerErrorResponse(c, "Failed to get notification stats", err)
 	}
 
 	return utils.SuccessResponse(c, "Statistics retrieved successfully", stats)
 }
 
+// GetServiceStats obtiene estadísticas del servicio
+// @Summary Estadísticas del servicio
+// @Description Obtiene estadísticas en tiempo real del servicio de notificaciones
+// @Tags stats
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} utils.Response{data=services.ServiceStats}
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/stats/service [get]
+func (h *NotificationHandler) GetServiceStats(c *fiber.Ctx) error {
+	stats := h.notificationService.GetServiceStats()
+	return utils.SuccessResponse(c, "Service statistics retrieved successfully", stats)
+}
+
+// GetHealthStatus verifica el estado de salud del servicio
+// @Summary Estado de salud
+// @Description Verifica el estado de salud del sistema de notificaciones
+// @Tags health
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} utils.Response{data=fiber.Map}
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/health [get]
+func (h *NotificationHandler) GetHealthStatus(c *fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	health := h.notificationService.GetHealthStatus(ctx)
+
+	// Determinar código de respuesta basado en el estado
+	if health["service"] == "healthy" {
+		return utils.SuccessResponse(c, "System is healthy", health)
+	} else {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(utils.Response{
+			Success:   false,
+			Message:   "System is not fully healthy",
+			Data:      health,
+			Timestamp: time.Now(),
+		})
+	}
+}
+
+// ================================
+// ADMINISTRACIÓN Y MANTENIMIENTO
+// ================================
+
+// ProcessPendingNotifications procesa manualmente las notificaciones pendientes
+// @Summary Procesar notificaciones pendientes
+// @Description Procesa manualmente todas las notificaciones pendientes
+// @Tags admin
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} utils.Response
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 403 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/admin/process-pending [post]
+func (h *NotificationHandler) ProcessPendingNotifications(c *fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	err := h.notificationService.ProcessPendingNotifications(ctx)
+	if err != nil {
+		h.logError(c, "process_pending", err)
+		return utils.InternalServerErrorResponse(c, "Failed to process pending notifications", err)
+	}
+
+	h.logInfo(c, "process_pending", "Pending notifications processed successfully")
+
+	return utils.SuccessResponse(c, "Pending notifications processed successfully", nil)
+}
+
+// RetryFailedNotifications reintenta notificaciones fallidas
+// @Summary Reintentar notificaciones fallidas
+// @Description Reintenta todas las notificaciones fallidas que pueden ser reintentadas
+// @Tags admin
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} utils.Response
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 403 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/admin/retry-failed [post]
+func (h *NotificationHandler) RetryFailedNotifications(c *fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	err := h.notificationService.RetryFailedNotifications(ctx)
+	if err != nil {
+		h.logError(c, "retry_failed", err)
+		return utils.InternalServerErrorResponse(c, "Failed to retry failed notifications", err)
+	}
+
+	h.logInfo(c, "retry_failed", "Failed notifications retry completed")
+
+	return utils.SuccessResponse(c, "Failed notifications retry completed", nil)
+}
+
+// CleanupOldNotifications limpia notificaciones antiguas
+// @Summary Limpiar notificaciones antiguas
+// @Description Elimina notificaciones antiguas del sistema
+// @Tags admin
+// @Accept json
+// @Produce json
+// @Param older_than query string false "Eliminar notificaciones más antiguas que (ej: 90d)" default(90d)
+// @Security BearerAuth
+// @Success 200 {object} utils.Response{data=fiber.Map}
+// @Failure 400 {object} utils.ErrorResponse
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 403 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/admin/cleanup [delete]
+func (h *NotificationHandler) CleanupOldNotifications(c *fiber.Ctx) error {
+	olderThanParam := c.Query("older_than", "90d")
+	olderThan, err := time.ParseDuration(olderThanParam)
+	if err != nil {
+		return utils.BadRequestResponse(c, "Invalid older_than format", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	deletedCount, err := h.notificationService.CleanupOldNotifications(ctx, olderThan)
+	if err != nil {
+		h.logError(c, "cleanup_old", err)
+		return utils.InternalServerErrorResponse(c, "Failed to cleanup old notifications", err)
+	}
+
+	h.logInfo(c, "cleanup_old", "Old notifications cleaned up",
+		zap.Int64("deleted_count", deletedCount),
+		zap.Duration("older_than", olderThan))
+
+	response := fiber.Map{
+		"deleted_count": deletedCount,
+		"older_than":    olderThanParam,
+	}
+
+	return utils.SuccessResponse(c, "Old notifications cleaned up successfully", response)
+}
+
 // TestEmailConfiguration prueba la configuración de email
+// @Summary Probar configuración de email
+// @Description Prueba la configuración SMTP enviando un email de prueba
+// @Tags admin
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} utils.Response
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 403 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/admin/test-config [post]
 func (h *NotificationHandler) TestEmailConfiguration(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	err := h.notificationService.TestEmailConfiguration(ctx)
 	if err != nil {
-		h.logger.Error("Email configuration test failed", zap.Error(err))
+		h.logError(c, "test_config", err)
 		return utils.InternalServerErrorResponse(c, "Email configuration test failed", err)
 	}
 
-	h.logger.Info("Email configuration test successful")
+	h.logInfo(c, "test_config", "Email configuration test successful")
 
 	return utils.SuccessResponse(c, "Email configuration test successful", nil)
 }
 
-// ================================
-// SYSTEM OPERATIONS
-// ================================
-
-// ProcessPendingNotifications procesa notificaciones pendientes manualmente
-func (h *NotificationHandler) ProcessPendingNotifications(c *fiber.Ctx) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	err := h.notificationService.ProcessPendingNotifications(ctx)
-	if err != nil {
-		h.logger.Error("Failed to process pending notifications", zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to process pending notifications", err)
-	}
-
-	h.logger.Info("Pending notifications processed successfully")
-
-	return utils.SuccessResponse(c, "Pending notifications processed successfully", nil)
-}
-
-// RetryFailedNotifications reintenta notificaciones fallidas
-func (h *NotificationHandler) RetryFailedNotifications(c *fiber.Ctx) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	err := h.notificationService.RetryFailedNotifications(ctx)
-	if err != nil {
-		h.logger.Error("Failed to retry failed notifications", zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to retry failed notifications", err)
-	}
-
-	h.logger.Info("Failed notifications retry completed")
-
-	return utils.SuccessResponse(c, "Failed notifications retry completed", nil)
-}
-
-// CleanupOldNotifications limpia notificaciones antiguas
-func (h *NotificationHandler) CleanupOldNotifications(c *fiber.Ctx) error {
-	olderThanParam := c.Query("older_than", "720h") // 30 días por defecto
-	olderThan, err := time.ParseDuration(olderThanParam)
-	if err != nil {
-		return utils.BadRequestResponse(c, "Invalid older_than duration format", err)
-	}
-
+// CreateDefaultTemplates crea templates por defecto del sistema
+// @Summary Crear templates por defecto
+// @Description Crea los templates por defecto del sistema si no existen
+// @Tags admin
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} utils.Response
+// @Failure 401 {object} utils.ErrorResponse
+// @Failure 403 {object} utils.ErrorResponse
+// @Failure 500 {object} utils.ErrorResponse
+// @Router /api/v1/notifications/admin/default-templates [post]
+func (h *NotificationHandler) CreateDefaultTemplates(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	deletedCount, err := h.notificationService.CleanupOldNotifications(ctx, olderThan)
+	err := h.notificationService.CreateDefaultTemplates(ctx)
 	if err != nil {
-		h.logger.Error("Failed to cleanup old notifications", zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to cleanup old notifications", err)
+		h.logError(c, "create_default_templates", err)
+		return utils.InternalServerErrorResponse(c, "Failed to create default templates", err)
 	}
 
-	h.logger.Info("Old notifications cleaned up", zap.Int64("count", deletedCount))
+	h.logInfo(c, "create_default_templates", "Default templates created successfully")
 
-	return utils.SuccessResponse(c, "Old notifications cleaned up successfully", fiber.Map{
-		"deleted_count": deletedCount,
-	})
+	return utils.SuccessResponse(c, "Default templates created successfully", nil)
 }
 
 // ================================
-// HELPER METHODS
+// MÉTODOS AUXILIARES
 // ================================
 
 // getUserIDFromContext obtiene el ID del usuario del contexto
@@ -726,23 +1180,113 @@ func (h *NotificationHandler) getUserFromContext(c *fiber.Ctx) string {
 
 // logError registra un error con contexto
 func (h *NotificationHandler) logError(c *fiber.Ctx, action string, err error) {
+	userID := "unknown"
+	if uid := h.getUserIDFromContext(c); uid != nil {
+		userID = uid.Hex()
+	}
+
 	h.logger.Error("Notification handler error",
 		zap.String("action", action),
 		zap.String("method", c.Method()),
 		zap.String("path", c.Path()),
 		zap.String("ip", c.IP()),
+		zap.String("user_id", userID),
+		zap.String("user_agent", c.Get("User-Agent")),
 		zap.Error(err))
 }
 
 // logInfo registra información con contexto
 func (h *NotificationHandler) logInfo(c *fiber.Ctx, action, message string, fields ...zap.Field) {
+	userID := "unknown"
+	if uid := h.getUserIDFromContext(c); uid != nil {
+		userID = uid.Hex()
+	}
+
 	allFields := []zap.Field{
 		zap.String("action", action),
 		zap.String("method", c.Method()),
 		zap.String("path", c.Path()),
 		zap.String("ip", c.IP()),
+		zap.String("user_id", userID),
 	}
 	allFields = append(allFields, fields...)
 
 	h.logger.Info(message, allFields...)
+}
+
+// validateNotificationAccess valida si el usuario tiene acceso a una notificación
+func (h *NotificationHandler) validateNotificationAccess(c *fiber.Ctx, notification *models.EmailNotification) bool {
+	userID := h.getUserIDFromContext(c)
+	if userID == nil {
+		return false
+	}
+
+	// Si es admin, tiene acceso a todas las notificaciones
+	if h.isAdmin(c) {
+		return true
+	}
+
+	// Si la notificación pertenece al usuario, tiene acceso
+	if notification.UserID != nil && notification.UserID.Hex() == userID.Hex() {
+		return true
+	}
+
+	// Si no tiene user_id asociado, cualquier usuario autenticado puede verla
+	if notification.UserID == nil {
+		return true
+	}
+
+	return false
+}
+
+// isAdmin verifica si el usuario es administrador
+func (h *NotificationHandler) isAdmin(c *fiber.Ctx) bool {
+	userRole := c.Locals("user_role")
+	return userRole == "admin"
+}
+
+// parseTimeRange convierte string a time.Duration con valores por defecto
+func (h *NotificationHandler) parseTimeRange(timeRangeStr string) time.Duration {
+	if timeRangeStr == "" {
+		return 24 * time.Hour
+	}
+
+	duration, err := time.ParseDuration(timeRangeStr)
+	if err != nil {
+		// Si no se puede parsear, usar valor por defecto
+		return 24 * time.Hour
+	}
+
+	// Limitar el rango máximo a 1 año
+	if duration > 365*24*time.Hour {
+		return 365 * 24 * time.Hour
+	}
+
+	return duration
+}
+
+// sanitizeFilters sanitiza y valida los filtros de entrada
+func (h *NotificationHandler) sanitizeFilters(filters map[string]interface{}) map[string]interface{} {
+	sanitized := make(map[string]interface{})
+
+	for key, value := range filters {
+		switch key {
+		case "status":
+			if status := models.NotificationStatus(value.(string)); status.IsValid() {
+				sanitized[key] = status
+			}
+		case "type":
+			if notifType := models.NotificationType(value.(string)); notifType.IsValid() {
+				sanitized[key] = notifType
+			}
+		case "priority":
+			if priority := models.NotificationPriority(value.(string)); priority.IsValid() {
+				sanitized[key] = priority
+			}
+		default:
+			sanitized[key] = value
+		}
+	}
+
+	return sanitized
 }

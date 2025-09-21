@@ -1,35 +1,44 @@
 package models
 
 import (
-	"errors"
 	"fmt"
+	"html/template"
+	"regexp"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+// ================================
+// ENUMS Y CONSTANTES
+// ================================
+
+// NotificationStatus estados de notificación
+type NotificationStatus string
+
+const (
+	NotificationStatusPending    NotificationStatus = "pending"
+	NotificationStatusProcessing NotificationStatus = "processing"
+	NotificationStatusSent       NotificationStatus = "sent"
+	NotificationStatusFailed     NotificationStatus = "failed"
+	NotificationStatusCancelled  NotificationStatus = "cancelled"
+	NotificationStatusScheduled  NotificationStatus = "scheduled"
 )
 
 // NotificationType tipos de notificación
 type NotificationType string
 
 const (
-	NotificationTypeCustom       NotificationType = "custom"
-	NotificationTypeSystemAlert  NotificationType = "system_alert"
-	NotificationTypeWorkflow     NotificationType = "workflow"
-	NotificationTypeUserActivity NotificationType = "user_activity"
-	NotificationTypeBackup       NotificationType = "backup"
-	NotificationTypeScheduled    NotificationType = "scheduled"
-)
-
-// NotificationStatus estados de las notificaciones
-type NotificationStatus string
-
-const (
-	NotificationStatusPending   NotificationStatus = "pending"
-	NotificationStatusSending   NotificationStatus = "sending"
-	NotificationStatusSent      NotificationStatus = "sent"
-	NotificationStatusFailed    NotificationStatus = "failed"
-	NotificationStatusCancelled NotificationStatus = "cancelled"
-	NotificationStatusScheduled NotificationStatus = "scheduled"
+	NotificationTypeCustom        NotificationType = "custom"
+	NotificationTypeWelcome       NotificationType = "welcome"
+	NotificationTypePasswordReset NotificationType = "password_reset"
+	NotificationTypeSystemAlert   NotificationType = "system_alert"
+	NotificationTypeWorkflow      NotificationType = "workflow"
+	NotificationTypeUserActivity  NotificationType = "user_activity"
+	NotificationTypeBackup        NotificationType = "backup"
+	NotificationTypeScheduled     NotificationType = "scheduled"
+	NotificationTypeReminder      NotificationType = "reminder"
 )
 
 // NotificationPriority prioridades de notificación
@@ -40,38 +49,53 @@ const (
 	NotificationPriorityNormal   NotificationPriority = "normal"
 	NotificationPriorityHigh     NotificationPriority = "high"
 	NotificationPriorityCritical NotificationPriority = "critical"
-	NotificationPriorityUrgent   NotificationPriority = "urgent"
 )
 
-// EmailNotification modelo principal para notificaciones por email
+// Constantes para límites y configuración
+const (
+	MaxEmailRecipients = 100
+	MaxSubjectLength   = 200
+	MaxBodyLength      = 1000000          // 1MB
+	MaxAttachmentSize  = 25 * 1024 * 1024 // 25MB
+	MaxAttachments     = 10
+	DefaultMaxAttempts = 3
+	DefaultRetryDelay  = 5 * time.Minute
+	MaxRetryDelay      = 24 * time.Hour
+)
+
+// ================================
+// MODELOS PRINCIPALES
+// ================================
+
+// EmailNotification modelo principal para notificaciones de email
 type EmailNotification struct {
 	ID       primitive.ObjectID   `json:"id" bson:"_id,omitempty"`
 	Type     NotificationType     `json:"type" bson:"type"`
 	Status   NotificationStatus   `json:"status" bson:"status"`
 	Priority NotificationPriority `json:"priority" bson:"priority"`
 
-	// Contenido del email
-	To      []string `json:"to" bson:"to"`
-	CC      []string `json:"cc,omitempty" bson:"cc,omitempty"`
-	BCC     []string `json:"bcc,omitempty" bson:"bcc,omitempty"`
-	Subject string   `json:"subject" bson:"subject"`
-	Body    string   `json:"body" bson:"body"`
-	IsHTML  bool     `json:"is_html" bson:"is_html"`
+	// Destinatarios
+	To  []string `json:"to" bson:"to"`
+	CC  []string `json:"cc,omitempty" bson:"cc,omitempty"`
+	BCC []string `json:"bcc,omitempty" bson:"bcc,omitempty"`
 
-	// Template info
+	// Contenido
+	Subject string `json:"subject" bson:"subject"`
+	Body    string `json:"body" bson:"body"`
+	IsHTML  bool   `json:"is_html" bson:"is_html"`
+
+	// Template utilizado (opcional)
 	TemplateName string                 `json:"template_name,omitempty" bson:"template_name,omitempty"`
 	TemplateData map[string]interface{} `json:"template_data,omitempty" bson:"template_data,omitempty"`
 
-	// Metadatos de relación
-	UserID      *primitive.ObjectID `json:"user_id,omitempty" bson:"user_id,omitempty"`
-	WorkflowID  *primitive.ObjectID `json:"workflow_id,omitempty" bson:"workflow_id,omitempty"`
-	ExecutionID *string             `json:"execution_id,omitempty" bson:"execution_id,omitempty"`
+	// Adjuntos
+	Attachments []EmailAttachment `json:"attachments,omitempty" bson:"attachments,omitempty"`
 
 	// Programación
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty" bson:"scheduled_at,omitempty"`
 	SentAt      *time.Time `json:"sent_at,omitempty" bson:"sent_at,omitempty"`
 
-	// Manejo de errores y reintentos
+	// Control de reintentos
 	Attempts      int                 `json:"attempts" bson:"attempts"`
 	MaxAttempts   int                 `json:"max_attempts" bson:"max_attempts"`
 	LastAttemptAt *time.Time          `json:"last_attempt_at,omitempty" bson:"last_attempt_at,omitempty"`
@@ -82,19 +106,36 @@ type EmailNotification struct {
 	MessageID    string                 `json:"message_id,omitempty" bson:"message_id,omitempty"`
 	ProviderData map[string]interface{} `json:"provider_data,omitempty" bson:"provider_data,omitempty"`
 
+	// Metadatos de relación
+	UserID      *primitive.ObjectID `json:"user_id,omitempty" bson:"user_id,omitempty"`
+	WorkflowID  *primitive.ObjectID `json:"workflow_id,omitempty" bson:"workflow_id,omitempty"`
+	ExecutionID *string             `json:"execution_id,omitempty" bson:"execution_id,omitempty"`
+
 	// Auditoría
 	CreatedAt time.Time `json:"created_at" bson:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
 	CreatedBy *string   `json:"created_by,omitempty" bson:"created_by,omitempty"`
 }
 
+// EmailAttachment adjunto de email
+type EmailAttachment struct {
+	Filename    string `json:"filename" bson:"filename"`
+	ContentType string `json:"content_type" bson:"content_type"`
+	Size        int64  `json:"size" bson:"size"`
+	Data        []byte `json:"data,omitempty" bson:"data,omitempty"`                 // Para archivos pequeños
+	StoragePath string `json:"storage_path,omitempty" bson:"storage_path,omitempty"` // Para archivos grandes
+	Inline      bool   `json:"inline" bson:"inline"`                                 // Para imágenes embebidas
+	ContentID   string `json:"content_id,omitempty" bson:"content_id,omitempty"`     // Para referencias inline
+}
+
 // NotificationError estructura para errores de notificación
 type NotificationError struct {
-	Timestamp   time.Time `json:"timestamp" bson:"timestamp"`
-	Code        string    `json:"code" bson:"code"`
-	Message     string    `json:"message" bson:"message"`
-	Details     string    `json:"details,omitempty" bson:"details,omitempty"`
-	Recoverable bool      `json:"recoverable" bson:"recoverable"`
+	Timestamp   time.Time              `json:"timestamp" bson:"timestamp"`
+	Code        string                 `json:"code" bson:"code"`
+	Message     string                 `json:"message" bson:"message"`
+	Details     string                 `json:"details,omitempty" bson:"details,omitempty"`
+	Recoverable bool                   `json:"recoverable" bson:"recoverable"`
+	Context     map[string]interface{} `json:"context,omitempty" bson:"context,omitempty"`
 }
 
 // EmailTemplate modelo para templates de email
@@ -115,8 +156,10 @@ type EmailTemplate struct {
 	Tags        []string           `json:"tags,omitempty" bson:"tags,omitempty"`
 	Variables   []TemplateVariable `json:"variables,omitempty" bson:"variables,omitempty"`
 
-	// Estado
-	IsActive bool `json:"is_active" bson:"is_active"`
+	// Configuración
+	IsActive  bool                   `json:"is_active" bson:"is_active"`
+	IsDefault bool                   `json:"is_default" bson:"is_default"`
+	Config    map[string]interface{} `json:"config,omitempty" bson:"config,omitempty"`
 
 	// Auditoría
 	CreatedAt time.Time `json:"created_at" bson:"created_at"`
@@ -133,6 +176,10 @@ type TemplateVariable struct {
 	DefaultValue interface{} `json:"default_value,omitempty" bson:"default_value,omitempty"`
 	Example      interface{} `json:"example,omitempty" bson:"example,omitempty"`
 }
+
+// ================================
+// ESTRUCTURAS DE REQUEST/RESPONSE
+// ================================
 
 // SendEmailRequest estructura para solicitudes de envío
 type SendEmailRequest struct {
@@ -165,6 +212,15 @@ type SendEmailRequest struct {
 	ExecutionID *string             `json:"execution_id,omitempty"`
 }
 
+// SendEmailResponse respuesta del envío de email
+type SendEmailResponse struct {
+	NotificationID string             `json:"notification_id"`
+	Status         NotificationStatus `json:"status"`
+	MessageID      string             `json:"message_id,omitempty"`
+	ScheduledAt    *time.Time         `json:"scheduled_at,omitempty"`
+	EstimatedSend  *time.Time         `json:"estimated_send,omitempty"`
+}
+
 // NotificationStats estadísticas de notificaciones
 type NotificationStats struct {
 	TotalNotifications int64                          `json:"total_notifications"`
@@ -175,6 +231,7 @@ type NotificationStats struct {
 	AverageRetries     float64                        `json:"average_retries"`
 	LastProcessed      *time.Time                     `json:"last_processed,omitempty"`
 	Period             time.Duration                  `json:"period"`
+	TotalVolume        int64                          `json:"total_volume"` // Bytes enviados
 }
 
 // NotificationBatch estructura para envío en lotes
@@ -191,29 +248,204 @@ type NotificationBatch struct {
 	CreatedBy    string             `json:"created_by" bson:"created_by"`
 }
 
-// Métodos de conveniencia para EmailNotification
-
-// IsDelivered verifica si la notificación fue entregada exitosamente
-func (n *EmailNotification) IsDelivered() bool {
-	return n.Status == NotificationStatusSent
+// TemplatePreview vista previa de template
+type TemplatePreview struct {
+	Subject   string                 `json:"subject"`
+	Body      string                 `json:"body"`
+	IsHTML    bool                   `json:"is_html"`
+	Variables map[string]interface{} `json:"variables"`
 }
 
-// IsFailed verifica si la notificación falló definitivamente
-func (n *EmailNotification) IsFailed() bool {
-	return n.Status == NotificationStatusFailed && n.Attempts >= n.MaxAttempts
-}
+// ================================
+// MÉTODOS DE VALIDACIÓN
+// ================================
 
-// CanRetry verifica si se puede reintentar la notificación
-func (n *EmailNotification) CanRetry() bool {
-	return n.Status == NotificationStatusFailed && n.Attempts < n.MaxAttempts
-}
+var (
+	emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+)
 
-// AddError agrega un error a la notificación
-func (n *EmailNotification) AddError(code, message, details string, recoverable bool) {
-	if n.Errors == nil {
-		n.Errors = make([]NotificationError, 0)
+// Validate valida una notificación de email
+func (n *EmailNotification) Validate() error {
+	// Validar destinatarios
+	if len(n.To) == 0 {
+		return fmt.Errorf("at least one recipient is required")
 	}
 
+	if len(n.To) > MaxEmailRecipients {
+		return fmt.Errorf("too many recipients: maximum %d allowed", MaxEmailRecipients)
+	}
+
+	// Validar emails
+	allEmails := append(n.To, n.CC...)
+	allEmails = append(allEmails, n.BCC...)
+	for _, email := range allEmails {
+		if !emailRegex.MatchString(email) {
+			return fmt.Errorf("invalid email address: %s", email)
+		}
+	}
+
+	// Validar contenido
+	if strings.TrimSpace(n.Subject) == "" {
+		return fmt.Errorf("subject is required")
+	}
+
+	if len(n.Subject) > MaxSubjectLength {
+		return fmt.Errorf("subject too long: maximum %d characters", MaxSubjectLength)
+	}
+
+	if strings.TrimSpace(n.Body) == "" && n.TemplateName == "" {
+		return fmt.Errorf("body or template is required")
+	}
+
+	if len(n.Body) > MaxBodyLength {
+		return fmt.Errorf("body too long: maximum %d characters", MaxBodyLength)
+	}
+
+	// Validar adjuntos
+	if len(n.Attachments) > MaxAttachments {
+		return fmt.Errorf("too many attachments: maximum %d allowed", MaxAttachments)
+	}
+
+	var totalSize int64
+	for _, attachment := range n.Attachments {
+		if attachment.Size > MaxAttachmentSize {
+			return fmt.Errorf("attachment %s too large: maximum %d bytes", attachment.Filename, MaxAttachmentSize)
+		}
+		totalSize += attachment.Size
+	}
+
+	if totalSize > MaxAttachmentSize*2 {
+		return fmt.Errorf("total attachments size too large")
+	}
+
+	// Validar configuración de reintentos
+	if n.MaxAttempts < 1 || n.MaxAttempts > 10 {
+		return fmt.Errorf("max_attempts must be between 1 and 10")
+	}
+
+	// Validar programación
+	if n.ScheduledAt != nil && n.ScheduledAt.Before(time.Now()) {
+		return fmt.Errorf("scheduled_at must be in the future")
+	}
+
+	return nil
+}
+
+// ValidateTemplate valida un template de email
+func (t *EmailTemplate) ValidateTemplate() error {
+	if strings.TrimSpace(t.Name) == "" {
+		return fmt.Errorf("template name is required")
+	}
+
+	if len(t.Name) > 100 {
+		return fmt.Errorf("template name too long: maximum 100 characters")
+	}
+
+	if strings.TrimSpace(t.Subject) == "" {
+		return fmt.Errorf("template subject is required")
+	}
+
+	if strings.TrimSpace(t.BodyText) == "" && strings.TrimSpace(t.BodyHTML) == "" {
+		return fmt.Errorf("template must have either text or HTML body")
+	}
+
+	// Validar sintaxis de template
+	if err := t.validateTemplateSyntax(); err != nil {
+		return fmt.Errorf("template syntax error: %w", err)
+	}
+
+	return nil
+}
+
+// validateTemplateSyntax valida la sintaxis del template
+func (t *EmailTemplate) validateTemplateSyntax() error {
+	// Validar subject
+	if _, err := template.New("subject").Parse(t.Subject); err != nil {
+		return fmt.Errorf("invalid subject template: %w", err)
+	}
+
+	// Validar body text
+	if t.BodyText != "" {
+		if _, err := template.New("body_text").Parse(t.BodyText); err != nil {
+			return fmt.Errorf("invalid text body template: %w", err)
+		}
+	}
+
+	// Validar body HTML
+	if t.BodyHTML != "" {
+		if _, err := template.New("body_html").Parse(t.BodyHTML); err != nil {
+			return fmt.Errorf("invalid HTML body template: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ================================
+// MÉTODOS DE UTILIDAD
+// ================================
+
+// IsValid verifica si el status es válido
+func (s NotificationStatus) IsValid() bool {
+	switch s {
+	case NotificationStatusPending, NotificationStatusProcessing, NotificationStatusSent,
+		NotificationStatusFailed, NotificationStatusCancelled, NotificationStatusScheduled:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsValid verifica si el tipo es válido
+func (t NotificationType) IsValid() bool {
+	switch t {
+	case NotificationTypeCustom, NotificationTypeWelcome, NotificationTypePasswordReset,
+		NotificationTypeSystemAlert, NotificationTypeWorkflow, NotificationTypeUserActivity,
+		NotificationTypeBackup, NotificationTypeScheduled, NotificationTypeReminder:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsValid verifica si la prioridad es válida
+func (p NotificationPriority) IsValid() bool {
+	switch p {
+	case NotificationPriorityLow, NotificationPriorityNormal,
+		NotificationPriorityHigh, NotificationPriorityCritical:
+		return true
+	default:
+		return false
+	}
+}
+
+// CanRetry determina si una notificación puede ser reintentada
+func (n *EmailNotification) CanRetry() bool {
+	return n.Status == NotificationStatusFailed &&
+		n.Attempts < n.MaxAttempts &&
+		(n.NextRetryAt == nil || n.NextRetryAt.Before(time.Now()))
+}
+
+// IsScheduled determina si una notificación está programada
+func (n *EmailNotification) IsScheduled() bool {
+	return n.ScheduledAt != nil && n.ScheduledAt.After(time.Now())
+}
+
+// ShouldProcess determina si una notificación debe procesarse ahora
+func (n *EmailNotification) ShouldProcess() bool {
+	if n.Status != NotificationStatusPending && n.Status != NotificationStatusScheduled {
+		return false
+	}
+
+	if n.ScheduledAt != nil && n.ScheduledAt.After(time.Now()) {
+		return false
+	}
+
+	return true
+}
+
+// AddError añade un error a la notificación
+func (n *EmailNotification) AddError(code, message, details string, recoverable bool) {
 	n.Errors = append(n.Errors, NotificationError{
 		Timestamp:   time.Now(),
 		Code:        code,
@@ -223,7 +455,7 @@ func (n *EmailNotification) AddError(code, message, details string, recoverable 
 	})
 }
 
-// GetLastError obtiene el último error registrado
+// GetLastError obtiene el último error
 func (n *EmailNotification) GetLastError() *NotificationError {
 	if len(n.Errors) == 0 {
 		return nil
@@ -231,140 +463,59 @@ func (n *EmailNotification) GetLastError() *NotificationError {
 	return &n.Errors[len(n.Errors)-1]
 }
 
-// MarkAsSending marca la notificación como enviándose
-func (n *EmailNotification) MarkAsSending() {
-	n.Status = NotificationStatusSending
-	n.UpdatedAt = time.Now()
-}
-
-// MarkAsSent marca la notificación como enviada exitosamente
-func (n *EmailNotification) MarkAsSent(messageID string) {
-	n.Status = NotificationStatusSent
-	n.MessageID = messageID
-	now := time.Now()
-	n.SentAt = &now
-	n.UpdatedAt = now
-}
-
-// MarkAsFailed marca la notificación como fallida
-func (n *EmailNotification) MarkAsFailed() {
-	n.Status = NotificationStatusFailed
-	n.UpdatedAt = time.Now()
-	n.Attempts++
-	now := time.Now()
-	n.LastAttemptAt = &now
-
-	// Calcular próximo intento si es recuperable
-	if n.CanRetry() {
-		nextRetry := now.Add(time.Duration(n.Attempts*n.Attempts) * time.Minute) // Backoff exponencial
-		n.NextRetryAt = &nextRetry
-	}
-}
-
-// Validate valida la estructura de la notificación
-func (n *EmailNotification) Validate() error {
-	if len(n.To) == 0 {
-		return errors.New("at least one recipient is required")
+// CalculateNextRetry calcula el próximo intento con backoff exponencial
+func (n *EmailNotification) CalculateNextRetry() time.Time {
+	if n.Attempts == 0 {
+		return time.Now().Add(DefaultRetryDelay)
 	}
 
-	if n.Subject == "" && n.TemplateName == "" {
-		return errors.New("subject is required when not using a template")
+	// Backoff exponencial con jitter
+	delay := DefaultRetryDelay
+	for i := 1; i < n.Attempts; i++ {
+		delay *= 2
+		if delay > MaxRetryDelay {
+			delay = MaxRetryDelay
+			break
+		}
 	}
 
-	if n.Body == "" && n.TemplateName == "" {
-		return errors.New("body is required when not using a template")
+	// Añadir jitter del 10%
+	jitter := time.Duration(float64(delay) * 0.1)
+	return time.Now().Add(delay + jitter)
+}
+
+// ToEmailNotification convierte SendEmailRequest a EmailNotification
+func (req *SendEmailRequest) ToEmailNotification() *EmailNotification {
+	notification := &EmailNotification{
+		Type:         req.Type,
+		Priority:     req.Priority,
+		To:           req.To,
+		CC:           req.CC,
+		BCC:          req.BCC,
+		Subject:      req.Subject,
+		Body:         req.Body,
+		IsHTML:       req.IsHTML,
+		TemplateName: req.TemplateName,
+		TemplateData: req.TemplateData,
+		ScheduledAt:  req.ScheduledAt,
+		MaxAttempts:  req.MaxAttempts,
+		UserID:       req.UserID,
+		WorkflowID:   req.WorkflowID,
+		ExecutionID:  req.ExecutionID,
+		Status:       NotificationStatusPending,
+		Attempts:     0,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 
-	if n.MaxAttempts <= 0 {
-		n.MaxAttempts = 3 // Default
+	// Configurar valores por defecto
+	if notification.MaxAttempts == 0 {
+		notification.MaxAttempts = DefaultMaxAttempts
 	}
 
-	return nil
-}
-
-// Métodos para EmailTemplate
-
-// GetFullName obtiene el nombre completo del template con versión
-func (t *EmailTemplate) GetFullName() string {
-	return fmt.Sprintf("%s_v%d", t.Name, t.Version)
-}
-
-// HasHTMLVersion verifica si el template tiene versión HTML
-func (t *EmailTemplate) HasHTMLVersion() bool {
-	return t.BodyHTML != ""
-}
-
-// ValidateTemplate valida la estructura del template
-func (t *EmailTemplate) ValidateTemplate() error {
-	if t.Name == "" {
-		return errors.New("template name is required")
+	if notification.ScheduledAt != nil {
+		notification.Status = NotificationStatusScheduled
 	}
 
-	if t.Subject == "" {
-		return errors.New("template subject is required")
-	}
-
-	if t.BodyText == "" {
-		return errors.New("template body is required")
-	}
-
-	if t.Language == "" {
-		t.Language = "en" // Default
-	}
-
-	if t.Version <= 0 {
-		t.Version = 1 // Default
-	}
-
-	return nil
-}
-
-// TimeSeriesPoint punto de datos para series temporales
-type TimeSeriesPoint struct {
-	Timestamp time.Time              `json:"timestamp"`
-	Count     int64                  `json:"count"`
-	Metrics   map[string]interface{} `json:"metrics,omitempty"`
-}
-
-// DeliveryReport reporte de entrega de notificaciones
-type DeliveryReport struct {
-	Period     string                     `json:"period"`
-	TotalSent  int64                      `json:"total_sent"`
-	Delivered  int64                      `json:"delivered"`
-	Failed     int64                      `json:"failed"`
-	Bounced    int64                      `json:"bounced"`
-	ByProvider map[string]int64           `json:"by_provider,omitempty"`
-	ByTemplate map[string]int64           `json:"by_template,omitempty"`
-	TopErrors  []NotificationErrorSummary `json:"top_errors,omitempty"`
-	Timeline   []TimeSeriesPoint          `json:"timeline,omitempty"`
-}
-
-// NotificationErrorSummary resumen de errores
-type NotificationErrorSummary struct {
-	Code           string    `json:"code"`
-	Message        string    `json:"message"`
-	Count          int64     `json:"count"`
-	LastOccurrence time.Time `json:"last_occurrence"`
-	Recoverable    bool      `json:"recoverable"`
-}
-
-// FailureAnalysis análisis de fallos
-type FailureAnalysis struct {
-	Period         string                     `json:"period"`
-	TotalFailures  int64                      `json:"total_failures"`
-	FailureRate    float64                    `json:"failure_rate"`
-	TopErrorCodes  []NotificationErrorSummary `json:"top_error_codes"`
-	FailuresByHour map[int]int64              `json:"failures_by_hour"`
-	RecoveryRate   float64                    `json:"recovery_rate"`
-	AverageRetries float64                    `json:"average_retries"`
-}
-
-// PerformanceReport reporte de performance
-type PerformanceReport struct {
-	Period                string        `json:"period"`
-	TotalProcessed        int64         `json:"total_processed"`
-	AverageProcessingTime time.Duration `json:"average_processing_time"`
-	ThroughputPerSecond   float64       `json:"throughput_per_second"`
-	QueueDepth            int64         `json:"queue_depth"`
-	WorkerUtilization     float64       `json:"worker_utilization"`
+	return notification
 }

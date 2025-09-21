@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"text/template"
+	"sync"
 	"time"
 
 	"Engine_API_Workflow/internal/models"
@@ -16,13 +16,45 @@ import (
 	"go.uber.org/zap"
 )
 
-// NotificationService servicio para manejo de notificaciones por email
+// ================================
+// INTERFACES Y TIPOS
+// ================================
+
+// NotificationService servicio principal para manejo de notificaciones
 type NotificationService struct {
+	// Repositorios
 	notificationRepo repository.NotificationRepository
 	templateRepo     repository.TemplateRepository
-	emailService     email.Service
-	logger           *zap.Logger
-	config           *email.Config
+
+	// Servicios externos
+	emailService email.Service
+
+	// Configuración
+	logger *zap.Logger
+	config *email.Config
+
+	// Control de concurrencia
+	processingMux sync.RWMutex
+	isProcessing  bool
+
+	// Cache de templates
+	templateCache    map[string]*models.EmailTemplate
+	templateCacheMux sync.RWMutex
+	templateCacheTTL time.Duration
+
+	// Métricas en memoria
+	stats    *ServiceStats
+	statsMux sync.RWMutex
+}
+
+// ServiceStats estadísticas del servicio en memoria
+type ServiceStats struct {
+	EmailsSentToday    int64         `json:"emails_sent_today"`
+	EmailsFailedToday  int64         `json:"emails_failed_today"`
+	LastProcessingTime time.Time     `json:"last_processing_time"`
+	ProcessingDuration time.Duration `json:"processing_duration"`
+	TemplatesCached    int           `json:"templates_cached"`
+	ActiveTemplates    int           `json:"active_templates"`
 }
 
 // NotificationServiceConfig configuración del servicio
@@ -34,6 +66,26 @@ type NotificationServiceConfig struct {
 	Config           *email.Config
 }
 
+// ProcessingResult resultado del procesamiento
+type ProcessingResult struct {
+	ProcessedCount int               `json:"processed_count"`
+	SuccessCount   int               `json:"success_count"`
+	ErrorCount     int               `json:"error_count"`
+	Errors         []ProcessingError `json:"errors,omitempty"`
+	Duration       time.Duration     `json:"duration"`
+}
+
+// ProcessingError error durante el procesamiento
+type ProcessingError struct {
+	NotificationID string `json:"notification_id"`
+	Error          string `json:"error"`
+	Recoverable    bool   `json:"recoverable"`
+}
+
+// ================================
+// CONSTRUCTOR
+// ================================
+
 // NewNotificationService crea una nueva instancia del servicio
 func NewNotificationService(
 	notificationRepo repository.NotificationRepository,
@@ -42,25 +94,41 @@ func NewNotificationService(
 	logger *zap.Logger,
 	config *email.Config,
 ) *NotificationService {
-	return &NotificationService{
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	service := &NotificationService{
 		notificationRepo: notificationRepo,
 		templateRepo:     templateRepo,
 		emailService:     emailService,
 		logger:           logger,
 		config:           config,
+		templateCache:    make(map[string]*models.EmailTemplate),
+		templateCacheTTL: time.Hour,
+		stats:            &ServiceStats{},
 	}
+
+	// Cargar templates activos al cache
+	go service.warmUpTemplateCache()
+
+	return service
 }
 
 // NewNotificationServiceWithConfig crea el servicio con configuración
 func NewNotificationServiceWithConfig(config NotificationServiceConfig) *NotificationService {
-	return &NotificationService{
-		notificationRepo: config.NotificationRepo,
-		templateRepo:     config.TemplateRepo,
-		emailService:     config.EmailService,
-		logger:           config.Logger,
-		config:           config.Config,
-	}
+	return NewNotificationService(
+		config.NotificationRepo,
+		config.TemplateRepo,
+		config.EmailService,
+		config.Logger,
+		config.Config,
+	)
 }
+
+// ================================
+// MÉTODOS PRINCIPALES DE ENVÍO
+// ================================
 
 // SendEmail envía un email directo sin template
 func (s *NotificationService) SendEmail(ctx context.Context, req *models.SendEmailRequest) (*models.EmailNotification, error) {
@@ -70,36 +138,14 @@ func (s *NotificationService) SendEmail(ctx context.Context, req *models.SendEma
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Crear notificación
-	notification := &models.EmailNotification{
-		ID:          primitive.NewObjectID(),
-		Type:        req.Type,
-		Status:      models.NotificationStatusPending,
-		Priority:    req.Priority,
-		To:          req.To,
-		CC:          req.CC,
-		BCC:         req.BCC,
-		Subject:     req.Subject,
-		Body:        req.Body,
-		IsHTML:      req.IsHTML,
-		UserID:      req.UserID,
-		WorkflowID:  req.WorkflowID,
-		ExecutionID: req.ExecutionID,
-		ScheduledAt: req.ScheduledAt,
-		Attempts:    0,
-		MaxAttempts: req.MaxAttempts,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-	}
+	// Convertir request a notificación
+	notification := req.ToEmailNotification()
 
-	// Establecer valores por defecto
-	if notification.MaxAttempts == 0 {
-		notification.MaxAttempts = 3
-	}
-
-	// Validar la notificación
-	if err := notification.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid notification: %w", err)
+	// Procesar template si se especifica
+	if req.TemplateName != "" {
+		if err := s.processTemplate(ctx, notification, req.TemplateName, req.TemplateData); err != nil {
+			return nil, fmt.Errorf("template processing failed: %w", err)
+		}
 	}
 
 	// Guardar en la base de datos
@@ -114,385 +160,234 @@ func (s *NotificationService) SendEmail(ctx context.Context, req *models.SendEma
 		zap.Strings("to", notification.To))
 
 	// Si no está programada, enviar inmediatamente
-	if req.ScheduledAt == nil || req.ScheduledAt.Before(time.Now()) {
+	if notification.ShouldProcess() {
 		if err := s.sendNotificationNow(ctx, notification); err != nil {
 			s.logger.Error("Failed to send notification immediately",
 				zap.String("id", notification.ID.Hex()),
 				zap.Error(err))
 			// No retornar error aquí porque la notificación se guardó correctamente
-			// y puede ser procesada más tarde
 		}
 	}
 
 	return notification, nil
 }
 
-// SendTemplatedEmail envía un email usando un template
-func (s *NotificationService) SendTemplatedEmail(ctx context.Context, templateName string, to []string, data map[string]interface{}) error {
-	// Obtener el template
-	template, err := s.templateRepo.GetByName(ctx, templateName)
-	if err != nil {
-		s.logger.Error("Failed to get template",
-			zap.String("template", templateName),
-			zap.Error(err))
-		return fmt.Errorf("failed to get template %s: %w", templateName, err)
-	}
-
-	if !template.IsActive {
-		return fmt.Errorf("template %s is not active", templateName)
-	}
-
-	// Renderizar el template
-	subject, err := s.renderTemplate(template.Subject, data)
-	if err != nil {
-		return fmt.Errorf("failed to render subject template: %w", err)
-	}
-
-	body, err := s.renderTemplate(template.BodyText, data)
-	if err != nil {
-		return fmt.Errorf("failed to render body template: %w", err)
-	}
-
-	htmlBody := ""
-	if template.BodyHTML != "" {
-		htmlBody, err = s.renderTemplate(template.BodyHTML, data)
-		if err != nil {
-			return fmt.Errorf("failed to render HTML body template: %w", err)
-		}
-	}
-
-	// Crear request de email
+// SendSimpleEmail envía un email simple
+func (s *NotificationService) SendSimpleEmail(ctx context.Context, to []string, subject, body string, isHTML bool) (*models.EmailNotification, error) {
 	req := &models.SendEmailRequest{
-		Type:         template.Type,
-		Priority:     models.NotificationPriorityNormal,
-		To:           to,
-		Subject:      subject,
-		Body:         body,
-		IsHTML:       htmlBody != "",
-		TemplateName: templateName,
-		TemplateData: data,
+		Type:     models.NotificationTypeCustom,
+		Priority: models.NotificationPriorityNormal,
+		To:       to,
+		Subject:  subject,
+		Body:     body,
+		IsHTML:   isHTML,
 	}
 
-	if htmlBody != "" {
-		req.Body = htmlBody
-		req.IsHTML = true
-	}
-
-	// Enviar el email
-	_, err = s.SendEmail(ctx, req)
-	return err
+	return s.SendEmail(ctx, req)
 }
 
-// SendSystemAlert envía una alerta del sistema
-func (s *NotificationService) SendSystemAlert(ctx context.Context, message, level string, recipients []string) error {
-	var priority models.NotificationPriority
-
-	switch strings.ToLower(level) {
-	case "critical":
-		priority = models.NotificationPriorityCritical
-	case "high", "error":
-		priority = models.NotificationPriorityHigh
-	case "warning", "warn":
-		priority = models.NotificationPriorityHigh
-	case "info", "low":
-		priority = models.NotificationPriorityNormal
-	default:
-		priority = models.NotificationPriorityNormal
-	}
-
+// SendTemplatedEmail envía un email usando un template
+func (s *NotificationService) SendTemplatedEmail(ctx context.Context, templateName string, to []string, data map[string]interface{}) error {
 	req := &models.SendEmailRequest{
-		Type:     models.NotificationTypeSystemAlert,
-		Priority: priority,
-		To:       recipients,
-		Subject:  fmt.Sprintf("[%s] System Alert", strings.ToUpper(level)),
-		Body:     fmt.Sprintf("System Alert: %s\n\nLevel: %s\nTimestamp: %s", message, level, time.Now().Format(time.RFC3339)),
-		IsHTML:   false,
+		Type:         models.NotificationTypeCustom,
+		Priority:     models.NotificationPriorityNormal,
+		To:           to,
+		TemplateName: templateName,
+		TemplateData: data,
 	}
 
 	_, err := s.SendEmail(ctx, req)
 	return err
 }
 
-// ProcessPendingNotifications procesa las notificaciones pendientes
+// SendWelcomeEmail envía un email de bienvenida
+func (s *NotificationService) SendWelcomeEmail(ctx context.Context, userEmail, userName string) error {
+	data := map[string]interface{}{
+		"UserName": userName,
+		"Email":    userEmail,
+		"Date":     time.Now().Format("January 2, 2006"),
+	}
+
+	return s.SendTemplatedEmail(ctx, "welcome", []string{userEmail}, data)
+}
+
+// SendSystemAlert envía una alerta del sistema
+func (s *NotificationService) SendSystemAlert(ctx context.Context, level, message string, recipients []string) error {
+	req := &models.SendEmailRequest{
+		Type:     models.NotificationTypeSystemAlert,
+		Priority: models.NotificationPriorityHigh,
+		To:       recipients,
+		Subject:  fmt.Sprintf("[%s] System Alert", strings.ToUpper(level)),
+		Body:     fmt.Sprintf("System Alert: %s\n\nTime: %s\nLevel: %s", message, time.Now().Format(time.RFC3339), level),
+		IsHTML:   false,
+	}
+
+	if level == "critical" {
+		req.Priority = models.NotificationPriorityCritical
+	}
+
+	_, err := s.SendEmail(ctx, req)
+	return err
+}
+
+// SendPasswordResetEmail envía un email de restablecimiento de contraseña
+func (s *NotificationService) SendPasswordResetEmail(ctx context.Context, userEmail, resetToken, resetURL string) error {
+	data := map[string]interface{}{
+		"ResetToken": resetToken,
+		"ResetURL":   resetURL,
+		"ExpiresIn":  "24 hours",
+	}
+
+	return s.SendTemplatedEmail(ctx, "password-reset", []string{userEmail}, data)
+}
+
+// ================================
+// PROCESAMIENTO DE NOTIFICACIONES
+// ================================
+
+// ProcessPendingNotifications procesa todas las notificaciones pendientes
 func (s *NotificationService) ProcessPendingNotifications(ctx context.Context) error {
+	s.processingMux.Lock()
+	if s.isProcessing {
+		s.processingMux.Unlock()
+		return fmt.Errorf("processing already in progress")
+	}
+	s.isProcessing = true
+	s.processingMux.Unlock()
+
+	defer func() {
+		s.processingMux.Lock()
+		s.isProcessing = false
+		s.processingMux.Unlock()
+	}()
+
+	start := time.Now()
+	s.logger.Info("Starting to process pending notifications")
+
 	// Obtener notificaciones pendientes
-	filters := map[string]interface{}{
-		"status": models.NotificationStatusPending,
-	}
-
-	// También incluir notificaciones programadas que ya deben enviarse
-	scheduledFilters := map[string]interface{}{
-		"status": models.NotificationStatusScheduled,
-		"scheduled_at": map[string]interface{}{
-			"$lte": time.Now(),
-		},
-	}
-
-	pendingNotifications, _, err := s.notificationRepo.List(ctx, filters, &repository.PaginationOptions{
-		Limit: 100, // Procesar en lotes
-	})
+	notifications, err := s.notificationRepo.GetPending(ctx, 100) // Procesar hasta 100 por vez
 	if err != nil {
 		return fmt.Errorf("failed to get pending notifications: %w", err)
 	}
 
-	scheduledNotifications, _, err := s.notificationRepo.List(ctx, scheduledFilters, &repository.PaginationOptions{
-		Limit: 100,
-	})
+	if len(notifications) == 0 {
+		s.logger.Debug("No pending notifications to process")
+		return nil
+	}
+
+	s.logger.Info("Processing pending notifications", zap.Int("count", len(notifications)))
+
+	result := &ProcessingResult{
+		ProcessedCount: len(notifications),
+	}
+
+	// Procesar cada notificación
+	for _, notification := range notifications {
+		if err := s.sendNotificationNow(ctx, notification); err != nil {
+			result.ErrorCount++
+			result.Errors = append(result.Errors, ProcessingError{
+				NotificationID: notification.ID.Hex(),
+				Error:          err.Error(),
+				Recoverable:    s.isRecoverableError(err),
+			})
+			s.logger.Error("Failed to send notification",
+				zap.String("id", notification.ID.Hex()),
+				zap.Error(err))
+		} else {
+			result.SuccessCount++
+		}
+	}
+
+	result.Duration = time.Since(start)
+
+	// Actualizar estadísticas
+	s.updateProcessingStats(result)
+
+	s.logger.Info("Finished processing pending notifications",
+		zap.Int("processed", result.ProcessedCount),
+		zap.Int("success", result.SuccessCount),
+		zap.Int("errors", result.ErrorCount),
+		zap.Duration("duration", result.Duration))
+
+	return nil
+}
+
+// ProcessScheduledNotifications procesa notificaciones programadas que deben enviarse
+func (s *NotificationService) ProcessScheduledNotifications(ctx context.Context) error {
+	notifications, err := s.notificationRepo.GetScheduled(ctx, 50)
 	if err != nil {
 		return fmt.Errorf("failed to get scheduled notifications: %w", err)
 	}
 
-	// Combinar todas las notificaciones
-	allNotifications := append(pendingNotifications, scheduledNotifications...)
+	s.logger.Info("Processing scheduled notifications", zap.Int("count", len(notifications)))
 
-	s.logger.Info("Processing notifications", zap.Int("count", len(allNotifications)))
+	for _, notification := range notifications {
+		// Cambiar estado a pendiente para que sea procesada
+		notification.Status = models.NotificationStatusPending
+		if err := s.notificationRepo.Update(ctx, notification); err != nil {
+			s.logger.Error("Failed to update scheduled notification status",
+				zap.String("id", notification.ID.Hex()),
+				zap.Error(err))
+			continue
+		}
 
-	// Procesar cada notificación
-	for _, notification := range allNotifications {
+		// Enviar inmediatamente
 		if err := s.sendNotificationNow(ctx, notification); err != nil {
-			s.logger.Error("Failed to send notification",
+			s.logger.Error("Failed to send scheduled notification",
 				zap.String("id", notification.ID.Hex()),
 				zap.Error(err))
 		}
 	}
 
 	return nil
-}
-
-// TestEmailConfiguration prueba la configuración de email
-func (s *NotificationService) TestEmailConfiguration(ctx context.Context) error {
-	if !s.emailService.IsEnabled() {
-		return fmt.Errorf("email service is disabled")
-	}
-
-	// Crear mensaje de prueba
-	message := email.NewMessage()
-	message.From = email.NewAddress(s.config.FromEmail, s.config.FromName)
-	message.To = []email.Address{email.NewAddress(s.config.FromEmail, "Test")}
-	message.Subject = "Email Configuration Test"
-	message.TextBody = "This is a test email to verify the email configuration is working correctly."
-
-	// Enviar mensaje de prueba
-	return s.emailService.Send(ctx, message)
-}
-
-// GetNotificationStats obtiene estadísticas de notificaciones
-func (s *NotificationService) GetNotificationStats(ctx context.Context, timeRange time.Duration) (*models.NotificationStats, error) {
-	return s.notificationRepo.GetStats(ctx, timeRange)
 }
 
 // RetryFailedNotifications reintenta notificaciones fallidas
 func (s *NotificationService) RetryFailedNotifications(ctx context.Context) error {
-	failedNotifications, err := s.notificationRepo.GetFailedForRetry(ctx, 50)
+	notifications, err := s.notificationRepo.GetFailedForRetry(ctx, 25)
 	if err != nil {
 		return fmt.Errorf("failed to get failed notifications: %w", err)
 	}
 
-	s.logger.Info("Retrying failed notifications", zap.Int("count", len(failedNotifications)))
+	if len(notifications) == 0 {
+		s.logger.Debug("No failed notifications to retry")
+		return nil
+	}
 
-	for _, notification := range failedNotifications {
-		// Verificar si puede reintentarse
+	s.logger.Info("Retrying failed notifications", zap.Int("count", len(notifications)))
+
+	for _, notification := range notifications {
 		if !notification.CanRetry() {
 			continue
 		}
 
-		// Verificar si es tiempo de reintentar
-		if notification.NextRetryAt != nil && notification.NextRetryAt.After(time.Now()) {
+		// Incrementar contador de intentos
+		if err := s.notificationRepo.IncrementAttempts(ctx, notification.ID, nil); err != nil {
+			s.logger.Error("Failed to increment attempts",
+				zap.String("id", notification.ID.Hex()),
+				zap.Error(err))
 			continue
 		}
 
+		// Reintento
 		if err := s.sendNotificationNow(ctx, notification); err != nil {
-			s.logger.Error("Failed to retry notification",
+			s.logger.Warn("Retry failed",
 				zap.String("id", notification.ID.Hex()),
+				zap.Int("attempt", notification.Attempts+1),
 				zap.Error(err))
-		}
-	}
-
-	return nil
-}
-
-// CleanupOldNotifications limpia notificaciones antiguas
-func (s *NotificationService) CleanupOldNotifications(ctx context.Context, olderThan time.Duration) (int64, error) {
-	deletedCount, err := s.notificationRepo.CleanupOld(ctx, olderThan)
-	if err != nil {
-		return 0, fmt.Errorf("failed to cleanup old notifications: %w", err)
-	}
-
-	s.logger.Info("Cleaned up old notifications", zap.Int64("count", deletedCount))
-	return deletedCount, nil
-}
-
-// sendNotificationNow envía una notificación inmediatamente
-func (s *NotificationService) sendNotificationNow(ctx context.Context, notification *models.EmailNotification) error {
-	// Marcar como enviándose
-	notification.MarkAsSending()
-	if err := s.notificationRepo.Update(ctx, notification); err != nil {
-		return fmt.Errorf("failed to update notification status: %w", err)
-	}
-
-	// Crear mensaje de email
-	message := s.buildEmailMessage(notification)
-
-	// Enviar el email
-	messageID, err := s.emailService.SendWithID(ctx, message)
-	if err != nil {
-		// Marcar como fallida
-		notification.AddError("SEND_FAILED", err.Error(), "", true)
-		notification.MarkAsFailed()
-
-		if updateErr := s.notificationRepo.Update(ctx, notification); updateErr != nil {
-			s.logger.Error("Failed to update notification after send failure",
+		} else {
+			s.logger.Info("Retry successful",
 				zap.String("id", notification.ID.Hex()),
-				zap.Error(updateErr))
+				zap.Int("attempt", notification.Attempts+1))
 		}
-
-		return fmt.Errorf("failed to send email: %w", err)
-	}
-
-	// Marcar como enviada exitosamente
-	notification.MarkAsSent(messageID)
-	if err := s.notificationRepo.Update(ctx, notification); err != nil {
-		s.logger.Error("Failed to update notification after successful send",
-			zap.String("id", notification.ID.Hex()),
-			zap.Error(err))
-		// No retornar error porque el email se envió exitosamente
-	}
-
-	s.logger.Info("Notification sent successfully",
-		zap.String("id", notification.ID.Hex()),
-		zap.String("message_id", messageID),
-		zap.Strings("to", notification.To))
-
-	return nil
-}
-
-// buildEmailMessage construye un mensaje de email desde una notificación
-func (s *NotificationService) buildEmailMessage(notification *models.EmailNotification) *email.Message {
-	message := email.NewMessage()
-
-	// From
-	message.From = email.NewAddress(s.config.FromEmail, s.config.FromName)
-
-	// To
-	for _, addr := range notification.To {
-		message.To = append(message.To, email.NewAddress(addr, ""))
-	}
-
-	// CC
-	for _, addr := range notification.CC {
-		message.CC = append(message.CC, email.NewAddress(addr, ""))
-	}
-
-	// BCC
-	for _, addr := range notification.BCC {
-		message.BCC = append(message.BCC, email.NewAddress(addr, ""))
-	}
-
-	// Subject y body
-	message.Subject = notification.Subject
-
-	if notification.IsHTML {
-		message.HTMLBody = notification.Body
-	} else {
-		message.TextBody = notification.Body
-	}
-
-	// Prioridad
-	switch notification.Priority {
-	case models.NotificationPriorityCritical:
-		message.Priority = email.PriorityCritical
-	case models.NotificationPriorityHigh:
-		message.Priority = email.PriorityHigh
-	case models.NotificationPriorityLow:
-		message.Priority = email.PriorityLow
-	default:
-		message.Priority = email.PriorityNormal
-	}
-
-	// Headers personalizados
-	message.Headers["X-Notification-ID"] = notification.ID.Hex()
-	message.Headers["X-Notification-Type"] = string(notification.Type)
-
-	if notification.WorkflowID != nil {
-		message.Headers["X-Workflow-ID"] = notification.WorkflowID.Hex()
-	}
-
-	if notification.ExecutionID != nil {
-		message.Headers["X-Execution-ID"] = *notification.ExecutionID
-	}
-
-	// Tags para categorización
-	message.Tags = []string{
-		string(notification.Type),
-		string(notification.Priority),
-	}
-
-	// Metadata
-	message.Metadata = map[string]interface{}{
-		"notification_id": notification.ID.Hex(),
-		"type":            string(notification.Type),
-		"priority":        string(notification.Priority),
-		"attempt":         notification.Attempts + 1,
-	}
-
-	return message
-}
-
-// renderTemplate renderiza un template con los datos proporcionados
-func (s *NotificationService) renderTemplate(templateStr string, data map[string]interface{}) (string, error) {
-	tmpl, err := template.New("notification").Parse(templateStr)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse template: %w", err)
-	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	return buf.String(), nil
-}
-
-// validateSendEmailRequest valida una solicitud de envío de email
-func (s *NotificationService) validateSendEmailRequest(req *models.SendEmailRequest) error {
-	if len(req.To) == 0 {
-		return fmt.Errorf("at least one recipient is required")
-	}
-
-	// Si no usa template, validar contenido directo
-	if req.TemplateName == "" {
-		if req.Subject == "" {
-			return fmt.Errorf("subject is required when not using a template")
-		}
-		if req.Body == "" {
-			return fmt.Errorf("body is required when not using a template")
-		}
-	}
-
-	// Validar prioridad
-	switch req.Priority {
-	case models.NotificationPriorityLow, models.NotificationPriorityNormal,
-		models.NotificationPriorityHigh, models.NotificationPriorityCritical,
-		models.NotificationPriorityUrgent:
-		// Válidas
-	default:
-		return fmt.Errorf("invalid priority: %s", req.Priority)
-	}
-
-	// Validar tipo
-	switch req.Type {
-	case models.NotificationTypeCustom, models.NotificationTypeSystemAlert,
-		models.NotificationTypeWorkflow, models.NotificationTypeUserActivity,
-		models.NotificationTypeBackup, models.NotificationTypeScheduled:
-		// Válidas
-	default:
-		return fmt.Errorf("invalid notification type: %s", req.Type)
 	}
 
 	return nil
 }
 
-// Template Management Methods
+// ================================
+// GESTIÓN DE TEMPLATES
+// ================================
 
 // CreateTemplate crea un nuevo template
 func (s *NotificationService) CreateTemplate(ctx context.Context, template *models.EmailTemplate) error {
@@ -504,13 +399,18 @@ func (s *NotificationService) CreateTemplate(ctx context.Context, template *mode
 	// Establecer metadatos
 	template.CreatedAt = time.Now()
 	template.UpdatedAt = time.Now()
-	template.Version = 1
-	template.IsActive = true
+
+	if template.Version == 0 {
+		template.Version = 1
+	}
 
 	// Crear template
 	if err := s.templateRepo.Create(ctx, template); err != nil {
 		return fmt.Errorf("failed to create template: %w", err)
 	}
+
+	// Invalidar cache
+	s.invalidateTemplateCache(template.Name)
 
 	s.logger.Info("Template created",
 		zap.String("id", template.ID.Hex()),
@@ -531,6 +431,9 @@ func (s *NotificationService) UpdateTemplate(ctx context.Context, template *mode
 		return fmt.Errorf("failed to update template: %w", err)
 	}
 
+	// Invalidar cache
+	s.invalidateTemplateCache(template.Name)
+
 	s.logger.Info("Template updated",
 		zap.String("id", template.ID.Hex()),
 		zap.String("name", template.Name))
@@ -545,7 +448,21 @@ func (s *NotificationService) GetTemplate(ctx context.Context, id primitive.Obje
 
 // GetTemplateByName obtiene un template por nombre
 func (s *NotificationService) GetTemplateByName(ctx context.Context, name string) (*models.EmailTemplate, error) {
-	return s.templateRepo.GetByName(ctx, name)
+	// Verificar cache primero
+	if template := s.getTemplateFromCache(name); template != nil {
+		return template, nil
+	}
+
+	// Obtener de base de datos
+	template, err := s.templateRepo.GetByName(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	// Agregar al cache
+	s.addTemplateToCache(template)
+
+	return template, nil
 }
 
 // ListTemplates lista templates con filtros
@@ -555,119 +472,547 @@ func (s *NotificationService) ListTemplates(ctx context.Context, filters map[str
 
 // DeleteTemplate elimina un template
 func (s *NotificationService) DeleteTemplate(ctx context.Context, id primitive.ObjectID) error {
+	// Obtener template para invalidar cache
+	template, err := s.templateRepo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
 	if err := s.templateRepo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete template: %w", err)
 	}
 
-	s.logger.Info("Template deleted", zap.String("id", id.Hex()))
+	// Invalidar cache
+	s.invalidateTemplateCache(template.Name)
+
+	s.logger.Info("Template deleted",
+		zap.String("id", id.Hex()),
+		zap.String("name", template.Name))
+
 	return nil
 }
 
-// PreviewTemplate genera una vista previa del template con datos de prueba
-func (s *NotificationService) PreviewTemplate(ctx context.Context, templateName string, data map[string]interface{}) (*models.EmailNotification, error) {
-	template, err := s.templateRepo.GetByName(ctx, templateName)
+// PreviewTemplate genera una vista previa de un template con datos
+func (s *NotificationService) PreviewTemplate(ctx context.Context, templateName string, data map[string]interface{}) (*models.TemplatePreview, error) {
+	template, err := s.GetTemplateByName(ctx, templateName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get template: %w", err)
+		return nil, err
 	}
 
-	// Renderizar template
-	subject, err := s.renderTemplate(template.Subject, data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to render subject: %w", err)
+	preview := &models.TemplatePreview{}
+
+	// Renderizar subject
+	if subject, err := s.renderTextTemplate(template.Subject, data); err != nil {
+		preview.Variables = data
+		return preview, fmt.Errorf("subject rendering failed: %w", err)
+	} else {
+		preview.Subject = subject
 	}
 
-	body, err := s.renderTemplate(template.BodyText, data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to render body: %w", err)
+	// Renderizar body
+	if template.BodyHTML != "" {
+		if body, err := s.renderHTMLTemplate(template.BodyHTML, data); err != nil {
+			return preview, fmt.Errorf("HTML body rendering failed: %w", err)
+		} else {
+			preview.Body = body
+			preview.IsHTML = true
+		}
+	} else {
+		if body, err := s.renderTextTemplate(template.BodyText, data); err != nil {
+			return preview, fmt.Errorf("text body rendering failed: %w", err)
+		} else {
+			preview.Body = body
+			preview.IsHTML = false
+		}
 	}
 
-	// Crear notificación de prueba (no guardar)
-	notification := &models.EmailNotification{
-		Type:         template.Type,
-		Status:       models.NotificationStatusPending,
-		Priority:     models.NotificationPriorityNormal,
-		To:           []string{"preview@example.com"},
-		Subject:      subject,
-		Body:         body,
-		IsHTML:       template.HasHTMLVersion(),
-		TemplateName: templateName,
-		TemplateData: data,
-	}
-
-	return notification, nil
+	preview.Variables = data
+	return preview, nil
 }
 
-// GetNotifications obtiene notificaciones con filtros y paginación
-func (s *NotificationService) GetNotifications(ctx context.Context, filters map[string]interface{}, opts *repository.PaginationOptions) ([]*models.EmailNotification, int64, error) {
-	return s.notificationRepo.List(ctx, filters, opts)
-}
+// ================================
+// GESTIÓN DE NOTIFICACIONES
+// ================================
 
 // GetNotification obtiene una notificación por ID
 func (s *NotificationService) GetNotification(ctx context.Context, id primitive.ObjectID) (*models.EmailNotification, error) {
 	return s.notificationRepo.GetByID(ctx, id)
 }
 
-// RetryNotification reintenta una notificación específica
-func (s *NotificationService) RetryNotification(ctx context.Context, id primitive.ObjectID) error {
-	notification, err := s.notificationRepo.GetByID(ctx, id)
-	if err != nil {
-		return fmt.Errorf("failed to get notification: %w", err)
-	}
-
-	if !notification.CanRetry() {
-		return fmt.Errorf("notification cannot be retried")
-	}
-
-	// Resetear estado para reintento
-	notification.Status = models.NotificationStatusPending
-	notification.UpdatedAt = time.Now()
-
-	if err := s.notificationRepo.Update(ctx, notification); err != nil {
-		return fmt.Errorf("failed to update notification for retry: %w", err)
-	}
-
-	// Enviar inmediatamente
-	return s.sendNotificationNow(ctx, notification)
+// GetNotifications obtiene una lista de notificaciones con filtros
+func (s *NotificationService) GetNotifications(ctx context.Context, filters map[string]interface{}, opts *repository.PaginationOptions) ([]*models.EmailNotification, int64, error) {
+	return s.notificationRepo.List(ctx, filters, opts)
 }
 
-// CancelNotification cancela una notificación
+// CancelNotification cancela una notificación pendiente o programada
 func (s *NotificationService) CancelNotification(ctx context.Context, id primitive.ObjectID) error {
 	notification, err := s.notificationRepo.GetByID(ctx, id)
 	if err != nil {
-		return fmt.Errorf("failed to get notification: %w", err)
+		return err
 	}
 
-	if notification.Status == models.NotificationStatusSent {
-		return fmt.Errorf("cannot cancel notification that has already been sent")
+	if notification.Status != models.NotificationStatusPending && notification.Status != models.NotificationStatusScheduled {
+		return fmt.Errorf("cannot cancel notification with status: %s", notification.Status)
 	}
 
-	notification.Status = models.NotificationStatusCancelled
-	notification.UpdatedAt = time.Now()
-
-	return s.notificationRepo.Update(ctx, notification)
+	return s.notificationRepo.UpdateStatus(ctx, id, models.NotificationStatusCancelled)
 }
 
-// SearchTemplates busca templates por texto
-func (s *NotificationService) SearchTemplates(ctx context.Context, searchTerm string, limit int) ([]*models.EmailTemplate, error) {
-	// Si el repositorio implementa búsqueda (necesitaríamos extender la interfaz)
-	// Por ahora, implementamos búsqueda básica usando filtros
-	filters := map[string]interface{}{
-		"$or": []map[string]interface{}{
-			{"name": map[string]interface{}{"$regex": searchTerm, "$options": "i"}},
-			{"description": map[string]interface{}{"$regex": searchTerm, "$options": "i"}},
-			{"subject": map[string]interface{}{"$regex": searchTerm, "$options": "i"}},
+// ResendNotification reenvía una notificación
+func (s *NotificationService) ResendNotification(ctx context.Context, id primitive.ObjectID) error {
+	notification, err := s.notificationRepo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	// Resetear para reenvío
+	notification.Status = models.NotificationStatusPending
+	notification.Attempts = 0
+	notification.Errors = nil
+	notification.NextRetryAt = nil
+	notification.UpdatedAt = time.Now()
+
+	if err := s.notificationRepo.Update(ctx, notification); err != nil {
+		return err
+	}
+
+	return s.sendNotificationNow(ctx, notification)
+}
+
+// ================================
+// ESTADÍSTICAS Y MONITOREO
+// ================================
+
+// GetNotificationStats obtiene estadísticas de notificaciones
+func (s *NotificationService) GetNotificationStats(ctx context.Context, timeRange time.Duration) (*models.NotificationStats, error) {
+	return s.notificationRepo.GetStats(ctx, timeRange)
+}
+
+// GetServiceStats obtiene estadísticas del servicio
+func (s *NotificationService) GetServiceStats() *ServiceStats {
+	s.statsMux.RLock()
+	defer s.statsMux.RUnlock()
+
+	// Crear copia para thread safety
+	stats := *s.stats
+
+	// Agregar información de cache
+	s.templateCacheMux.RLock()
+	stats.TemplatesCached = len(s.templateCache)
+	s.templateCacheMux.RUnlock()
+
+	return &stats
+}
+
+// ================================
+// ADMINISTRACIÓN Y MANTENIMIENTO
+// ================================
+
+// TestEmailConfiguration prueba la configuración de email
+func (s *NotificationService) TestEmailConfiguration(ctx context.Context) error {
+	// Crear mensaje de prueba
+	testMessage := &email.EmailMessage{
+		To:      []string{s.config.SMTP.DefaultFrom.Email},
+		Subject: "Test Email Configuration",
+		Body:    "This is a test email to verify the SMTP configuration is working correctly.",
+		IsHTML:  false,
+	}
+
+	return s.emailService.SendEmail(ctx, testMessage)
+}
+
+// CleanupOldNotifications limpia notificaciones antiguas
+func (s *NotificationService) CleanupOldNotifications(ctx context.Context, olderThan time.Duration) (int64, error) {
+	deletedCount, err := s.notificationRepo.CleanupOld(ctx, olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup failed: %w", err)
+	}
+
+	s.logger.Info("Old notifications cleaned up",
+		zap.Int64("deleted_count", deletedCount),
+		zap.Duration("older_than", olderThan))
+
+	return deletedCount, nil
+}
+
+// GetHealthStatus verifica el estado de salud del servicio
+func (s *NotificationService) GetHealthStatus(ctx context.Context) map[string]interface{} {
+	status := map[string]interface{}{
+		"service":         "healthy",
+		"email_service":   "unknown",
+		"database":        "unknown",
+		"template_cache":  len(s.templateCache),
+		"last_processing": s.stats.LastProcessingTime,
+	}
+
+	// Verificar servicio de email
+	if s.emailService.IsHealthy() {
+		status["email_service"] = "healthy"
+	} else {
+		status["email_service"] = "unhealthy"
+		status["service"] = "degraded"
+	}
+
+	// Verificar base de datos (si el repo lo soporta)
+	if validator, ok := s.notificationRepo.(interface{ ValidateConnection(context.Context) error }); ok {
+		if err := validator.ValidateConnection(ctx); err != nil {
+			status["database"] = "unhealthy"
+			status["service"] = "degraded"
+		} else {
+			status["database"] = "healthy"
+		}
+	}
+
+	return status
+}
+
+// CreateDefaultTemplates crea templates por defecto del sistema
+func (s *NotificationService) CreateDefaultTemplates(ctx context.Context) error {
+	defaultTemplates := s.getDefaultTemplates()
+
+	for _, template := range defaultTemplates {
+		// Verificar si ya existe
+		existing, err := s.templateRepo.GetByName(ctx, template.Name)
+		if err == nil && existing != nil {
+			s.logger.Info("Default template already exists, skipping",
+				zap.String("name", template.Name))
+			continue
+		}
+
+		if err := s.CreateTemplate(ctx, template); err != nil {
+			s.logger.Error("Failed to create default template",
+				zap.String("name", template.Name),
+				zap.Error(err))
+			return err
+		}
+
+		s.logger.Info("Default template created",
+			zap.String("name", template.Name))
+	}
+
+	return nil
+}
+
+// ================================
+// MÉTODOS INTERNOS
+// ================================
+
+// sendNotificationNow envía una notificación inmediatamente
+func (s *NotificationService) sendNotificationNow(ctx context.Context, notification *models.EmailNotification) error {
+	// Actualizar estado a procesando
+	if err := s.notificationRepo.UpdateStatus(ctx, notification.ID, models.NotificationStatusProcessing); err != nil {
+		return fmt.Errorf("failed to update status to processing: %w", err)
+	}
+
+	// Crear mensaje de email
+	emailMessage := &email.EmailMessage{
+		To:      notification.To,
+		CC:      notification.CC,
+		BCC:     notification.BCC,
+		Subject: notification.Subject,
+		Body:    notification.Body,
+		IsHTML:  notification.IsHTML,
+	}
+
+	// Configurar prioridad
+	switch notification.Priority {
+	case models.NotificationPriorityHigh:
+		emailMessage.Priority = 1
+	case models.NotificationPriorityCritical:
+		emailMessage.Priority = 1
+	case models.NotificationPriorityLow:
+		emailMessage.Priority = 5
+	default:
+		emailMessage.Priority = 3
+	}
+
+	// Enviar email
+	if err := s.emailService.SendEmail(ctx, emailMessage); err != nil {
+		// Manejar error
+		s.handleSendError(ctx, notification, err)
+		return err
+	}
+
+	// Actualizar estado a enviado
+	if err := s.notificationRepo.UpdateStatus(ctx, notification.ID, models.NotificationStatusSent); err != nil {
+		s.logger.Error("Failed to update status to sent",
+			zap.String("id", notification.ID.Hex()),
+			zap.Error(err))
+	}
+
+	// Actualizar estadísticas
+	s.statsMux.Lock()
+	s.stats.EmailsSentToday++
+	s.statsMux.Unlock()
+
+	s.logger.Info("Notification sent successfully",
+		zap.String("id", notification.ID.Hex()),
+		zap.Strings("to", notification.To))
+
+	return nil
+}
+
+// processTemplate procesa un template y actualiza la notificación
+func (s *NotificationService) processTemplate(ctx context.Context, notification *models.EmailNotification, templateName string, data map[string]interface{}) error {
+	template, err := s.GetTemplateByName(ctx, templateName)
+	if err != nil {
+		return fmt.Errorf("template not found: %w", err)
+	}
+
+	// Renderizar subject
+	if subject, err := s.renderTextTemplate(template.Subject, data); err != nil {
+		return fmt.Errorf("failed to render subject: %w", err)
+	} else {
+		notification.Subject = subject
+	}
+
+	// Renderizar body
+	if template.BodyHTML != "" {
+		if body, err := s.renderHTMLTemplate(template.BodyHTML, data); err != nil {
+			return fmt.Errorf("failed to render HTML body: %w", err)
+		} else {
+			notification.Body = body
+			notification.IsHTML = true
+		}
+	} else {
+		if body, err := s.renderTextTemplate(template.BodyText, data); err != nil {
+			return fmt.Errorf("failed to render text body: %w", err)
+		} else {
+			notification.Body = body
+			notification.IsHTML = false
+		}
+	}
+
+	// Establecer metadatos
+	notification.TemplateName = templateName
+	notification.TemplateData = data
+
+	return nil
+}
+
+// handleSendError maneja errores de envío
+func (s *NotificationService) handleSendError(ctx context.Context, notification *models.EmailNotification, sendErr error) {
+	// Crear error de notificación
+	notifError := models.NotificationError{
+		Timestamp:   time.Now(),
+		Code:        "SEND_ERROR",
+		Message:     sendErr.Error(),
+		Recoverable: s.isRecoverableError(sendErr),
+	}
+
+	// Agregar error a la notificación
+	if err := s.notificationRepo.AddError(ctx, notification.ID, notifError); err != nil {
+		s.logger.Error("Failed to add error to notification",
+			zap.String("id", notification.ID.Hex()),
+			zap.Error(err))
+	}
+
+	// Determinar próximo estado
+	if notification.Attempts >= notification.MaxAttempts {
+		// Máximo de intentos alcanzado
+		s.notificationRepo.UpdateStatus(ctx, notification.ID, models.NotificationStatusFailed)
+	} else if notifError.Recoverable {
+		// Programar reintento
+		nextRetry := notification.CalculateNextRetry()
+		s.notificationRepo.IncrementAttempts(ctx, notification.ID, &nextRetry)
+		s.notificationRepo.UpdateStatus(ctx, notification.ID, models.NotificationStatusFailed)
+	} else {
+		// Error no recuperable
+		s.notificationRepo.UpdateStatus(ctx, notification.ID, models.NotificationStatusFailed)
+	}
+
+	// Actualizar estadísticas
+	s.statsMux.Lock()
+	s.stats.EmailsFailedToday++
+	s.statsMux.Unlock()
+}
+
+// validateSendEmailRequest valida una solicitud de envío
+func (s *NotificationService) validateSendEmailRequest(req *models.SendEmailRequest) error {
+	if len(req.To) == 0 {
+		return fmt.Errorf("no recipients specified")
+	}
+
+	if req.Subject == "" && req.TemplateName == "" {
+		return fmt.Errorf("subject or template name is required")
+	}
+
+	if req.Body == "" && req.TemplateName == "" {
+		return fmt.Errorf("body or template name is required")
+	}
+
+	// Validar tipo
+	if !req.Type.IsValid() {
+		return fmt.Errorf("invalid notification type: %s", req.Type)
+	}
+
+	// Validar prioridad
+	if !req.Priority.IsValid() {
+		return fmt.Errorf("invalid notification priority: %s", req.Priority)
+	}
+
+	return nil
+}
+
+// isRecoverableError determina si un error es recuperable
+func (s *NotificationService) isRecoverableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := strings.ToLower(err.Error())
+
+	// Errores temporales
+	recoverableKeywords := []string{
+		"timeout", "temporary", "network", "connection",
+		"dial", "read", "write", "broken pipe",
+		"connection reset", "i/o timeout",
+	}
+
+	for _, keyword := range recoverableKeywords {
+		if strings.Contains(errStr, keyword) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ================================
+// GESTIÓN DE CACHE DE TEMPLATES
+// ================================
+
+// getTemplateFromCache obtiene un template del cache
+func (s *NotificationService) getTemplateFromCache(name string) *models.EmailTemplate {
+	s.templateCacheMux.RLock()
+	defer s.templateCacheMux.RUnlock()
+
+	if template, exists := s.templateCache[name]; exists {
+		return template
+	}
+	return nil
+}
+
+// addTemplateToCache agrega un template al cache
+func (s *NotificationService) addTemplateToCache(template *models.EmailTemplate) {
+	s.templateCacheMux.Lock()
+	defer s.templateCacheMux.Unlock()
+
+	s.templateCache[template.Name] = template
+}
+
+// invalidateTemplateCache invalida un template del cache
+func (s *NotificationService) invalidateTemplateCache(name string) {
+	s.templateCacheMux.Lock()
+	defer s.templateCacheMux.Unlock()
+
+	delete(s.templateCache, name)
+}
+
+// warmUpTemplateCache carga templates activos al cache
+func (s *NotificationService) warmUpTemplateCache() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	templates, err := s.templateRepo.GetActive(ctx)
+	if err != nil {
+		s.logger.Error("Failed to warm up template cache", zap.Error(err))
+		return
+	}
+
+	s.templateCacheMux.Lock()
+	for _, template := range templates {
+		s.templateCache[template.Name] = template
+	}
+	s.templateCacheMux.Unlock()
+
+	s.logger.Info("Template cache warmed up", zap.Int("count", len(templates)))
+}
+
+// ================================
+// RENDERIZADO DE TEMPLATES
+// ================================
+
+// renderTextTemplate renderiza un template de texto
+func (s *NotificationService) renderTextTemplate(templateText string, data map[string]interface{}) (string, error) {
+	tmpl, err := textTemplate.New("template").Parse(templateText)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	var buffer bytes.Buffer
+	if err := tmpl.Execute(&buffer, data); err != nil {
+		return "", fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	return buffer.String(), nil
+}
+
+// renderHTMLTemplate renderiza un template HTML
+func (s *NotificationService) renderHTMLTemplate(templateHTML string, data map[string]interface{}) (string, error) {
+	tmpl, err := htmlTemplate.New("template").Parse(templateHTML)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse HTML template: %w", err)
+	}
+
+	var buffer bytes.Buffer
+	if err := tmpl.Execute(&buffer, data); err != nil {
+		return "", fmt.Errorf("failed to execute HTML template: %w", err)
+	}
+
+	return buffer.String(), nil
+}
+
+// ================================
+// UTILIDADES
+// ================================
+
+// updateProcessingStats actualiza las estadísticas de procesamiento
+func (s *NotificationService) updateProcessingStats(result *ProcessingResult) {
+	s.statsMux.Lock()
+	defer s.statsMux.Unlock()
+
+	s.stats.LastProcessingTime = time.Now()
+	s.stats.ProcessingDuration = result.Duration
+	s.stats.EmailsSentToday += int64(result.SuccessCount)
+	s.stats.EmailsFailedToday += int64(result.ErrorCount)
+}
+
+// getDefaultTemplates devuelve los templates por defecto del sistema
+func (s *NotificationService) getDefaultTemplates() []*models.EmailTemplate {
+	return []*models.EmailTemplate{
+		{
+			Name:        "welcome",
+			Type:        models.NotificationTypeWelcome,
+			Language:    "en",
+			Subject:     "Welcome to {{.SystemName | default \"our system\"}}!",
+			BodyText:    "Hi {{.UserName}},\n\nWelcome to our system! Your account has been created successfully.\n\nEmail: {{.Email}}\nDate: {{.Date}}\n\nBest regards,\nThe Team",
+			BodyHTML:    "<h1>Welcome {{.UserName}}!</h1><p>Your account has been created successfully.</p><p><strong>Email:</strong> {{.Email}}</p><p><strong>Date:</strong> {{.Date}}</p><p>Best regards,<br>The Team</p>",
+			Description: "Welcome email for new users",
+			IsActive:    true,
+			CreatedBy:   "system",
+		},
+		{
+			Name:        "password-reset",
+			Type:        models.NotificationTypePasswordReset,
+			Language:    "en",
+			Subject:     "Password Reset Request",
+			BodyText:    "You requested a password reset. Click the following link to reset your password:\n\n{{.ResetURL}}\n\nThis link expires in {{.ExpiresIn}}.\n\nIf you didn't request this, please ignore this email.",
+			BodyHTML:    "<h2>Password Reset Request</h2><p>You requested a password reset. Click the link below to reset your password:</p><p><a href=\"{{.ResetURL}}\">Reset Password</a></p><p>This link expires in {{.ExpiresIn}}.</p><p>If you didn't request this, please ignore this email.</p>",
+			Description: "Password reset email template",
+			IsActive:    true,
+			CreatedBy:   "system",
+		},
+		{
+			Name:        "system-alert",
+			Type:        models.NotificationTypeSystemAlert,
+			Language:    "en",
+			Subject:     "[{{.Level | upper}}] System Alert: {{.Title}}",
+			BodyText:    "System Alert\n\nLevel: {{.Level}}\nTitle: {{.Title}}\nMessage: {{.Message}}\n\nTime: {{.Timestamp}}\nServer: {{.Server | default \"Unknown\"}}",
+			BodyHTML:    "<h2>🚨 System Alert</h2><p><strong>Level:</strong> {{.Level}}</p><p><strong>Title:</strong> {{.Title}}</p><p><strong>Message:</strong> {{.Message}}</p><p><strong>Time:</strong> {{.Timestamp}}</p><p><strong>Server:</strong> {{.Server | default \"Unknown\"}}</p>",
+			Description: "System alert notification template",
+			IsActive:    true,
+			CreatedBy:   "system",
 		},
 	}
-
-	templates, err := s.templateRepo.List(ctx, filters)
-	if err != nil {
-		return nil, err
-	}
-
-	// Limitar resultados
-	if len(templates) > limit {
-		templates = templates[:limit]
-	}
-
-	return templates, nil
 }
