@@ -31,7 +31,7 @@ type Config struct {
 	RedisPassword string
 	RedisDB       int
 
-	// JWT - ✅ Configuración segura expandida
+	// JWT - Configuración segura expandida
 	JWTSecret     string
 	JWTIssuer     string
 	JWTAccessTTL  time.Duration
@@ -39,13 +39,13 @@ type Config struct {
 	JWTAudience   string
 	JWTExpiresIn  string // Mantener para compatibilidad hacia atrás
 
-	// Security - ✅ Nuevas configuraciones de seguridad
+	// Security - Nuevas configuraciones de seguridad
 	TrustedProxies     []string
 	CORSAllowedOrigins []string
 	RateLimitRequests  int
 	RateLimitWindow    time.Duration
 
-	// 🆕 CORS Configuration Expanded
+	// CORS Configuration Expanded
 	CORSAllowedMethods    []string
 	CORSAllowedHeaders    []string
 	CORSExposedHeaders    []string
@@ -57,33 +57,33 @@ type Config struct {
 	SlackWebhookURL string
 	SlackBotToken   string
 
-	// ✅ Feature flags
+	// Feature flags
 	EnableTokenBlacklist bool
 	EnableRateLimit      bool
 	EnableCORS           bool
 
-	// 🆕 Web Interface Settings
+	// Web Interface Settings
 	EnableWebInterface bool
 	StaticFilesPath    string
 	TemplatesPath      string
 
-	// 🆕 BACKUP CONFIGURATION - AGREGADO
+	// BACKUP CONFIGURATION - AGREGADO
 	BackupEnabled       bool          `json:"backup_enabled"`
 	BackupInterval      time.Duration `json:"backup_interval"`
 	BackupRetentionDays int           `json:"backup_retention_days"`
 	BackupStorageType   string        `json:"backup_storage_type"`
 	BackupStoragePath   string        `json:"backup_storage_path"`
-	
-	// 🆕 Configuración avanzada de backup
-	BackupCompressionEnabled bool   `json:"backup_compression_enabled"`
-	BackupCompressionLevel   int    `json:"backup_compression_level"`
-	BackupValidationEnabled  bool   `json:"backup_validation_enabled"`
-	BackupNotifyOnSuccess    bool   `json:"backup_notify_on_success"`
-	BackupNotifyOnFailure    bool   `json:"backup_notify_on_failure"`
-	BackupNotificationEmail  string `json:"backup_notification_email"`
+
+	// Configuración avanzada de backup
+	BackupCompressionEnabled  bool   `json:"backup_compression_enabled"`
+	BackupCompressionLevel    int    `json:"backup_compression_level"`
+	BackupValidationEnabled   bool   `json:"backup_validation_enabled"`
+	BackupNotifyOnSuccess     bool   `json:"backup_notify_on_success"`
+	BackupNotifyOnFailure     bool   `json:"backup_notify_on_failure"`
+	BackupNotificationEmail   string `json:"backup_notification_email"`
 	BackupNotificationWebhook string `json:"backup_notification_webhook"`
-	
-	// 🆕 Configuración de almacenamiento remoto
+
+	// Configuración de almacenamiento remoto
 	BackupRemoteEnabled bool   `json:"backup_remote_enabled"`
 	BackupS3Bucket      string `json:"backup_s3_bucket"`
 	BackupS3Region      string `json:"backup_s3_region"`
@@ -91,7 +91,7 @@ type Config struct {
 	BackupS3SecretKey   string `json:"backup_s3_secret_key"`
 }
 
-// ✅ JWTConfig estructura específica para configuración JWT
+// JWTConfig estructura específica para configuración JWT
 type JWTConfig struct {
 	Secret          string
 	Issuer          string
@@ -100,7 +100,7 @@ type JWTConfig struct {
 	Audience        string
 }
 
-// 🆕 CORSConfig estructura específica para configuración CORS
+// CORSConfig estructura específica para configuración CORS
 type CORSConfig struct {
 	AllowedOrigins    []string
 	AllowedMethods    []string
@@ -111,25 +111,25 @@ type CORSConfig struct {
 	PreflightContinue bool
 }
 
-// 🆕 BackupConfig estructura específica para configuración de backup
+// BackupConfig estructura específica para configuración de backup
 type BackupConfig struct {
-	Enabled            bool          `json:"enabled"`
-	Interval           time.Duration `json:"interval"`
-	RetentionDays      int           `json:"retention_days"`
-	StorageType        string        `json:"storage_type"`
-	StoragePath        string        `json:"storage_path"`
-	CompressionEnabled bool          `json:"compression_enabled"`
-	CompressionLevel   int           `json:"compression_level"`
-	ValidationEnabled  bool          `json:"validation_enabled"`
-	NotifyOnSuccess    bool          `json:"notify_on_success"`
-	NotifyOnFailure    bool          `json:"notify_on_failure"`
-	NotificationEmail  string        `json:"notification_email"`
-	NotificationWebhook string       `json:"notification_webhook"`
-	RemoteEnabled      bool          `json:"remote_enabled"`
-	S3Bucket           string        `json:"s3_bucket"`
-	S3Region           string        `json:"s3_region"`
-	S3AccessKey        string        `json:"s3_access_key"`
-	S3SecretKey        string        `json:"s3_secret_key"`
+	Enabled             bool          `json:"enabled"`
+	Interval            time.Duration `json:"interval"`
+	RetentionDays       int           `json:"retention_days"`
+	StorageType         string        `json:"storage_type"`
+	StoragePath         string        `json:"storage_path"`
+	CompressionEnabled  bool          `json:"compression_enabled"`
+	CompressionLevel    int           `json:"compression_level"`
+	ValidationEnabled   bool          `json:"validation_enabled"`
+	NotifyOnSuccess     bool          `json:"notify_on_success"`
+	NotifyOnFailure     bool          `json:"notify_on_failure"`
+	NotificationEmail   string        `json:"notification_email"`
+	NotificationWebhook string        `json:"notification_webhook"`
+	RemoteEnabled       bool          `json:"remote_enabled"`
+	S3Bucket            string        `json:"s3_bucket"`
+	S3Region            string        `json:"s3_region"`
+	S3AccessKey         string        `json:"s3_access_key"`
+	S3SecretKey         string        `json:"s3_secret_key"`
 }
 
 func Load() *Config {
@@ -138,12 +138,12 @@ func Load() *Config {
 		log.Println("Warning: .env file not found, using environment variables")
 	}
 
-	// ✅ Parsear duraciones JWT de forma segura
+	// Parsear duraciones JWT de forma segura
 	accessTTL := parseDuration("JWT_ACCESS_TTL", "15m")
 	refreshTTL := parseDuration("JWT_REFRESH_TTL", "168h") // 7 días
 	rateLimitWindow := parseDuration("RATE_LIMIT_WINDOW", "1m")
 
-	// 🆕 Parsear duraciones de backup
+	// Parsear duraciones de backup
 	backupInterval := parseDuration("BACKUP_INTERVAL", "24h")
 
 	// Configuración principal
@@ -152,7 +152,7 @@ func Load() *Config {
 		Environment: getEnv("ENVIRONMENT", "development"), // 🔧 CORREGIDO: de ENV a ENVIRONMENT
 		LogLevel:    getEnv("LOG_LEVEL", "info"),
 
-		// ✅ Configuración JWT segura
+		// Configuración JWT segura
 		JWTSecret:     getEnv("JWT_SECRET", generateDefaultJWTSecret()),
 		JWTIssuer:     getEnv("JWT_ISSUER", "engine-api-workflow"),
 		JWTAccessTTL:  accessTTL,
@@ -160,12 +160,12 @@ func Load() *Config {
 		JWTAudience:   getEnv("JWT_AUDIENCE", "engine-api"),
 		JWTExpiresIn:  getEnv("JWT_EXPIRES_IN", "24h"), // Compatibilidad
 
-		// ✅ Configuración de seguridad
+		// Configuración de seguridad
 		TrustedProxies:    parseStringSlice("TRUSTED_PROXIES", "127.0.0.1,::1"),
 		RateLimitRequests: getEnvAsInt("RATE_LIMIT_REQUESTS", 100),
 		RateLimitWindow:   rateLimitWindow,
 
-		// 🆕 CORS Configuration Completa
+		// CORS Configuration Completa
 		CORSAllowedOrigins:    parseStringSlice("CORS_ALLOWED_ORIGINS", getDefaultCORSOrigins()),
 		CORSAllowedMethods:    parseStringSlice("CORS_ALLOWED_METHODS", "GET,POST,PUT,DELETE,OPTIONS,PATCH"),
 		CORSAllowedHeaders:    parseStringSlice("CORS_ALLOWED_HEADERS", getDefaultCORSHeaders()),
@@ -174,32 +174,32 @@ func Load() *Config {
 		CORSMaxAge:            getEnvAsInt("CORS_MAX_AGE", 3600),
 		CORSPreflightContinue: getEnvAsBool("CORS_PREFLIGHT_CONTINUE", false),
 
-		// ✅ Feature flags
+		// Feature flags
 		EnableTokenBlacklist: getEnvAsBool("ENABLE_TOKEN_BLACKLIST", true),
 		EnableRateLimit:      getEnvAsBool("ENABLE_RATE_LIMIT", true),
 		EnableCORS:           getEnvAsBool("ENABLE_CORS", true),
 
-		// 🆕 Web Interface Settings
+		// Web Interface Settings
 		EnableWebInterface: getEnvAsBool("ENABLE_WEB_INTERFACE", true),
 		StaticFilesPath:    getEnv("STATIC_FILES_PATH", "./web/static"),
 		TemplatesPath:      getEnv("TEMPLATES_PATH", "./web/templates"),
 
-		// 🆕 BACKUP CONFIGURATION - NUEVOS CAMPOS
+		// BACKUP CONFIGURATION - NUEVOS CAMPOS
 		BackupEnabled:       getEnvAsBool("BACKUP_ENABLED", false),
 		BackupInterval:      backupInterval,
 		BackupRetentionDays: getEnvAsInt("BACKUP_RETENTION_DAYS", 30),
 		BackupStorageType:   getEnv("BACKUP_STORAGE_TYPE", "local"),
 		BackupStoragePath:   getEnv("BACKUP_STORAGE_PATH", "./backups"),
-		
+
 		// Configuración avanzada de backup
-		BackupCompressionEnabled: getEnvAsBool("BACKUP_COMPRESSION_ENABLED", true),
-		BackupCompressionLevel:   getEnvAsInt("BACKUP_COMPRESSION_LEVEL", 6),
-		BackupValidationEnabled:  getEnvAsBool("BACKUP_VALIDATION_ENABLED", true),
-		BackupNotifyOnSuccess:    getEnvAsBool("BACKUP_NOTIFY_ON_SUCCESS", false),
-		BackupNotifyOnFailure:    getEnvAsBool("BACKUP_NOTIFY_ON_FAILURE", true),
-		BackupNotificationEmail:  getEnv("BACKUP_NOTIFICATION_EMAIL", ""),
+		BackupCompressionEnabled:  getEnvAsBool("BACKUP_COMPRESSION_ENABLED", true),
+		BackupCompressionLevel:    getEnvAsInt("BACKUP_COMPRESSION_LEVEL", 6),
+		BackupValidationEnabled:   getEnvAsBool("BACKUP_VALIDATION_ENABLED", true),
+		BackupNotifyOnSuccess:     getEnvAsBool("BACKUP_NOTIFY_ON_SUCCESS", false),
+		BackupNotifyOnFailure:     getEnvAsBool("BACKUP_NOTIFY_ON_FAILURE", true),
+		BackupNotificationEmail:   getEnv("BACKUP_NOTIFICATION_EMAIL", ""),
 		BackupNotificationWebhook: getEnv("BACKUP_NOTIFICATION_WEBHOOK", ""),
-		
+
 		// Configuración de almacenamiento remoto
 		BackupRemoteEnabled: getEnvAsBool("BACKUP_REMOTE_ENABLED", false),
 		BackupS3Bucket:      getEnv("BACKUP_S3_BUCKET", ""),
@@ -222,7 +222,7 @@ func Load() *Config {
 	cfg.SlackWebhookURL = getEnv("SLACK_WEBHOOK_URL", "")
 	cfg.SlackBotToken = getEnv("SLACK_BOT_TOKEN", "")
 
-	// ✅ Validar configuración antes de continuar
+	// Validar configuración antes de continuar
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
@@ -230,7 +230,7 @@ func Load() *Config {
 	return cfg
 }
 
-// ✅ Validate valida toda la configuración al cargar
+// Validate valida toda la configuración al cargar
 func (c *Config) Validate() error {
 	// Validar JWT
 	if err := c.ValidateJWT(); err != nil {
@@ -252,12 +252,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("Redis validation failed: %w", err)
 	}
 
-	// 🆕 Validar CORS
+	// Validar CORS
 	if err := c.ValidateCORS(); err != nil {
 		return fmt.Errorf("CORS validation failed: %w", err)
 	}
 
-	// 🆕 Validar Backup
+	// Validar Backup
 	if err := c.ValidateBackup(); err != nil {
 		return fmt.Errorf("Backup validation failed: %w", err)
 	}
@@ -265,7 +265,7 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// ✅ ValidateJWT valida específicamente la configuración JWT
+// ValidateJWT valida específicamente la configuración JWT
 func (c *Config) ValidateJWT() error {
 	// Verificar longitud mínima del secret
 	if len(c.JWTSecret) < 32 {
@@ -315,7 +315,7 @@ func (c *Config) ValidateJWT() error {
 	return nil
 }
 
-// ✅ ValidateServer valida la configuración del servidor
+// ValidateServer valida la configuración del servidor
 func (c *Config) ValidateServer() error {
 	// Validar puerto
 	if port, err := strconv.Atoi(c.ServerPort); err != nil || port < 1 || port > 65535 {
@@ -351,7 +351,7 @@ func (c *Config) ValidateServer() error {
 	return nil
 }
 
-// ✅ ValidateDatabase valida la configuración de MongoDB
+// ValidateDatabase valida la configuración de MongoDB
 func (c *Config) ValidateDatabase() error {
 	if c.MongoURI == "" {
 		return fmt.Errorf("MONGODB_URI cannot be empty")
@@ -371,7 +371,7 @@ func (c *Config) ValidateDatabase() error {
 	return nil
 }
 
-// ✅ ValidateRedis valida la configuración de Redis
+// ValidateRedis valida la configuración de Redis
 func (c *Config) ValidateRedis() error {
 	if c.RedisHost == "" {
 		return fmt.Errorf("REDIS_HOST cannot be empty")
@@ -388,7 +388,7 @@ func (c *Config) ValidateRedis() error {
 	return nil
 }
 
-// 🆕 ValidateCORS valida la configuración de CORS
+// ValidateCORS valida la configuración de CORS
 func (c *Config) ValidateCORS() error {
 	if !c.EnableCORS {
 		return nil // CORS deshabilitado, no validar
@@ -439,7 +439,7 @@ func (c *Config) ValidateCORS() error {
 	return nil
 }
 
-// 🆕 ValidateBackup valida la configuración de backup
+// ValidateBackup valida la configuración de backup
 func (c *Config) ValidateBackup() error {
 	if !c.BackupEnabled {
 		return nil // Backup deshabilitado, no validar
@@ -481,7 +481,7 @@ func (c *Config) ValidateBackup() error {
 		if c.BackupStoragePath == "" {
 			return fmt.Errorf("BACKUP_STORAGE_PATH cannot be empty for local storage")
 		}
-		
+
 		// Verificar que la ruta no sea un directorio del sistema crítico
 		dangerousPaths := []string{"/", "/bin", "/boot", "/dev", "/etc", "/lib", "/proc", "/root", "/sbin", "/sys", "/usr", "/var"}
 		for _, dangerousPath := range dangerousPaths {
@@ -521,11 +521,11 @@ func (c *Config) ValidateBackup() error {
 		if c.BackupStorageType == "local" {
 			log.Printf("Warning: Using local backup storage in production. Consider using remote storage for better reliability.")
 		}
-		
+
 		if !c.BackupValidationEnabled {
 			log.Printf("Warning: Backup validation is disabled in production. This is not recommended.")
 		}
-		
+
 		if c.BackupRetentionDays < 7 {
 			log.Printf("Warning: Backup retention is less than 7 days in production. Consider increasing for better recovery options.")
 		}
@@ -534,7 +534,7 @@ func (c *Config) ValidateBackup() error {
 	return nil
 }
 
-// ✅ GetJWTConfig retorna configuración específica para JWT
+// GetJWTConfig retorna configuración específica para JWT
 func (c *Config) GetJWTConfig() JWTConfig {
 	return JWTConfig{
 		Secret:          c.JWTSecret,
@@ -545,7 +545,7 @@ func (c *Config) GetJWTConfig() JWTConfig {
 	}
 }
 
-// 🆕 GetCORSConfig retorna configuración específica para CORS
+// GetCORSConfig retorna configuración específica para CORS
 func (c *Config) GetCORSConfig() CORSConfig {
 	return CORSConfig{
 		AllowedOrigins:    c.GetCORSOrigins(),
@@ -558,40 +558,40 @@ func (c *Config) GetCORSConfig() CORSConfig {
 	}
 }
 
-// 🆕 GetBackupConfig retorna configuración específica para backup
+// GetBackupConfig retorna configuración específica para backup
 func (c *Config) GetBackupConfig() BackupConfig {
 	return BackupConfig{
-		Enabled:            c.BackupEnabled,
-		Interval:           c.BackupInterval,
-		RetentionDays:      c.BackupRetentionDays,
-		StorageType:        c.BackupStorageType,
-		StoragePath:        c.BackupStoragePath,
-		CompressionEnabled: c.BackupCompressionEnabled,
-		CompressionLevel:   c.BackupCompressionLevel,
-		ValidationEnabled:  c.BackupValidationEnabled,
-		NotifyOnSuccess:    c.BackupNotifyOnSuccess,
-		NotifyOnFailure:    c.BackupNotifyOnFailure,
-		NotificationEmail:  c.BackupNotificationEmail,
+		Enabled:             c.BackupEnabled,
+		Interval:            c.BackupInterval,
+		RetentionDays:       c.BackupRetentionDays,
+		StorageType:         c.BackupStorageType,
+		StoragePath:         c.BackupStoragePath,
+		CompressionEnabled:  c.BackupCompressionEnabled,
+		CompressionLevel:    c.BackupCompressionLevel,
+		ValidationEnabled:   c.BackupValidationEnabled,
+		NotifyOnSuccess:     c.BackupNotifyOnSuccess,
+		NotifyOnFailure:     c.BackupNotifyOnFailure,
+		NotificationEmail:   c.BackupNotificationEmail,
 		NotificationWebhook: c.BackupNotificationWebhook,
-		RemoteEnabled:      c.BackupRemoteEnabled,
-		S3Bucket:           c.BackupS3Bucket,
-		S3Region:           c.BackupS3Region,
-		S3AccessKey:        c.BackupS3AccessKey,
-		S3SecretKey:        c.BackupS3SecretKey,
+		RemoteEnabled:       c.BackupRemoteEnabled,
+		S3Bucket:            c.BackupS3Bucket,
+		S3Region:            c.BackupS3Region,
+		S3AccessKey:         c.BackupS3AccessKey,
+		S3SecretKey:         c.BackupS3SecretKey,
 	}
 }
 
-// ✅ IsProduction retorna si está en ambiente de producción
+// IsProduction retorna si está en ambiente de producción
 func (c *Config) IsProduction() bool {
 	return c.Environment == "production"
 }
 
-// ✅ IsDevelopment retorna si está en ambiente de desarrollo
+// IsDevelopment retorna si está en ambiente de desarrollo
 func (c *Config) IsDevelopment() bool {
 	return c.Environment == "development"
 }
 
-// 🔧 MEJORADO: GetCORSOrigins retorna los orígenes CORS permitidos con lógica específica para tu frontend
+// MEJORAss: GetCORSOrigins retorna los orígenes CORS permitidos con lógica específica para tu frontend
 func (c *Config) GetCORSOrigins() []string {
 	// Siempre incluir el origen del servidor para el frontend web
 	baseOrigins := []string{
@@ -620,7 +620,7 @@ func (c *Config) GetCORSOrigins() []string {
 	return removeDuplicates(allOrigins)
 }
 
-// 🆕 Funciones helper para valores por defecto
+// Funciones helper para valores por defecto
 
 func getDefaultCORSOrigins() string {
 	return "http://localhost:8081,http://127.0.0.1:8081,http://localhost:3000"
@@ -630,7 +630,7 @@ func getDefaultCORSHeaders() string {
 	return "Accept,Authorization,Content-Type,X-CSRF-Token,X-Requested-With,Cache-Control,X-File-Name"
 }
 
-// ✅ Helper functions
+// Helper functions
 
 func getEnv(key, defaultValue string) string {
 	if value, exists := os.LookupEnv(key); exists {
@@ -647,7 +647,7 @@ func getEnvAsInt(name string, defaultVal int) int {
 	return defaultVal
 }
 
-// ✅ getEnvAsBool parsea variables de entorno como boolean
+// getEnvAsBool parsea variables de entorno como boolean
 func getEnvAsBool(name string, defaultVal bool) bool {
 	valueStr := getEnv(name, "")
 	if valueStr == "" {
@@ -664,7 +664,7 @@ func getEnvAsBool(name string, defaultVal bool) bool {
 	}
 }
 
-// ✅ parseDuration parsea duraciones de forma segura
+// parseDuration parsea duraciones de forma segura
 func parseDuration(envKey, defaultValue string) time.Duration {
 	value := getEnv(envKey, defaultValue)
 	duration, err := time.ParseDuration(value)
@@ -675,7 +675,7 @@ func parseDuration(envKey, defaultValue string) time.Duration {
 	return duration
 }
 
-// ✅ parseStringSlice parsea una lista separada por comas
+// parseStringSlice parsea una lista separada por comas
 func parseStringSlice(envKey, defaultValue string) []string {
 	value := getEnv(envKey, defaultValue)
 	if value == "" {
@@ -692,12 +692,16 @@ func parseStringSlice(envKey, defaultValue string) []string {
 	return result
 }
 
-// ✅ calculateEntropy calcula la entropía de una cadena
+// calculateEntropy calcula la entropía de una cadena
 func calculateEntropy(s string) float64 {
 	if len(s) == 0 {
 		return 0
 	}
 
+	// Contar frecuencia de cada carácter
+	freq := make(map[rune]float64)
+	for _, char := range s {
+		freq[char]++
 	}
 
 	// Calcular entropía usando fórmula de Shannon
@@ -712,7 +716,7 @@ func calculateEntropy(s string) float64 {
 	return entropy
 }
 
-// ✅ generateDefaultJWTSecret genera un secret por defecto seguro
+// generateDefaultJWTSecret genera un secret por defecto seguro
 func generateDefaultJWTSecret() string {
 	// Solo para desarrollo - en producción debe ser configurado explícitamente
 	log.Println("Warning: Using auto-generated JWT secret. Set JWT_SECRET environment variable in production.")
@@ -725,7 +729,7 @@ func generateDefaultJWTSecret() string {
 	return base64.URLEncoding.EncodeToString(bytes)
 }
 
-// ✅ getDefaultMongoURI retorna URI por defecto según el ambiente
+// getDefaultMongoURI retorna URI por defecto según el ambiente
 func getDefaultMongoURI(environment string) string {
 	switch environment {
 	case "production":
@@ -737,7 +741,7 @@ func getDefaultMongoURI(environment string) string {
 	}
 }
 
-// ✅ getDefaultRedisHost retorna host por defecto según el ambiente
+// getDefaultRedisHost retorna host por defecto según el ambiente
 func getDefaultRedisHost(environment string) string {
 	switch environment {
 	case "development":
@@ -749,7 +753,7 @@ func getDefaultRedisHost(environment string) string {
 	}
 }
 
-// ✅ removeDuplicates remueve elementos duplicados de un slice
+// removeDuplicates remueve elementos duplicados de un slice
 func removeDuplicates(slice []string) []string {
 	seen := make(map[string]bool)
 	var result []string
@@ -778,14 +782,14 @@ func (c *Config) LogConfig() {
 	log.Printf("  Features: BlackList=%v, RateLimit=%v, CORS=%v, WebUI=%v",
 		c.EnableTokenBlacklist, c.EnableRateLimit, c.EnableCORS, c.EnableWebInterface)
 
-	// 🆕 CORS Configuration Log
+	//  CORS Configuration Log
 	if c.EnableCORS {
 		log.Printf("  CORS Origins: %v", c.GetCORSOrigins())
 		log.Printf("  CORS Allow Credentials: %v", c.CORSAllowCredentials)
 		log.Printf("  CORS Methods: %v", c.CORSAllowedMethods)
 	}
 
-	// 🆕 Backup Configuration Log
+	//  Backup Configuration Log
 	if c.BackupEnabled {
 		log.Printf("  Backup Enabled: %v", c.BackupEnabled)
 		log.Printf("  Backup Interval: %v", c.BackupInterval)
@@ -801,7 +805,7 @@ func (c *Config) LogConfig() {
 		log.Printf("  Backup: Disabled")
 	}
 
-	// ✅ Nunca logear secrets
+	// Nunca logear secrets
 	secretLength := len(c.JWTSecret)
 	if secretLength >= 4 {
 		log.Printf("  JWT Secret: [%d characters] %s***", secretLength, c.JWTSecret[:4])

@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"your-project/internal/models"
+	"Engine_API_Workflow/internal/models"
 )
 
 // GetPerformanceData obtiene datos de rendimiento reales del sistema
@@ -169,9 +169,7 @@ func (s *dashboardService) GetPerformanceData(ctx context.Context, timeRange str
 	return performanceData, nil
 }
 
-// ================================
 // MÉTODOS AUXILIARES PARA OBTENER DATOS ESPECÍFICOS
-// ================================
 
 // getExecutionTimeSeries obtiene serie temporal de ejecuciones
 func (s *dashboardService) getExecutionTimeSeries(ctx context.Context, startTime, endTime time.Time, interval time.Duration) ([]models.TimeSeriesPoint, error) {
@@ -278,7 +276,6 @@ func (s *dashboardService) getQueueLengthTrend(ctx context.Context, startTime, e
 			length = 0
 		}
 
-		// Simular variación basada en hora del día para datos históricos
 		// En una implementación real, podrías almacenar snapshots en una tabla de métricas
 		hourOfDay := current.Hour()
 		var multiplier float64
@@ -413,9 +410,7 @@ func (s *dashboardService) getHourlyExecutions(ctx context.Context, startTime, e
 	return hourlyStats, nil
 }
 
-// ================================
 // MÉTODOS ADICIONALES (PLACEHOLDERS MEJORADOS)
-// ================================
 
 // getTriggerDistribution obtiene distribución de tipos de triggers
 func (s *dashboardService) getTriggerDistribution(ctx context.Context, startTime, endTime time.Time) []models.TriggerCount {
