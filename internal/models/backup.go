@@ -298,8 +298,8 @@ type BackupAlert struct {
 	UpdatedAt  time.Time              `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
 }
 
-// PerformanceMetrics métricas de rendimiento
-type PerformanceMetrics struct {
+// BackupPerformanceMetrics métricas de rendimiento específicas de backup
+type BackupPerformanceMetrics struct {
 	BackupID            string        `json:"backup_id"`
 	StartTime           time.Time     `json:"start_time"`
 	EndTime             time.Time     `json:"end_time"`

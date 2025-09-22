@@ -87,24 +87,24 @@ type TemplateConfig struct {
 // loadSMTPConfig carga la configuración SMTP desde variables de entorno
 func loadSMTPConfig() SMTPConfig {
 	config := SMTPConfig{
-		Enabled:     getBoolEnv("SMTP_ENABLED", true),
-		Host:        getEnv("SMTP_HOST", "smtp.gmail.com"),
-		Port:        getIntEnv("SMTP_PORT", 587),
-		Username:    getEnv("SMTP_USERNAME", ""),
-		Password:    getEnv("SMTP_PASSWORD", ""),
-		FromEmail:   getEnv("SMTP_FROM_EMAIL", ""),
-		FromName:    getEnv("SMTP_FROM_NAME", "Engine API Workflow"),
-		UseTLS:      getBoolEnv("SMTP_USE_TLS", true),
-		UseStartTLS: getBoolEnv("SMTP_USE_STARTTLS", true),
-		SkipVerify:  getBoolEnv("SMTP_SKIP_VERIFY", false),
+		Enabled:     getNotificationBoolEnv("SMTP_ENABLED", true),
+		Host:        getNotificationEnv("SMTP_HOST", "smtp.gmail.com"),
+		Port:        getNotificationIntEnv("SMTP_PORT", 587),
+		Username:    getNotificationEnv("SMTP_USERNAME", ""),
+		Password:    getNotificationEnv("SMTP_PASSWORD", ""),
+		FromEmail:   getNotificationEnv("SMTP_FROM_EMAIL", ""),
+		FromName:    getNotificationEnv("SMTP_FROM_NAME", "Engine API Workflow"),
+		UseTLS:      getNotificationBoolEnv("SMTP_USE_TLS", true),
+		UseStartTLS: getNotificationBoolEnv("SMTP_USE_STARTTLS", true),
+		SkipVerify:  getNotificationBoolEnv("SMTP_SKIP_VERIFY", false),
 
 		// Configuración avanzada con valores por defecto
-		ConnTimeout: getDurationEnv("SMTP_CONN_TIMEOUT", 10*time.Second),
-		SendTimeout: getDurationEnv("SMTP_SEND_TIMEOUT", 30*time.Second),
-		MaxRetries:  getIntEnv("SMTP_MAX_RETRIES", 3),
-		RetryDelay:  getDurationEnv("SMTP_RETRY_DELAY", 5*time.Second),
-		RateLimit:   getIntEnv("SMTP_RATE_LIMIT", 60), // 60 emails por minuto
-		BurstLimit:  getIntEnv("SMTP_BURST_LIMIT", 10),
+		ConnTimeout: getNotificationDurationEnv("SMTP_CONN_TIMEOUT", 10*time.Second),
+		SendTimeout: getNotificationDurationEnv("SMTP_SEND_TIMEOUT", 30*time.Second),
+		MaxRetries:  getNotificationIntEnv("SMTP_MAX_RETRIES", 3),
+		RetryDelay:  getNotificationDurationEnv("SMTP_RETRY_DELAY", 5*time.Second),
+		RateLimit:   getNotificationIntEnv("SMTP_RATE_LIMIT", 60), // 60 emails por minuto
+		BurstLimit:  getNotificationIntEnv("SMTP_BURST_LIMIT", 10),
 	}
 
 	// Si FromEmail no está configurado, usar Username
@@ -118,24 +118,24 @@ func loadSMTPConfig() SMTPConfig {
 // loadNotificationConfig carga la configuración de notificaciones
 func loadNotificationConfig() NotificationConfig {
 	return NotificationConfig{
-		Enabled:         getBoolEnv("NOTIFICATIONS_ENABLED", true),
-		EnableWorkers:   getBoolEnv("NOTIFICATIONS_ENABLE_WORKERS", true),
-		EnableScheduled: getBoolEnv("NOTIFICATIONS_ENABLE_SCHEDULED", true),
-		EnableRetries:   getBoolEnv("NOTIFICATIONS_ENABLE_RETRIES", true),
-		EnableCleanup:   getBoolEnv("NOTIFICATIONS_ENABLE_CLEANUP", true),
+		Enabled:         getNotificationBoolEnv("NOTIFICATIONS_ENABLED", true),
+		EnableWorkers:   getNotificationBoolEnv("NOTIFICATIONS_ENABLE_WORKERS", true),
+		EnableScheduled: getNotificationBoolEnv("NOTIFICATIONS_ENABLE_SCHEDULED", true),
+		EnableRetries:   getNotificationBoolEnv("NOTIFICATIONS_ENABLE_RETRIES", true),
+		EnableCleanup:   getNotificationBoolEnv("NOTIFICATIONS_ENABLE_CLEANUP", true),
 
-		MaxConcurrentJobs:  getIntEnv("NOTIFICATIONS_MAX_CONCURRENT_JOBS", 5),
-		ProcessingInterval: getDurationEnv("NOTIFICATIONS_PROCESSING_INTERVAL", 10*time.Second),
-		RetryInterval:      getDurationEnv("NOTIFICATIONS_RETRY_INTERVAL", 30*time.Second),
-		CleanupInterval:    getDurationEnv("NOTIFICATIONS_CLEANUP_INTERVAL", 5*time.Minute),
+		MaxConcurrentJobs:  getNotificationIntEnv("NOTIFICATIONS_MAX_CONCURRENT_JOBS", 5),
+		ProcessingInterval: getNotificationDurationEnv("NOTIFICATIONS_PROCESSING_INTERVAL", 10*time.Second),
+		RetryInterval:      getNotificationDurationEnv("NOTIFICATIONS_RETRY_INTERVAL", 30*time.Second),
+		CleanupInterval:    getNotificationDurationEnv("NOTIFICATIONS_CLEANUP_INTERVAL", 5*time.Minute),
 
-		DefaultMaxAttempts: getIntEnv("NOTIFICATIONS_DEFAULT_MAX_ATTEMPTS", 3),
-		InitialRetryDelay:  getDurationEnv("NOTIFICATIONS_INITIAL_RETRY_DELAY", 30*time.Second),
-		MaxRetryDelay:      getDurationEnv("NOTIFICATIONS_MAX_RETRY_DELAY", 5*time.Minute),
-		RetryBackoffFactor: getFloatEnv("NOTIFICATIONS_RETRY_BACKOFF_FACTOR", 2.0),
+		DefaultMaxAttempts: getNotificationIntEnv("NOTIFICATIONS_DEFAULT_MAX_ATTEMPTS", 3),
+		InitialRetryDelay:  getNotificationDurationEnv("NOTIFICATIONS_INITIAL_RETRY_DELAY", 30*time.Second),
+		MaxRetryDelay:      getNotificationDurationEnv("NOTIFICATIONS_MAX_RETRY_DELAY", 5*time.Minute),
+		RetryBackoffFactor: getNotificationFloatEnv("NOTIFICATIONS_RETRY_BACKOFF_FACTOR", 2.0),
 
-		CleanupAfterDays: getIntEnv("NOTIFICATIONS_CLEANUP_AFTER_DAYS", 90),
-		RedisQueuePrefix: getEnv("NOTIFICATIONS_REDIS_QUEUE_PREFIX", "notifications:"),
+		CleanupAfterDays: getNotificationIntEnv("NOTIFICATIONS_CLEANUP_AFTER_DAYS", 90),
+		RedisQueuePrefix: getNotificationEnv("NOTIFICATIONS_REDIS_QUEUE_PREFIX", "notifications:"),
 
 		RateLimits: loadNotificationRateLimits(),
 	}
@@ -145,20 +145,20 @@ func loadNotificationConfig() NotificationConfig {
 func loadNotificationRateLimits() NotificationRateLimits {
 	return NotificationRateLimits{
 		EmailSending: RateLimitRule{
-			Limit:  getIntEnv("NOTIFICATIONS_RATE_LIMIT_EMAIL_SENDING_LIMIT", 10),
-			Window: getIntEnv("NOTIFICATIONS_RATE_LIMIT_EMAIL_SENDING_WINDOW", 60),
+			Limit:  getNotificationIntEnv("NOTIFICATIONS_RATE_LIMIT_EMAIL_SENDING_LIMIT", 10),
+			Window: getNotificationIntEnv("NOTIFICATIONS_RATE_LIMIT_EMAIL_SENDING_WINDOW", 60),
 		},
 		TemplateOps: RateLimitRule{
-			Limit:  getIntEnv("NOTIFICATIONS_RATE_LIMIT_TEMPLATE_OPS_LIMIT", 20),
-			Window: getIntEnv("NOTIFICATIONS_RATE_LIMIT_TEMPLATE_OPS_WINDOW", 60),
+			Limit:  getNotificationIntEnv("NOTIFICATIONS_RATE_LIMIT_TEMPLATE_OPS_LIMIT", 20),
+			Window: getNotificationIntEnv("NOTIFICATIONS_RATE_LIMIT_TEMPLATE_OPS_WINDOW", 60),
 		},
 		Management: RateLimitRule{
-			Limit:  getIntEnv("NOTIFICATIONS_RATE_LIMIT_MANAGEMENT_LIMIT", 50),
-			Window: getIntEnv("NOTIFICATIONS_RATE_LIMIT_MANAGEMENT_WINDOW", 60),
+			Limit:  getNotificationIntEnv("NOTIFICATIONS_RATE_LIMIT_MANAGEMENT_LIMIT", 50),
+			Window: getNotificationIntEnv("NOTIFICATIONS_RATE_LIMIT_MANAGEMENT_WINDOW", 60),
 		},
 		AdminOps: RateLimitRule{
-			Limit:  getIntEnv("NOTIFICATIONS_RATE_LIMIT_ADMIN_OPS_LIMIT", 5),
-			Window: getIntEnv("NOTIFICATIONS_RATE_LIMIT_ADMIN_OPS_WINDOW", 300),
+			Limit:  getNotificationIntEnv("NOTIFICATIONS_RATE_LIMIT_ADMIN_OPS_LIMIT", 5),
+			Window: getNotificationIntEnv("NOTIFICATIONS_RATE_LIMIT_ADMIN_OPS_WINDOW", 300),
 		},
 	}
 }
@@ -166,11 +166,11 @@ func loadNotificationRateLimits() NotificationRateLimits {
 // loadTemplateConfig carga la configuración de templates
 func loadTemplateConfig() TemplateConfig {
 	return TemplateConfig{
-		CreateDefaultTemplates: getBoolEnv("TEMPLATES_CREATE_DEFAULT", true),
-		DefaultLanguage:        getEnv("TEMPLATES_DEFAULT_LANGUAGE", "en"),
-		AllowedLanguages:       getStringSliceEnv("TEMPLATES_ALLOWED_LANGUAGES", []string{"en", "es"}),
-		EnableVersioning:       getBoolEnv("TEMPLATES_ENABLE_VERSIONING", true),
-		MaxTemplateSize:        getIntEnv("TEMPLATES_MAX_SIZE", 1024*1024), // 1MB
+		CreateDefaultTemplates: getNotificationBoolEnv("TEMPLATES_CREATE_DEFAULT", true),
+		DefaultLanguage:        getNotificationEnv("TEMPLATES_DEFAULT_LANGUAGE", "en"),
+		AllowedLanguages:       getNotificationStringSliceEnv("TEMPLATES_ALLOWED_LANGUAGES", []string{"en", "es"}),
+		EnableVersioning:       getNotificationBoolEnv("TEMPLATES_ENABLE_VERSIONING", true),
+		MaxTemplateSize:        getNotificationIntEnv("TEMPLATES_MAX_SIZE", 1024*1024), // 1MB
 	}
 }
 
@@ -296,16 +296,16 @@ func (c *TemplateConfig) ValidateTemplateConfig() error {
 	return nil
 }
 
-// Helper functions para variables de entorno
+// Helper functions para variables de entorno - Renombradas para evitar conflictos
 
-func getEnv(key, defaultValue string) string {
+func getNotificationEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return defaultValue
 }
 
-func getIntEnv(key string, defaultValue int) int {
+func getNotificationIntEnv(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if intValue, err := strconv.Atoi(value); err == nil {
 			return intValue
@@ -314,7 +314,7 @@ func getIntEnv(key string, defaultValue int) int {
 	return defaultValue
 }
 
-func getBoolEnv(key string, defaultValue bool) bool {
+func getNotificationBoolEnv(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
 		if boolValue, err := strconv.ParseBool(value); err == nil {
 			return boolValue
@@ -323,7 +323,7 @@ func getBoolEnv(key string, defaultValue bool) bool {
 	return defaultValue
 }
 
-func getFloatEnv(key string, defaultValue float64) float64 {
+func getNotificationFloatEnv(key string, defaultValue float64) float64 {
 	if value := os.Getenv(key); value != "" {
 		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
 			return floatValue
@@ -332,7 +332,7 @@ func getFloatEnv(key string, defaultValue float64) float64 {
 	return defaultValue
 }
 
-func getDurationEnv(key string, defaultValue time.Duration) time.Duration {
+func getNotificationDurationEnv(key string, defaultValue time.Duration) time.Duration {
 	if value := os.Getenv(key); value != "" {
 		if duration, err := time.ParseDuration(value); err == nil {
 			return duration
@@ -341,7 +341,7 @@ func getDurationEnv(key string, defaultValue time.Duration) time.Duration {
 	return defaultValue
 }
 
-func getStringSliceEnv(key string, defaultValue []string) []string {
+func getNotificationStringSliceEnv(key string, defaultValue []string) []string {
 	if value := os.Getenv(key); value != "" {
 		// Asumimos que están separados por comas
 		parts := make([]string, 0)

@@ -6,78 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"Engine_API_Workflow/pkg/cache"
 )
-
-// CacheConfiguration configuración específica del caché
-type CacheConfiguration struct {
-	// Configuración básica
-	Enabled          bool          `env:"CACHE_ENABLED" envDefault:"true"`
-	DefaultTTL       time.Duration `env:"CACHE_DEFAULT_TTL" envDefault:"5m"`
-	CleanupInterval  time.Duration `env:"CACHE_CLEANUP_INTERVAL" envDefault:"1h"`
-	MaxMemory        string        `env:"CACHE_MAX_MEMORY" envDefault:"100MB"`
-	CompressionLevel int           `env:"CACHE_COMPRESSION_LEVEL" envDefault:"1"`
-	Serializer       string        `env:"CACHE_SERIALIZER" envDefault:"json"`
-
-	// Configuración de TTL por dominio
-	DashboardTTL time.Duration `env:"CACHE_DASHBOARD_TTL" envDefault:"30s"`
-	WorkflowTTL  time.Duration `env:"CACHE_WORKFLOW_TTL" envDefault:"5m"`
-	UserTTL      time.Duration `env:"CACHE_USER_TTL" envDefault:"15m"`
-	MetricsTTL   time.Duration `env:"CACHE_METRICS_TTL" envDefault:"1m"`
-	QueueTTL     time.Duration `env:"CACHE_QUEUE_TTL" envDefault:"10s"`
-	SystemTTL    time.Duration `env:"CACHE_SYSTEM_TTL" envDefault:"5m"`
-	AuthTTL      time.Duration `env:"CACHE_AUTH_TTL" envDefault:"10m"`
-
-	// Configuración avanzada
-	EnableCompression  bool `env:"CACHE_ENABLE_COMPRESSION" envDefault:"false"`
-	EnableMetrics      bool `env:"CACHE_ENABLE_METRICS" envDefault:"true"`
-	EnableDistribution bool `env:"CACHE_ENABLE_DISTRIBUTION" envDefault:"false"`
-	EnablePersistence  bool `env:"CACHE_ENABLE_PERSISTENCE" envDefault:"true"`
-	EnableWarmup       bool `env:"CACHE_ENABLE_WARMUP" envDefault:"true"`
-
-	// Configuración de warmup
-	WarmupEnabled     bool          `env:"CACHE_WARMUP_ENABLED" envDefault:"true"`
-	WarmupTimeout     time.Duration `env:"CACHE_WARMUP_TIMEOUT" envDefault:"30s"`
-	WarmupConcurrency int           `env:"CACHE_WARMUP_CONCURRENCY" envDefault:"5"`
-
-	// Configuración de invalidación
-	InvalidationEnabled bool          `env:"CACHE_INVALIDATION_ENABLED" envDefault:"true"`
-	InvalidationBuffer  int           `env:"CACHE_INVALIDATION_BUFFER" envDefault:"1000"`
-	InvalidationTimeout time.Duration `env:"CACHE_INVALIDATION_TIMEOUT" envDefault:"5s"`
-
-	// Configuración de backup del caché
-	BackupEnabled  bool          `env:"CACHE_BACKUP_ENABLED" envDefault:"false"`
-	BackupInterval time.Duration `env:"CACHE_BACKUP_INTERVAL" envDefault:"1h"`
-	BackupPath     string        `env:"CACHE_BACKUP_PATH" envDefault:"./cache_backups"`
-}
-
-// GetCacheConfig obtiene la configuración de caché del config principal
-func (c *Config) GetCacheConfig() *cache.CacheConfig {
-	maxMemory := c.parseMemorySize(c.Cache.MaxMemory)
-
-	return &cache.CacheConfig{
-		Enabled:          c.Cache.Enabled,
-		DefaultTTL:       c.Cache.DefaultTTL,
-		CleanupInterval:  c.Cache.CleanupInterval,
-		MaxMemory:        maxMemory,
-		CompressionLevel: c.Cache.CompressionLevel,
-		Serializer:       c.Cache.Serializer,
-	}
-}
-
-// GetTTLConfig obtiene configuración de TTL por dominio
-func (c *Config) GetTTLConfig() *TTLConfig {
-	return &TTLConfig{
-		Dashboard: c.Cache.DashboardTTL,
-		Workflow:  c.Cache.WorkflowTTL,
-		User:      c.Cache.UserTTL,
-		Metrics:   c.Cache.MetricsTTL,
-		Queue:     c.Cache.QueueTTL,
-		System:    c.Cache.SystemTTL,
-		Auth:      c.Cache.AuthTTL,
-	}
-}
 
 // TTLConfig configuración de TTL por dominio
 type TTLConfig struct {
@@ -107,6 +36,57 @@ type CachePolicy struct {
 	MaxSize     int64         `json:"max_size"`
 	Compression bool          `json:"compression"`
 	Persistence bool          `json:"persistence"`
+}
+
+// CacheWarmupConfig configuración de warmup del caché
+type CacheWarmupConfig struct {
+	Enabled     bool
+	Timeout     time.Duration
+	Concurrency int
+}
+
+// CacheInvalidationConfig configuración de invalidación del caché
+type CacheInvalidationConfig struct {
+	Enabled bool
+	Buffer  int
+	Timeout time.Duration
+}
+
+// SimpleCacheConfig configuración simplificada del caché (sin dependencias externas)
+type SimpleCacheConfig struct {
+	Enabled          bool          `json:"enabled"`
+	DefaultTTL       time.Duration `json:"default_ttl"`
+	CleanupInterval  time.Duration `json:"cleanup_interval"`
+	MaxMemory        int64         `json:"max_memory"`
+	CompressionLevel int           `json:"compression_level"`
+	Serializer       string        `json:"serializer"`
+}
+
+// GetCacheConfig obtiene la configuración de caché del config principal
+func (c *Config) GetCacheConfig() *SimpleCacheConfig {
+	maxMemory := c.parseMemorySize(c.Cache.MaxMemory)
+
+	return &SimpleCacheConfig{
+		Enabled:          c.Cache.Enabled,
+		DefaultTTL:       c.Cache.DefaultTTL,
+		CleanupInterval:  c.Cache.CleanupInterval,
+		MaxMemory:        maxMemory,
+		CompressionLevel: c.Cache.CompressionLevel,
+		Serializer:       c.Cache.Serializer,
+	}
+}
+
+// GetTTLConfig obtiene configuración de TTL por dominio
+func (c *Config) GetTTLConfig() *TTLConfig {
+	return &TTLConfig{
+		Dashboard: c.Cache.DashboardTTL,
+		Workflow:  c.Cache.WorkflowTTL,
+		User:      c.Cache.UserTTL,
+		Metrics:   c.Cache.MetricsTTL,
+		Queue:     c.Cache.QueueTTL,
+		System:    c.Cache.SystemTTL,
+		Auth:      c.Cache.AuthTTL,
+	}
 }
 
 // GetCachePolicies retorna políticas de caché predefinidas
@@ -204,13 +184,6 @@ func (c *Config) GetCacheWarmupConfig() *CacheWarmupConfig {
 	}
 }
 
-// CacheWarmupConfig configuración de warmup del caché
-type CacheWarmupConfig struct {
-	Enabled     bool
-	Timeout     time.Duration
-	Concurrency int
-}
-
 // GetCacheInvalidationConfig obtiene configuración de invalidación
 func (c *Config) GetCacheInvalidationConfig() *CacheInvalidationConfig {
 	return &CacheInvalidationConfig{
@@ -218,13 +191,6 @@ func (c *Config) GetCacheInvalidationConfig() *CacheInvalidationConfig {
 		Buffer:  c.Cache.InvalidationBuffer,
 		Timeout: c.Cache.InvalidationTimeout,
 	}
-}
-
-// CacheInvalidationConfig configuración de invalidación del caché
-type CacheInvalidationConfig struct {
-	Enabled bool
-	Buffer  int
-	Timeout time.Duration
 }
 
 // ValidateCacheConfig valida la configuración de caché
@@ -258,4 +224,20 @@ func (c *Config) ValidateCacheConfig() error {
 	}
 
 	return nil
+}
+
+// GetCacheBackupConfig obtiene configuración de backup del caché
+func (c *Config) GetCacheBackupConfig() *CacheBackupConfig {
+	return &CacheBackupConfig{
+		Enabled:  c.Cache.BackupEnabled,
+		Interval: c.Cache.BackupInterval,
+		Path:     c.Cache.BackupPath,
+	}
+}
+
+// CacheBackupConfig configuración de backup del caché
+type CacheBackupConfig struct {
+	Enabled  bool
+	Interval time.Duration
+	Path     string
 }

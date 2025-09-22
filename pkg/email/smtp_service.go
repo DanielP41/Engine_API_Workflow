@@ -21,91 +21,14 @@ import (
 )
 
 // ================================
-// INTERFACES Y TIPOS
+// IMPLEMENTACIÓN DEL SERVICIO SMTP
 // ================================
 
-// Service interfaz principal del servicio de email
-type Service interface {
-	// Envío básico
-	SendEmail(ctx context.Context, email *EmailMessage) error
-	SendSimpleEmail(ctx context.Context, to []string, subject, body string, isHTML bool) error
-	SendTemplateEmail(ctx context.Context, templateName string, to []string, data map[string]interface{}) error
-
-	// Envío en lotes
-	SendBatchEmails(ctx context.Context, emails []*EmailMessage) error
-
-	// Gestión del servicio
-	TestConnection(ctx context.Context) error
-	GetStats() *ServiceStats
-	Shutdown(ctx context.Context) error
-
-	// Health check
-	IsHealthy() bool
-}
-
-// EmailMessage representa un mensaje de email completo
-type EmailMessage struct {
-	// Destinatarios
-	To      []string `json:"to"`
-	CC      []string `json:"cc,omitempty"`
-	BCC     []string `json:"bcc,omitempty"`
-	ReplyTo string   `json:"reply_to,omitempty"`
-
-	// Remitente (si no se especifica, usa el por defecto)
-	From     string `json:"from,omitempty"`
-	FromName string `json:"from_name,omitempty"`
-
-	// Contenido
-	Subject string `json:"subject"`
-	Body    string `json:"body"`
-	IsHTML  bool   `json:"is_html"`
-
-	// Adjuntos
-	Attachments []Attachment `json:"attachments,omitempty"`
-
-	// Headers personalizados
-	Headers map[string]string `json:"headers,omitempty"`
-
-	// Metadatos
-	MessageID string `json:"message_id,omitempty"`
-	Priority  int    `json:"priority,omitempty"` // 1=High, 3=Normal, 5=Low
-
-	// Configuración específica
-	DisableTracking bool `json:"disable_tracking,omitempty"`
-}
-
-// Attachment representa un adjunto de email
-type Attachment struct {
-	Filename    string `json:"filename"`
-	ContentType string `json:"content_type"`
-	Data        []byte `json:"data,omitempty"`
-	FilePath    string `json:"file_path,omitempty"`
-	Inline      bool   `json:"inline"`
-	ContentID   string `json:"content_id,omitempty"`
-}
-
-// ServiceStats estadísticas del servicio
-type ServiceStats struct {
-	EmailsSent     int64         `json:"emails_sent"`
-	EmailsFailed   int64         `json:"emails_failed"`
-	TotalBytes     int64         `json:"total_bytes"`
-	AverageLatency time.Duration `json:"average_latency"`
-	ActiveConns    int           `json:"active_connections"`
-	QueuedEmails   int           `json:"queued_emails"`
-	LastError      string        `json:"last_error,omitempty"`
-	LastSent       *time.Time    `json:"last_sent,omitempty"`
-	Uptime         time.Duration `json:"uptime"`
-}
-
-// ================================
-// IMPLEMENTACIÓN DEL SERVICIO
-// ================================
-
-// SMTPService implementación del servicio SMTP
-type SMTPService struct {
+// SMTPServiceImpl implementación concreta del servicio SMTP
+type SMTPServiceImpl struct {
 	config    *Config
 	logger    *zap.Logger
-	stats     *ServiceStats
+	stats     *EmailStats
 	statsMux  sync.RWMutex
 	startTime time.Time
 
@@ -137,7 +60,7 @@ type smtpConnection struct {
 }
 
 // NewSMTPService crea una nueva instancia del servicio SMTP
-func NewSMTPService(config *Config) Service {
+func NewSMTPService(config *Config) EmailService {
 	if config == nil {
 		config = NewDefaultConfig()
 	}
@@ -155,10 +78,10 @@ func NewSMTPService(config *Config) Service {
 		config.Performance.BurstLimit,
 	)
 
-	service := &SMTPService{
+	service := &SMTPServiceImpl{
 		config:      config,
 		logger:      zap.NewNop(), // Se puede configurar después
-		stats:       &ServiceStats{},
+		stats:       &EmailStats{},
 		startTime:   time.Now(),
 		connPool:    make(chan *smtpConnection, config.Performance.MaxConnections),
 		rateLimiter: rateLimiter,
@@ -179,10 +102,63 @@ func NewSMTPService(config *Config) Service {
 }
 
 // SetLogger configura el logger del servicio
-func (s *SMTPService) SetLogger(logger *zap.Logger) {
+func (s *SMTPServiceImpl) SetLogger(logger *zap.Logger) {
 	if logger != nil {
 		s.logger = logger
 	}
+}
+
+// ================================
+// IMPLEMENTACIÓN DE LA INTERFAZ EmailService
+// ================================
+
+// Send implementa EmailService.Send
+func (s *SMTPServiceImpl) Send(ctx context.Context, message *Message) error {
+	// Convertir Message a EmailMessage
+	emailMsg := message.ToEmailMessage()
+	return s.SendEmail(ctx, emailMsg)
+}
+
+// SendWithID implementa EmailService.SendWithID
+func (s *SMTPServiceImpl) SendWithID(ctx context.Context, message *Message) (string, error) {
+	if err := s.Send(ctx, message); err != nil {
+		return "", err
+	}
+	return message.ID, nil
+}
+
+// SendBatch implementa EmailService.SendBatch
+func (s *SMTPServiceImpl) SendBatch(ctx context.Context, messages []*Message) error {
+	emailMessages := make([]*EmailMessage, len(messages))
+	for i, msg := range messages {
+		emailMessages[i] = msg.ToEmailMessage()
+	}
+	return s.SendBatchEmails(ctx, emailMessages)
+}
+
+// TestConnection implementa EmailService.TestConnection
+func (s *SMTPServiceImpl) TestConnection() error {
+	return s.TestConnectionWithContext(context.Background())
+}
+
+// GetConfig implementa EmailService.GetConfig
+func (s *SMTPServiceImpl) GetConfig() *Config {
+	return s.config
+}
+
+// IsEnabled implementa EmailService.IsEnabled
+func (s *SMTPServiceImpl) IsEnabled() bool {
+	return !s.config.Development.MockMode
+}
+
+// GetStats implementa EmailService.GetStats
+func (s *SMTPServiceImpl) GetStats() *EmailStats {
+	return s.GetServiceStats()
+}
+
+// Close implementa EmailService.Close
+func (s *SMTPServiceImpl) Close() error {
+	return s.Shutdown(context.Background())
 }
 
 // ================================
@@ -190,7 +166,7 @@ func (s *SMTPService) SetLogger(logger *zap.Logger) {
 // ================================
 
 // SendEmail envía un email
-func (s *SMTPService) SendEmail(ctx context.Context, email *EmailMessage) error {
+func (s *SMTPServiceImpl) SendEmail(ctx context.Context, email *EmailMessage) error {
 	start := time.Now()
 
 	// Validar mensaje
@@ -233,7 +209,7 @@ func (s *SMTPService) SendEmail(ctx context.Context, email *EmailMessage) error 
 }
 
 // SendSimpleEmail envía un email simple
-func (s *SMTPService) SendSimpleEmail(ctx context.Context, to []string, subject, body string, isHTML bool) error {
+func (s *SMTPServiceImpl) SendSimpleEmail(ctx context.Context, to []string, subject, body string, isHTML bool) error {
 	email := &EmailMessage{
 		To:      to,
 		Subject: subject,
@@ -244,13 +220,13 @@ func (s *SMTPService) SendSimpleEmail(ctx context.Context, to []string, subject,
 }
 
 // SendTemplateEmail envía un email usando un template (placeholder)
-func (s *SMTPService) SendTemplateEmail(ctx context.Context, templateName string, to []string, data map[string]interface{}) error {
+func (s *SMTPServiceImpl) SendTemplateEmail(ctx context.Context, templateName string, to []string, data map[string]interface{}) error {
 	// TODO: Implementar cuando tengamos el sistema de templates
 	return fmt.Errorf("template emails not implemented yet")
 }
 
 // SendBatchEmails envía múltiples emails en lote
-func (s *SMTPService) SendBatchEmails(ctx context.Context, emails []*EmailMessage) error {
+func (s *SMTPServiceImpl) SendBatchEmails(ctx context.Context, emails []*EmailMessage) error {
 	if len(emails) == 0 {
 		return nil
 	}
@@ -287,8 +263,8 @@ func (s *SMTPService) SendBatchEmails(ctx context.Context, emails []*EmailMessag
 // MÉTODOS DE GESTIÓN
 // ================================
 
-// TestConnection prueba la conexión SMTP
-func (s *SMTPService) TestConnection(ctx context.Context) error {
+// TestConnectionWithContext prueba la conexión SMTP
+func (s *SMTPServiceImpl) TestConnectionWithContext(ctx context.Context) error {
 	if s.config.Development.MockMode {
 		s.logger.Info("Test connection successful (mock mode)")
 		return nil
@@ -304,8 +280,8 @@ func (s *SMTPService) TestConnection(ctx context.Context) error {
 	return nil
 }
 
-// GetStats devuelve las estadísticas del servicio
-func (s *SMTPService) GetStats() *ServiceStats {
+// GetServiceStats devuelve las estadísticas del servicio
+func (s *SMTPServiceImpl) GetServiceStats() *EmailStats {
 	s.statsMux.RLock()
 	defer s.statsMux.RUnlock()
 
@@ -315,7 +291,7 @@ func (s *SMTPService) GetStats() *ServiceStats {
 
 	if s.config.Development.MockMode {
 		s.devMux.RLock()
-		stats.QueuedEmails = len(s.devStorage)
+		stats.IdleConns = len(s.devStorage)
 		s.devMux.RUnlock()
 	}
 
@@ -323,7 +299,7 @@ func (s *SMTPService) GetStats() *ServiceStats {
 }
 
 // IsHealthy verifica si el servicio está saludable
-func (s *SMTPService) IsHealthy() bool {
+func (s *SMTPServiceImpl) IsHealthy() bool {
 	// Verificar configuración básica
 	if s.config == nil {
 		return false
@@ -338,12 +314,12 @@ func (s *SMTPService) IsHealthy() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := s.TestConnection(ctx)
+	err := s.TestConnectionWithContext(ctx)
 	return err == nil
 }
 
 // Shutdown cierra el servicio de forma elegante
-func (s *SMTPService) Shutdown(ctx context.Context) error {
+func (s *SMTPServiceImpl) Shutdown(ctx context.Context) error {
 	s.logger.Info("Shutting down email service")
 
 	// Cancelar contexto
@@ -375,7 +351,7 @@ func (s *SMTPService) Shutdown(ctx context.Context) error {
 // ================================
 
 // sendEmailWithRetry envía un email con reintentos automáticos
-func (s *SMTPService) sendEmailWithRetry(ctx context.Context, email *EmailMessage) error {
+func (s *SMTPServiceImpl) sendEmailWithRetry(ctx context.Context, email *EmailMessage) error {
 	var lastErr error
 
 	for attempt := 1; attempt <= s.config.Retry.MaxAttempts; attempt++ {
@@ -417,7 +393,7 @@ func (s *SMTPService) sendEmailWithRetry(ctx context.Context, email *EmailMessag
 }
 
 // sendEmailOnce envía un email una sola vez
-func (s *SMTPService) sendEmailOnce(ctx context.Context, email *EmailMessage) error {
+func (s *SMTPServiceImpl) sendEmailOnce(ctx context.Context, email *EmailMessage) error {
 	// Obtener conexión del pool
 	conn, err := s.getConnection(ctx)
 	if err != nil {
@@ -477,7 +453,7 @@ func (s *SMTPService) sendEmailOnce(ctx context.Context, email *EmailMessage) er
 }
 
 // buildMIMEMessage construye el mensaje MIME completo
-func (s *SMTPService) buildMIMEMessage(email *EmailMessage) ([]byte, error) {
+func (s *SMTPServiceImpl) buildMIMEMessage(email *EmailMessage) ([]byte, error) {
 	var buffer bytes.Buffer
 
 	// Headers principales
@@ -557,7 +533,7 @@ func (s *SMTPService) buildMIMEMessage(email *EmailMessage) ([]byte, error) {
 }
 
 // buildSimpleMessage construye un mensaje simple sin adjuntos
-func (s *SMTPService) buildSimpleMessage(buffer *bytes.Buffer, email *EmailMessage) ([]byte, error) {
+func (s *SMTPServiceImpl) buildSimpleMessage(buffer *bytes.Buffer, email *EmailMessage) ([]byte, error) {
 	if email.IsHTML {
 		buffer.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
 	} else {
@@ -574,7 +550,7 @@ func (s *SMTPService) buildSimpleMessage(buffer *bytes.Buffer, email *EmailMessa
 }
 
 // buildMultipartMessage construye un mensaje con adjuntos
-func (s *SMTPService) buildMultipartMessage(buffer *bytes.Buffer, email *EmailMessage) ([]byte, error) {
+func (s *SMTPServiceImpl) buildMultipartMessage(buffer *bytes.Buffer, email *EmailMessage) ([]byte, error) {
 	boundary := s.generateBoundary()
 
 	buffer.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=\"%s\"\r\n", boundary))
@@ -606,7 +582,7 @@ func (s *SMTPService) buildMultipartMessage(buffer *bytes.Buffer, email *EmailMe
 }
 
 // addAttachment añade un adjunto al mensaje
-func (s *SMTPService) addAttachment(buffer *bytes.Buffer, boundary string, attachment *Attachment) error {
+func (s *SMTPServiceImpl) addAttachment(buffer *bytes.Buffer, boundary string, attachment *Attachment) error {
 	buffer.WriteString(fmt.Sprintf("\r\n--%s\r\n", boundary))
 
 	// Determinar Content-Type
@@ -665,7 +641,7 @@ func (s *SMTPService) addAttachment(buffer *bytes.Buffer, boundary string, attac
 // ================================
 
 // initConnectionPool inicializa el pool de conexiones
-func (s *SMTPService) initConnectionPool() {
+func (s *SMTPServiceImpl) initConnectionPool() {
 	s.logger.Info("Initializing SMTP connection pool",
 		zap.Int("max_connections", s.config.Performance.MaxConnections))
 
@@ -692,7 +668,7 @@ func (s *SMTPService) initConnectionPool() {
 }
 
 // createConnection crea una nueva conexión SMTP
-func (s *SMTPService) createConnection(ctx context.Context) (*smtpConnection, error) {
+func (s *SMTPServiceImpl) createConnection(ctx context.Context) (*smtpConnection, error) {
 	address := s.config.SMTP.GetAddress()
 
 	// Conectar con timeout
@@ -741,7 +717,7 @@ func (s *SMTPService) createConnection(ctx context.Context) (*smtpConnection, er
 }
 
 // getConnection obtiene una conexión del pool
-func (s *SMTPService) getConnection(ctx context.Context) (*smtpConnection, error) {
+func (s *SMTPServiceImpl) getConnection(ctx context.Context) (*smtpConnection, error) {
 	// Intentar obtener conexión existente
 	select {
 	case conn := <-s.connPool:
@@ -773,7 +749,7 @@ func (s *SMTPService) getConnection(ctx context.Context) (*smtpConnection, error
 }
 
 // releaseConnection libera una conexión de vuelta al pool
-func (s *SMTPService) releaseConnection(conn *smtpConnection) {
+func (s *SMTPServiceImpl) releaseConnection(conn *smtpConnection) {
 	if conn == nil {
 		return
 	}
@@ -802,7 +778,7 @@ func (s *SMTPService) releaseConnection(conn *smtpConnection) {
 }
 
 // isConnectionValid verifica si una conexión es válida
-func (s *SMTPService) isConnectionValid(conn *smtpConnection) bool {
+func (s *SMTPServiceImpl) isConnectionValid(conn *smtpConnection) bool {
 	if conn == nil || conn.client == nil {
 		return false
 	}
@@ -821,7 +797,7 @@ func (s *SMTPService) isConnectionValid(conn *smtpConnection) bool {
 }
 
 // closeConnection cierra una conexión
-func (s *SMTPService) closeConnection(conn *smtpConnection) {
+func (s *SMTPServiceImpl) closeConnection(conn *smtpConnection) {
 	if conn != nil && conn.client != nil {
 		conn.client.Quit()
 		conn.client.Close()
@@ -829,7 +805,7 @@ func (s *SMTPService) closeConnection(conn *smtpConnection) {
 }
 
 // closeConnectionPool cierra todas las conexiones del pool
-func (s *SMTPService) closeConnectionPool() {
+func (s *SMTPServiceImpl) closeConnectionPool() {
 	close(s.connPool)
 	for conn := range s.connPool {
 		s.closeConnection(conn)
@@ -841,7 +817,7 @@ func (s *SMTPService) closeConnectionPool() {
 // ================================
 
 // startCleanupWorker inicia el worker de limpieza de conexiones
-func (s *SMTPService) startCleanupWorker() {
+func (s *SMTPServiceImpl) startCleanupWorker() {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -861,7 +837,7 @@ func (s *SMTPService) startCleanupWorker() {
 }
 
 // cleanupConnections limpia conexiones inactivas
-func (s *SMTPService) cleanupConnections() {
+func (s *SMTPServiceImpl) cleanupConnections() {
 	var activeConns []*smtpConnection
 
 	// Drenar pool y verificar conexiones
@@ -898,7 +874,7 @@ done:
 // ================================
 
 // validateMessage valida un mensaje de email
-func (s *SMTPService) validateMessage(email *EmailMessage) error {
+func (s *SMTPServiceImpl) validateMessage(email *EmailMessage) error {
 	if len(email.To) == 0 {
 		return fmt.Errorf("no recipients specified")
 	}
@@ -929,7 +905,7 @@ func (s *SMTPService) validateMessage(email *EmailMessage) error {
 }
 
 // processBatch procesa un lote de emails
-func (s *SMTPService) processBatch(ctx context.Context, emails []*EmailMessage) error {
+func (s *SMTPServiceImpl) processBatch(ctx context.Context, emails []*EmailMessage) error {
 	errChan := make(chan error, len(emails))
 	semaphore := make(chan struct{}, s.config.Performance.ProcessingWorkers)
 
@@ -963,7 +939,7 @@ func (s *SMTPService) processBatch(ctx context.Context, emails []*EmailMessage) 
 }
 
 // isRetryableError determina si un error es recuperable
-func (s *SMTPService) isRetryableError(err error) bool {
+func (s *SMTPServiceImpl) isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -999,7 +975,7 @@ func (s *SMTPService) isRetryableError(err error) bool {
 }
 
 // calculateRetryDelay calcula el delay para el próximo intento
-func (s *SMTPService) calculateRetryDelay(attempt int) time.Duration {
+func (s *SMTPServiceImpl) calculateRetryDelay(attempt int) time.Duration {
 	delay := s.config.Retry.InitialDelay
 
 	// Backoff exponencial
@@ -1021,33 +997,33 @@ func (s *SMTPService) calculateRetryDelay(attempt int) time.Duration {
 }
 
 // updateStats actualiza las estadísticas del servicio
-func (s *SMTPService) updateStats(start time.Time, err error) {
+func (s *SMTPServiceImpl) updateStats(start time.Time, err error) {
 	s.statsMux.Lock()
 	defer s.statsMux.Unlock()
 
 	duration := time.Since(start)
 
 	if err != nil {
-		s.stats.EmailsFailed++
+		s.stats.TotalFailed++
 		s.stats.LastError = err.Error()
 	} else {
-		s.stats.EmailsSent++
+		s.stats.TotalSent++
 		now := time.Now()
 		s.stats.LastSent = &now
 	}
 
 	// Actualizar latencia promedio (simple moving average)
-	if s.stats.AverageLatency == 0 {
-		s.stats.AverageLatency = duration
+	if s.stats.AverageTime == 0 {
+		s.stats.AverageTime = duration
 	} else {
-		s.stats.AverageLatency = (s.stats.AverageLatency + duration) / 2
+		s.stats.AverageTime = (s.stats.AverageTime + duration) / 2
 	}
 }
 
 // incrementFailed incrementa el contador de emails fallidos
-func (s *SMTPService) incrementFailed() {
+func (s *SMTPServiceImpl) incrementFailed() {
 	s.statsMux.Lock()
-	s.stats.EmailsFailed++
+	s.stats.TotalFailed++
 	s.statsMux.Unlock()
 }
 
@@ -1056,7 +1032,7 @@ func (s *SMTPService) incrementFailed() {
 // ================================
 
 // handleMockEmail maneja el envío de email en modo mock
-func (s *SMTPService) handleMockEmail(email *EmailMessage) error {
+func (s *SMTPServiceImpl) handleMockEmail(email *EmailMessage) error {
 	s.devMux.Lock()
 	defer s.devMux.Unlock()
 
@@ -1077,7 +1053,7 @@ func (s *SMTPService) handleMockEmail(email *EmailMessage) error {
 }
 
 // saveEmailToFile guarda el email en un archivo
-func (s *SMTPService) saveEmailToFile(email *EmailMessage) error {
+func (s *SMTPServiceImpl) saveEmailToFile(email *EmailMessage) error {
 	if err := os.MkdirAll(s.config.Development.FileStoragePath, 0755); err != nil {
 		return err
 	}
@@ -1095,7 +1071,7 @@ func (s *SMTPService) saveEmailToFile(email *EmailMessage) error {
 }
 
 // GetMockEmails devuelve los emails almacenados en modo mock
-func (s *SMTPService) GetMockEmails() []EmailMessage {
+func (s *SMTPServiceImpl) GetMockEmails() []EmailMessage {
 	if !s.config.Development.MockMode {
 		return nil
 	}
@@ -1109,7 +1085,7 @@ func (s *SMTPService) GetMockEmails() []EmailMessage {
 }
 
 // ClearMockEmails limpia los emails almacenados en modo mock
-func (s *SMTPService) ClearMockEmails() {
+func (s *SMTPServiceImpl) ClearMockEmails() {
 	if !s.config.Development.MockMode {
 		return
 	}
@@ -1124,13 +1100,13 @@ func (s *SMTPService) ClearMockEmails() {
 // ================================
 
 // encodeHeader codifica un header para MIME
-func (s *SMTPService) encodeHeader(text string) string {
+func (s *SMTPServiceImpl) encodeHeader(text string) string {
 	// Para simplicidad, usar encoding básico
 	return text
 }
 
 // encodeQuotedPrintable codifica texto en quoted-printable
-func (s *SMTPService) encodeQuotedPrintable(text string) string {
+func (s *SMTPServiceImpl) encodeQuotedPrintable(text string) string {
 	// Implementación simple de quoted-printable
 	var buffer bytes.Buffer
 	for i, r := range text {
@@ -1151,7 +1127,7 @@ func (s *SMTPService) encodeQuotedPrintable(text string) string {
 }
 
 // generateMessageID genera un Message-ID único
-func (s *SMTPService) generateMessageID() string {
+func (s *SMTPServiceImpl) generateMessageID() string {
 	hostname := s.config.SMTP.Host
 	if hostname == "" {
 		hostname = "localhost"
@@ -1160,6 +1136,6 @@ func (s *SMTPService) generateMessageID() string {
 }
 
 // generateBoundary genera un boundary para mensajes multipart
-func (s *SMTPService) generateBoundary() string {
+func (s *SMTPServiceImpl) generateBoundary() string {
 	return fmt.Sprintf("boundary_%d_%d", time.Now().Unix(), rand.Int())
 }

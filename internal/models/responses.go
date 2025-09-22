@@ -4,9 +4,7 @@ import (
 	"time"
 )
 
-// ===============================================
 // API RESPONSE STRUCTURES
-// ===============================================
 
 // APIResponse estructura genérica para todas las respuestas de la API
 type APIResponse struct {
@@ -65,9 +63,7 @@ type RateLimit struct {
 	Window    string    `json:"window"`
 }
 
-// ===============================================
 // USER RESPONSE STRUCTURES (EXPANDIDAS)
-// ===============================================
 
 // UserResponse respuesta completa de usuario
 type UserResponse struct {
@@ -183,27 +179,25 @@ type DateRange struct {
 	End   time.Time `json:"end"`
 }
 
-// ===============================================
 // EXECUTION & LOG RESPONSE STRUCTURES
-// ===============================================
 
 // ExecutionResponse respuesta de ejecución detallada
 type ExecutionResponse struct {
-	ID            string                  `json:"id"`
-	WorkflowID    string                  `json:"workflow_id"`
-	WorkflowName  string                  `json:"workflow_name"`
-	Status        WorkflowStatus          `json:"status"`
-	TriggerType   TriggerType             `json:"trigger_type"`
-	TriggerData   map[string]interface{}  `json:"trigger_data"`
-	StartedAt     time.Time               `json:"started_at"`
-	CompletedAt   *time.Time              `json:"completed_at,omitempty"`
-	Duration      *int64                  `json:"duration,omitempty"` // ms
-	Steps         []StepExecutionResponse `json:"steps"`
-	Context       map[string]interface{}  `json:"context"`
-	ErrorMessage  string                  `json:"error_message,omitempty"`
-	Progress      ExecutionProgress       `json:"progress"`
-	ResourceUsage ResourceUsage           `json:"resource_usage"`
-	Performance   PerformanceMetrics      `json:"performance"`
+	ID            string                      `json:"id"`
+	WorkflowID    string                      `json:"workflow_id"`
+	WorkflowName  string                      `json:"workflow_name"`
+	Status        WorkflowStatus              `json:"status"`
+	TriggerType   TriggerType                 `json:"trigger_type"`
+	TriggerData   map[string]interface{}      `json:"trigger_data"`
+	StartedAt     time.Time                   `json:"started_at"`
+	CompletedAt   *time.Time                  `json:"completed_at,omitempty"`
+	Duration      *int64                      `json:"duration,omitempty"` // ms
+	Steps         []StepExecutionResponse     `json:"steps"`
+	Context       map[string]interface{}      `json:"context"`
+	ErrorMessage  string                      `json:"error_message,omitempty"`
+	Progress      ExecutionProgress           `json:"progress"`
+	ResourceUsage ResourceUsage               `json:"resource_usage"`
+	Performance   ExecutionPerformanceMetrics `json:"performance"`
 }
 
 // StepExecutionResponse respuesta de ejecución de paso
@@ -240,8 +234,8 @@ type StepResourceUsage struct {
 	NetworkRecv int64 `json:"network_recv"` // bytes
 }
 
-// PerformanceMetrics métricas de rendimiento
-type PerformanceMetrics struct {
+// ExecutionPerformanceMetrics métricas de rendimiento de ejecución
+type ExecutionPerformanceMetrics struct {
 	QueueTime     int64          `json:"queue_time"`     // ms
 	ExecutionTime int64          `json:"execution_time"` // ms
 	TotalTime     int64          `json:"total_time"`     // ms
@@ -257,9 +251,7 @@ type LatencyMetrics struct {
 	P99 int64 `json:"p99"` // ms
 }
 
-// ===============================================
 // SYSTEM & HEALTH RESPONSE STRUCTURES
-// ===============================================
 
 // HealthResponse respuesta de salud del sistema
 type HealthResponse struct {
@@ -336,9 +328,7 @@ type DependencyHealth struct {
 	Critical     bool      `json:"critical"`
 }
 
-// ===============================================
 // SEARCH & FILTER STRUCTURES
-// ===============================================
 
 // SearchRequest estructura genérica de búsqueda
 type SearchRequest struct {
@@ -387,9 +377,7 @@ type SearchSuggestion struct {
 	Score float64 `json:"score"`
 }
 
-// ===============================================
 // VALIDATION HELPERS
-// ===============================================
 
 // ValidateWorkflowStatus valida estado de workflow
 func (ws WorkflowStatus) IsValid() bool {
