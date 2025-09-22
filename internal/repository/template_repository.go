@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	htmlTemplate "html/template"
 	"strings"
+	textTemplate "text/template"
 	"time"
 
 	"Engine_API_Workflow/internal/models"
@@ -15,85 +17,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
 )
-
-// ================================
-// ESTRUCTURAS AUXILIARES
-// ================================
-
-// TemplatePreview vista previa renderizada de un template
-type TemplatePreview struct {
-	Subject  string   `json:"subject"`
-	BodyHTML string   `json:"body_html"`
-	BodyText string   `json:"body_text"`
-	Errors   []string `json:"errors,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
-}
-
-// TemplateUsageStats estadísticas de uso de un template
-type TemplateUsageStats struct {
-	TemplateName     string           `json:"template_name"`
-	TotalUsage       int64            `json:"total_usage"`
-	SuccessfulSends  int64            `json:"successful_sends"`
-	FailedSends      int64            `json:"failed_sends"`
-	LastUsed         *time.Time       `json:"last_used,omitempty"`
-	UsageByDay       map[string]int64 `json:"usage_by_day"`
-	PopularVariables []string         `json:"popular_variables"`
-}
-
-// TemplateDiff diferencias entre versiones de template
-type TemplateDiff struct {
-	TemplateName string              `json:"template_name"`
-	Version1     int                 `json:"version1"`
-	Version2     int                 `json:"version2"`
-	Changes      []TemplateChange    `json:"changes"`
-	Summary      TemplateDiffSummary `json:"summary"`
-}
-
-// TemplateChange representa un cambio específico
-type TemplateChange struct {
-	Field    string      `json:"field"`
-	Type     string      `json:"type"` // added, removed, modified
-	OldValue interface{} `json:"old_value,omitempty"`
-	NewValue interface{} `json:"new_value,omitempty"`
-}
-
-// TemplateDiffSummary resumen de cambios
-type TemplateDiffSummary struct {
-	TotalChanges   int `json:"total_changes"`
-	FieldsAdded    int `json:"fields_added"`
-	FieldsRemoved  int `json:"fields_removed"`
-	FieldsModified int `json:"fields_modified"`
-}
-
-// TemplateExport estructura para exportar templates
-type TemplateExport struct {
-	Template   *models.EmailTemplate  `json:"template"`
-	Metadata   map[string]interface{} `json:"metadata"`
-	Version    string                 `json:"version"`
-	ExportedAt time.Time              `json:"exported_at"`
-}
-
-// TemplateImportOptions opciones para importar templates
-type TemplateImportOptions struct {
-	OverwriteExisting bool `json:"overwrite_existing"`
-	CreateNewVersion  bool `json:"create_new_version"`
-	ValidateOnly      bool `json:"validate_only"`
-	ImportAsInactive  bool `json:"import_as_inactive"`
-}
-
-// TemplateSearchFilters filtros avanzados para búsqueda
-type TemplateSearchFilters struct {
-	Name          *string                   `json:"name,omitempty"`
-	Type          []models.NotificationType `json:"type,omitempty"`
-	Language      *string                   `json:"language,omitempty"`
-	IsActive      *bool                     `json:"is_active,omitempty"`
-	CreatedBy     *string                   `json:"created_by,omitempty"`
-	Tags          []string                  `json:"tags,omitempty"`
-	CreatedAfter  *time.Time                `json:"created_after,omitempty"`
-	CreatedBefore *time.Time                `json:"created_before,omitempty"`
-	HasVariables  []string                  `json:"has_variables,omitempty"`
-	ContentSearch *string                   `json:"content_search,omitempty"`
-}
 
 // ================================
 // IMPLEMENTACIÓN DEL REPOSITORIO

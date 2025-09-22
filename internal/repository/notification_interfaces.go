@@ -12,6 +12,14 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
+// PaginationOptions opciones de paginación para consultas
+type PaginationOptions struct {
+	Limit     int    `json:"limit"`
+	Offset    int    `json:"offset"`
+	SortBy    string `json:"sort_by"`
+	SortOrder string `json:"sort_order"` // "asc" o "desc"
+}
+
 // NotificationRepository interfaz para el repositorio de notificaciones
 type NotificationRepository interface {
 	// CRUD básico
@@ -202,15 +210,15 @@ type AdvancedNotificationRepository interface {
 
 	// Agregaciones avanzadas
 	Aggregate(ctx context.Context, aggregation *NotificationAggregation) ([]bson.M, error)
-	GetTimeSeriesStats(ctx context.Context, timeRange time.Duration, interval string) ([]models.TimeSeriesPoint, error)
+	GetTimeSeriesStats(ctx context.Context, timeRange time.Duration, interval string) ([]TimeSeriesPoint, error)
 
 	// Análisis y reporting
-	GetDeliveryReport(ctx context.Context, filters *NotificationSearchFilters) (*models.DeliveryReport, error)
-	GetFailureAnalysis(ctx context.Context, timeRange time.Duration) (*models.FailureAnalysis, error)
+	GetDeliveryReport(ctx context.Context, filters *NotificationSearchFilters) (*DeliveryReport, error)
+	GetFailureAnalysis(ctx context.Context, timeRange time.Duration) (*FailureAnalysis, error)
 
 	// Optimización y mantenimiento
 	OptimizeIndexes(ctx context.Context) error
-	AnalyzePerformance(ctx context.Context) (*models.PerformanceReport, error)
+	AnalyzePerformance(ctx context.Context) (*PerformanceReport, error)
 }
 
 // AdvancedTemplateRepository repositorio avanzado para templates
@@ -219,18 +227,18 @@ type AdvancedTemplateRepository interface {
 
 	// Testing y validación
 	ValidateTemplate(ctx context.Context, template *models.EmailTemplate, testData map[string]interface{}) error
-	RenderPreview(ctx context.Context, templateName string, data map[string]interface{}) (*models.TemplatePreview, error)
+	RenderPreview(ctx context.Context, templateName string, data map[string]interface{}) (*TemplatePreview, error)
 
 	// Análisis de uso
-	GetUsageStats(ctx context.Context, templateName string, timeRange time.Duration) (*models.TemplateUsageStats, error)
-	GetPopularTemplates(ctx context.Context, limit int) ([]*models.TemplatePopularity, error)
+	GetUsageStats(ctx context.Context, templateName string, timeRange time.Duration) (*TemplateUsageStats, error)
+	GetPopularTemplates(ctx context.Context, limit int) ([]*TemplatePopularity, error)
 
 	// Importación/Exportación
-	ExportTemplate(ctx context.Context, templateName string) (*models.TemplateExport, error)
-	ImportTemplate(ctx context.Context, templateData *models.TemplateImport) error
+	ExportTemplate(ctx context.Context, templateName string) (*TemplateExport, error)
+	ImportTemplate(ctx context.Context, templateData *TemplateImport) error
 
 	// Comparación y diff
-	CompareVersions(ctx context.Context, templateName string, version1, version2 int) (*models.TemplateDiff, error)
+	CompareVersions(ctx context.Context, templateName string, version1, version2 int) (*TemplateDiff, error)
 }
 
 // Helper types para funcionalidades avanzadas

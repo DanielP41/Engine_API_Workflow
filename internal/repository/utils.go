@@ -75,14 +75,6 @@ func getFloat64FromBSON(doc bson.M, key string) float64 {
 	return 0.0
 }
 
-// PaginationOptions opciones de paginación para consultas
-type PaginationOptions struct {
-	Limit     int    `json:"limit"`
-	Offset    int    `json:"offset"`
-	SortBy    string `json:"sort_by"`
-	SortOrder string `json:"sort_order"` // "asc" o "desc"
-}
-
 // DefaultPaginationOptions obtiene opciones de paginación por defecto
 func DefaultPaginationOptions() *PaginationOptions {
 	return &PaginationOptions{
@@ -93,31 +85,19 @@ func DefaultPaginationOptions() *PaginationOptions {
 	}
 }
 
-// RepositoryError error estructurado del repositorio
-type RepositoryError struct {
-	Code    string                 `json:"code"`
-	Message string                 `json:"message"`
-	Details map[string]interface{} `json:"details,omitempty"`
-}
-
-func (e *RepositoryError) Error() string {
-	return e.Message
-}
-
 // NewRepositoryError crea un nuevo error del repositorio
 func NewRepositoryError(code, message string) *RepositoryError {
 	return &RepositoryError{
 		Code:    code,
 		Message: message,
-		Details: make(map[string]interface{}),
 	}
 }
 
-// NewRepositoryErrorWithDetails crea un nuevo error con detalles
-func NewRepositoryErrorWithDetails(code, message string, details map[string]interface{}) *RepositoryError {
+// NewRepositoryErrorWithDetails crea un nuevo error con detalles adicionales
+func NewRepositoryErrorWithDetails(code, message string, err error) *RepositoryError {
 	return &RepositoryError{
 		Code:    code,
 		Message: message,
-		Details: details,
+		Err:     err,
 	}
 }
