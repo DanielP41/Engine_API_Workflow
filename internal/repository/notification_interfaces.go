@@ -12,14 +12,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// PaginationOptions opciones de paginación para consultas
-type PaginationOptions struct {
-	Limit     int    `json:"limit"`
-	Offset    int    `json:"offset"`
-	SortBy    string `json:"sort_by"`
-	SortOrder string `json:"sort_order"` // "asc" o "desc"
-}
-
 // NotificationRepository interfaz para el repositorio de notificaciones
 type NotificationRepository interface {
 	// CRUD básico

@@ -158,11 +158,12 @@ func (r *MongoNotificationRepository) List(ctx context.Context, filters map[stri
 	// Configurar opciones de paginación
 	findOpts := options.Find()
 	if opts != nil {
-		if opts.Limit > 0 {
-			findOpts.SetLimit(int64(opts.Limit))
+		if opts.PageSize > 0 {
+			findOpts.SetLimit(int64(opts.PageSize))
 		}
-		if opts.Skip > 0 {
-			findOpts.SetSkip(int64(opts.Skip))
+		if opts.Page > 1 {
+			skip := (opts.Page - 1) * opts.PageSize
+			findOpts.SetSkip(int64(skip))
 		}
 
 		// Configurar ordenamiento

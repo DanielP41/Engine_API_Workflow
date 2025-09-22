@@ -78,10 +78,10 @@ func getFloat64FromBSON(doc bson.M, key string) float64 {
 // DefaultPaginationOptions obtiene opciones de paginación por defecto
 func DefaultPaginationOptions() *PaginationOptions {
 	return &PaginationOptions{
-		Limit:     50,
-		Offset:    0,
-		SortBy:    "created_at",
-		SortOrder: "desc",
+		Page:     1,
+		PageSize: 50,
+		SortBy:   "created_at",
+		SortDesc: true,
 	}
 }
 
