@@ -9,7 +9,9 @@ import (
 	"github.com/google/uuid"
 )
 
+// ================================
 // ESTRUCTURAS DE MENSAJE Y DATOS
+// ================================
 
 // Message estructura del mensaje de email
 type Message struct {
@@ -69,6 +71,16 @@ type EmailAttachment struct {
 	Headers     map[string]string `json:"headers,omitempty"`
 }
 
+// Attachment archivo adjunto para smtp_service.go (compatibilidad)
+type Attachment struct {
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	Data        []byte `json:"data,omitempty"`
+	FilePath    string `json:"file_path,omitempty"`
+	Inline      bool   `json:"inline"`
+	ContentID   string `json:"content_id,omitempty"`
+}
+
 // Priority prioridad del mensaje
 type Priority int
 
@@ -79,7 +91,44 @@ const (
 	PriorityCritical
 )
 
+// ================================
+// ESTRUCTURAS PARA COMPATIBILIDAD CON SMTP_SERVICE
+// ================================
+
+// EmailMessage estructura para el sistema SMTP (lo que espera smtp_service.go)
+type EmailMessage struct {
+	// Destinatarios como strings (no Address)
+	To      []string `json:"to"`
+	CC      []string `json:"cc,omitempty"`
+	BCC     []string `json:"bcc,omitempty"`
+	ReplyTo string   `json:"reply_to,omitempty"`
+
+	// Remitente (si no se especifica, usa el por defecto)
+	From     string `json:"from,omitempty"`
+	FromName string `json:"from_name,omitempty"`
+
+	// Contenido (campos que espera smtp_service.go)
+	Subject string `json:"subject"`
+	Body    string `json:"body"`    // Campo requerido por smtp_service.go
+	IsHTML  bool   `json:"is_html"` // Campo requerido por smtp_service.go
+
+	// Adjuntos (tipo que espera smtp_service.go)
+	Attachments []Attachment `json:"attachments,omitempty"`
+
+	// Headers personalizados
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// Metadatos
+	MessageID string `json:"message_id,omitempty"`
+	Priority  int    `json:"priority,omitempty"` // int, no Priority type
+
+	// Configuración específica
+	DisableTracking bool `json:"disable_tracking,omitempty"`
+}
+
+// ================================
 // INTERFACES Y SERVICIOS
+// ================================
 
 // EmailService interfaz del servicio de email (renombrado para evitar conflicto)
 type EmailService interface {
@@ -105,6 +154,7 @@ type EmailStats struct {
 	TotalSent   int64         `json:"total_sent"`
 	TotalFailed int64         `json:"total_failed"`
 	LastSent    *time.Time    `json:"last_sent,omitempty"`
+	LastError   string        `json:"last_error,omitempty"` // Campo faltante requerido por smtp_service.go
 	AverageTime time.Duration `json:"average_time"`
 	ActiveConns int           `json:"active_conns"`
 	IdleConns   int           `json:"idle_conns"`
@@ -112,7 +162,9 @@ type EmailStats struct {
 	Uptime      time.Duration `json:"uptime"`
 }
 
+// ================================
 // FUNCIONES DE UTILIDAD Y HELPERS
+// ================================
 
 // NewMessage crea un nuevo mensaje
 func NewMessage() *Message {
@@ -142,7 +194,9 @@ func NewEmailAttachment(filename, contentType string, content []byte) EmailAttac
 	}
 }
 
+// ================================
 // MÉTODOS DE VALIDACIÓN
+// ================================
 
 // ValidateMessage valida la estructura del mensaje
 func ValidateMessage(message *Message) error {
@@ -186,7 +240,9 @@ func IsValidEmail(email string) bool {
 	return strings.Contains(email, "@") && strings.Contains(email, ".")
 }
 
+// ================================
 // MÉTODOS STRING PARA LOGGING
+// ================================
 
 // String devuelve representación en string de Address
 func (a Address) String() string {
@@ -238,37 +294,62 @@ func (p Priority) GetImportance() string {
 	}
 }
 
+// ================================
 // FUNCIONES DE CONVERSIÓN
+// ================================
 
-// ToEmailMessage convierte de Message interno a formato de envío
+// ToEmailMessage convierte de Message interno a formato que espera smtp_service.go
 func (m *Message) ToEmailMessage() *EmailMessage {
+	// Convertir Address a string
+	toEmails := make([]string, len(m.To))
+	for i, addr := range m.To {
+		toEmails[i] = addr.Email
+	}
+
+	ccEmails := make([]string, len(m.CC))
+	for i, addr := range m.CC {
+		ccEmails[i] = addr.Email
+	}
+
+	bccEmails := make([]string, len(m.BCC))
+	for i, addr := range m.BCC {
+		bccEmails[i] = addr.Email
+	}
+
+	var replyTo string
+	if m.ReplyTo != nil {
+		replyTo = m.ReplyTo.Email
+	}
+
+	// Determinar si es HTML y qué body usar
+	isHTML := m.HTMLBody != ""
+	body := m.TextBody
+	if isHTML {
+		body = m.HTMLBody
+	}
+
+	// Convertir Priority a int
+	priorityInt := int(m.Priority)
+
 	return &EmailMessage{
-		ID:          m.ID,
-		From:        m.From,
-		To:          m.To,
-		CC:          m.CC,
-		BCC:         m.BCC,
-		ReplyTo:     m.ReplyTo,
+		To:          toEmails,
+		CC:          ccEmails,
+		BCC:         bccEmails,
+		ReplyTo:     replyTo,
+		From:        m.From.Email,
+		FromName:    m.From.Name,
 		Subject:     m.Subject,
-		TextBody:    m.TextBody,
-		HTMLBody:    m.HTMLBody,
-		Attachments: convertAttachments(m.Attachments),
+		Body:        body,
+		IsHTML:      isHTML,
+		Attachments: convertEmailAttachmentsToAttachments(m.Attachments),
 		Headers:     m.Headers,
-		Priority:    m.Priority,
-		Timestamp:   m.Timestamp,
 		MessageID:   m.MessageID,
-		References:  m.References,
-		InReplyTo:   m.InReplyTo,
-		TrackOpens:  m.TrackOpens,
-		TrackClicks: m.TrackClicks,
-		SendAt:      m.SendAt,
-		Tags:        m.Tags,
-		Metadata:    m.Metadata,
+		Priority:    priorityInt,
 	}
 }
 
-// convertAttachments convierte EmailAttachment a Attachment
-func convertAttachments(emailAttachments []EmailAttachment) []Attachment {
+// convertEmailAttachmentsToAttachments convierte EmailAttachment a Attachment
+func convertEmailAttachmentsToAttachments(emailAttachments []EmailAttachment) []Attachment {
 	attachments := make([]Attachment, len(emailAttachments))
 	for i, ea := range emailAttachments {
 		attachments[i] = Attachment{
@@ -282,34 +363,9 @@ func convertAttachments(emailAttachments []EmailAttachment) []Attachment {
 	return attachments
 }
 
-// ESTRUCTURAS PARA COMPATIBILIDAD
-
-// EmailMessage estructura para el sistema de email más complejo
-type EmailMessage struct {
-	ID          string                 `json:"id"`
-	From        Address                `json:"from"`
-	To          []Address              `json:"to"`
-	CC          []Address              `json:"cc,omitempty"`
-	BCC         []Address              `json:"bcc,omitempty"`
-	ReplyTo     *Address               `json:"reply_to,omitempty"`
-	Subject     string                 `json:"subject"`
-	TextBody    string                 `json:"text_body,omitempty"`
-	HTMLBody    string                 `json:"html_body,omitempty"`
-	Attachments []Attachment           `json:"attachments,omitempty"`
-	Headers     map[string]string      `json:"headers,omitempty"`
-	Priority    Priority               `json:"priority,omitempty"`
-	Timestamp   time.Time              `json:"timestamp"`
-	MessageID   string                 `json:"message_id,omitempty"`
-	References  []string               `json:"references,omitempty"`
-	InReplyTo   string                 `json:"in_reply_to,omitempty"`
-	TrackOpens  bool                   `json:"track_opens,omitempty"`
-	TrackClicks bool                   `json:"track_clicks,omitempty"`
-	SendAt      *time.Time             `json:"send_at,omitempty"`
-	Tags        []string               `json:"tags,omitempty"`
-	Metadata    map[string]interface{} `json:"metadata,omitempty"`
-}
-
+// ================================
 // FUNCIONES DE CREACIÓN DE MENSAJES RÁPIDOS
+// ================================
 
 // NewSimpleMessage crea un mensaje simple con los campos básicos
 func NewSimpleMessage(from, to, subject, body string) *Message {

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -92,7 +93,8 @@ var (
 
 // RateLimit middleware para limitación de velocidad
 func RateLimit(limit int, windowSeconds int) fiber.Handler {
-	limiterKey := fiber.Utils.UnsafeString([]byte{byte(limit), byte(windowSeconds)})
+	// Reemplazar fiber.Utils.UnsafeString() con fmt.Sprintf()
+	limiterKey := fmt.Sprintf("limiter_%d_%d", limit, windowSeconds)
 
 	limiterMutex.Lock()
 	limiter, exists := rateLimiters[limiterKey]
