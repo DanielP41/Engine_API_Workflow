@@ -1,821 +1,337 @@
-// internal/services/cached_dashboard_service.go
-package services
+package models
 
 import (
-	"context"
-	"fmt"
 	"time"
 
-	"Engine_API_Workflow/internal/models"
-	"Engine_API_Workflow/internal/repository"
-	"Engine_API_Workflow/pkg/cache"
-
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.uber.org/zap"
 )
 
-// cachedDashboardService implementa DashboardService con sistema de caché
-type cachedDashboardService struct {
-	// Servicios base
-	baseService    DashboardService
-	metricsService MetricsService
+// ===============================================
+// DASHBOARD DATA STRUCTURES
+// ===============================================
 
-	// Repositorios
-	workflowRepo repository.WorkflowRepository
-	logRepo      repository.LogRepository
-	userRepo     repository.UserRepository
-	queueRepo    repository.QueueRepository
-
-	// Sistema de caché
-	cacheManager *cache.CacheManager
-	logger       *zap.Logger
-
-	// Configuración de TTL
-	ttlConfig *TTLConfig
+// DashboardData estructura principal del dashboard
+type DashboardData struct {
+	Summary        *DashboardSummary    `json:"summary"`
+	QuickStats     *QuickStats          `json:"quick_stats"`
+	SystemMetrics  *SystemMetrics       `json:"system_metrics"`
+	RecentActivity []ActivityItem       `json:"recent_activity"`
+	WorkflowStatus []WorkflowStatusItem `json:"workflow_status"`
+	QueueStatus    *QueueStatus         `json:"queue_status"`
+	SystemHealth   *SystemHealth        `json:"system_health"`
+	Alerts         []Alert              `json:"alerts"`
+	LastUpdated    time.Time            `json:"last_updated"`
 }
 
-// TTLConfig configuración de TTL para diferentes tipos de datos
-type TTLConfig struct {
-	Summary        time.Duration
-	Metrics        time.Duration
-	RecentActivity time.Duration
-	SystemHealth   time.Duration
-	QuickStats     time.Duration
-	WorkflowStatus time.Duration
-	QueueStatus    time.Duration
+// DashboardSummary resumen general del dashboard
+type DashboardSummary struct {
+	TotalWorkflows       int       `json:"total_workflows"`
+	ActiveWorkflows      int       `json:"active_workflows"`
+	TotalExecutions      int64     `json:"total_executions"`
+	SuccessfulRuns       int64     `json:"successful_runs"`
+	FailedRuns           int64     `json:"failed_runs"`
+	SuccessRate          float64   `json:"success_rate"`
+	AverageExecutionTime float64   `json:"avg_execution_time"` // segundos
+	QueueLength          int64     `json:"queue_length"`
+	ProcessingTasks      int64     `json:"processing_tasks"`
+	LastUpdated          time.Time `json:"last_updated"`
 }
 
-// NewCachedDashboardService crea un nuevo dashboard service con caché
-func NewCachedDashboardService(
-	baseService DashboardService,
-	metricsService MetricsService,
-	workflowRepo repository.WorkflowRepository,
-	logRepo repository.LogRepository,
-	userRepo repository.UserRepository,
-	queueRepo repository.QueueRepository,
-	cacheManager *cache.CacheManager,
-	logger *zap.Logger,
-) DashboardService {
-
-	// Configuración de TTL optimizada para dashboard
-	ttlConfig := &TTLConfig{
-		Summary:        cache.TTLShort,     // 30 segundos
-		Metrics:        cache.TTLVeryShort, // 10 segundos
-		RecentActivity: cache.TTLMedium,    // 5 minutos
-		SystemHealth:   cache.TTLVeryShort, // 10 segundos
-		QuickStats:     cache.TTLShort,     // 30 segundos
-		WorkflowStatus: cache.TTLMedium,    // 5 minutos
-		QueueStatus:    cache.TTLVeryShort, // 10 segundos
-	}
-
-	service := &cachedDashboardService{
-		baseService:    baseService,
-		metricsService: metricsService,
-		workflowRepo:   workflowRepo,
-		logRepo:        logRepo,
-		userRepo:       userRepo,
-		queueRepo:      queueRepo,
-		cacheManager:   cacheManager,
-		logger:         logger,
-		ttlConfig:      ttlConfig,
-	}
-
-	// Configurar tareas de warmup
-	service.setupWarmupTasks()
-
-	return service
+// DashboardFilter filtros para el dashboard
+type DashboardFilter struct {
+	UserIDs     []string   `json:"user_ids,omitempty"`
+	WorkflowIDs []string   `json:"workflow_ids,omitempty"`
+	Status      []string   `json:"status,omitempty"`
+	Tags        []string   `json:"tags,omitempty"`
+	StartDate   *time.Time `json:"start_date,omitempty"`
+	EndDate     *time.Time `json:"end_date,omitempty"`
+	TimeRange   string     `json:"time_range,omitempty"` // "1h", "24h", "7d", "30d"
 }
 
-// GetCompleteDashboard obtiene datos completos del dashboard con caché
-func (s *cachedDashboardService) GetCompleteDashboard(ctx context.Context, filter *models.DashboardFilter) (*models.DashboardData, error) {
-	key := cache.DashboardKeys.Build("complete", s.buildFilterKey(filter))
+// ===============================================
+// QUEUE STATUS - ESTRUCTURA CORREGIDA
+// ===============================================
 
-	result, err := s.cacheManager.GetOrSet(ctx, key, s.ttlConfig.Summary, func() (interface{}, error) {
-		s.logger.Debug("Computing complete dashboard data", zap.String("cache_key", key))
-		return s.baseService.GetCompleteDashboard(ctx, filter)
-	})
+// QueueStatus representa el estado actual de las colas de tareas
+type QueueStatus struct {
+	// CAMPOS PRINCIPALES QUE FALTABAN Y CAUSABAN LOS ERRORES
+	QueuedTasks     int64     `json:"queued_tasks" bson:"queued_tasks"`
+	ProcessingTasks int64     `json:"processing_tasks" bson:"processing_tasks"`
+	FailedTasks     int64     `json:"failed_tasks" bson:"failed_tasks"`
+	RetryingTasks   int64     `json:"retrying_tasks" bson:"retrying_tasks"`
+	Health          string    `json:"health" bson:"health"`
+	Timestamp       time.Time `json:"timestamp" bson:"timestamp"`
 
-	if err != nil {
-		s.logger.Error("Failed to get complete dashboard", zap.Error(err))
-		return nil, err
-	}
-
-	return result.(*models.DashboardData), nil
+	// Campos de compatibilidad para no romper código existente
+	Pending     int    `json:"pending,omitempty" bson:"pending,omitempty"`
+	Processing  int    `json:"processing,omitempty" bson:"processing,omitempty"`
+	Failed      int    `json:"failed,omitempty" bson:"failed,omitempty"`
+	RetryJobs   int    `json:"retry_jobs,omitempty" bson:"retry_jobs,omitempty"`
+	QueueHealth string `json:"queue_health,omitempty" bson:"queue_health,omitempty"`
 }
 
-// GetDashboardSummary obtiene resumen del dashboard con caché optimizado
-func (s *cachedDashboardService) GetDashboardSummary(ctx context.Context, filter *models.DashboardFilter) (*models.DashboardSummary, error) {
-	key := cache.DashboardKeys.Build("summary", s.buildFilterKey(filter))
-
-	result, err := s.cacheManager.GetOrSet(ctx, key, s.ttlConfig.Summary, func() (interface{}, error) {
-		s.logger.Debug("Computing dashboard summary", zap.String("cache_key", key))
-		return s.computeDashboardSummary(ctx, filter)
-	})
-
-	if err != nil {
-		s.logger.Error("Failed to get dashboard summary", zap.Error(err))
-		return nil, err
+// GetQueueHealth determina el estado de salud basado en los contadores actuales
+func (qs *QueueStatus) GetQueueHealth() string {
+	if qs.FailedTasks > qs.ProcessingTasks*2 {
+		return "unhealthy"
+	} else if qs.FailedTasks > 0 {
+		return "degraded"
 	}
-
-	return result.(*models.DashboardSummary), nil
+	return "healthy"
 }
 
-// GetSystemHealth obtiene estado de salud del sistema con caché de alta frecuencia
-func (s *cachedDashboardService) GetSystemHealth(ctx context.Context) (*models.SystemHealth, error) {
-	key := cache.SystemKeys.Build("health")
+// ===============================================
+// WORKFLOW STATUS
+// ===============================================
 
-	result, err := s.cacheManager.GetOrSet(ctx, key, s.ttlConfig.SystemHealth, func() (interface{}, error) {
-		s.logger.Debug("Computing system health", zap.String("cache_key", key))
-		return s.computeSystemHealth(ctx)
-	})
-
-	if err != nil {
-		s.logger.Error("Failed to get system health", zap.Error(err))
-		return nil, err
-	}
-
-	return result.(*models.SystemHealth), nil
+// WorkflowStatusItem representa el estado de un workflow individual
+type WorkflowStatusItem struct {
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	Status         string     `json:"status"`
+	IsActive       bool       `json:"is_active"`
+	LastExecution  *time.Time `json:"last_execution"`
+	SuccessRate    float64    `json:"success_rate"`
+	TotalRuns      int64      `json:"total_runs"`
+	SuccessfulRuns int64      `json:"successful_runs"`
+	FailedRuns     int64      `json:"failed_runs"`
+	AvgRunTime     float64    `json:"avg_run_time"` // segundos
+	Healthy        bool       `json:"healthy"`
+	TriggerType    string     `json:"trigger_type"`
+	Tags           []string   `json:"tags,omitempty"`
 }
 
-// GetSystemMetrics obtiene métricas del sistema
-func (s *cachedDashboardService) GetSystemMetrics(ctx context.Context, timeRange string) (*models.SystemMetrics, error) {
-	key := cache.MetricsKeys.Build("system", timeRange)
+// ===============================================
+// QUICK STATS
+// ===============================================
 
-	result, err := s.cacheManager.GetOrSet(ctx, key, s.ttlConfig.Metrics, func() (interface{}, error) {
-		s.logger.Debug("Computing system metrics", zap.String("cache_key", key))
-		return s.baseService.GetSystemMetrics(ctx, timeRange)
-	})
-
-	if err != nil {
-		s.logger.Error("Failed to get system metrics", zap.Error(err))
-		return nil, err
-	}
-
-	return result.(*models.SystemMetrics), nil
+// QuickStats estadísticas rápidas para el dashboard
+type QuickStats struct {
+	ActiveWorkflows  int64     `json:"active_workflows"`
+	QueuedTasks      int64     `json:"queued_tasks"`
+	RunningTasks     int64     `json:"running_tasks"`
+	CompletedToday   int64     `json:"completed_today"`
+	FailedToday      int64     `json:"failed_today"`
+	SuccessRateToday float64   `json:"success_rate_today"`
+	AvgResponseTime  float64   `json:"avg_response_time"` // segundos
+	SystemLoad       float64   `json:"system_load"`
+	LastUpdated      time.Time `json:"last_updated"`
 }
 
-// GetQuickStats obtiene estadísticas rápidas con caché
-func (s *cachedDashboardService) GetQuickStats(ctx context.Context) (*models.QuickStats, error) {
-	key := cache.DashboardKeys.Build("quick_stats")
+// ===============================================
+// SYSTEM METRICS
+// ===============================================
 
-	result, err := s.cacheManager.GetOrSet(ctx, key, s.ttlConfig.QuickStats, func() (interface{}, error) {
-		s.logger.Debug("Computing quick stats", zap.String("cache_key", key))
-		return s.computeQuickStats(ctx)
-	})
-
-	if err != nil {
-		s.logger.Error("Failed to get quick stats", zap.Error(err))
-		return nil, err
-	}
-
-	return result.(*models.QuickStats), nil
+// SystemMetrics métricas del sistema
+type SystemMetrics struct {
+	CPU         CPUMetrics    `json:"cpu"`
+	Memory      MemoryMetrics `json:"memory"`
+	Disk        DiskMetrics   `json:"disk"`
+	Goroutines  int           `json:"goroutines"`
+	LastUpdated time.Time     `json:"last_updated"`
 }
 
-// GetRecentActivity obtiene actividad reciente con caché
-func (s *cachedDashboardService) GetRecentActivity(ctx context.Context, limit int) ([]models.ActivityItem, error) {
-	key := cache.DashboardKeys.Build("recent_activity", fmt.Sprintf("limit_%d", limit))
-
-	result, err := s.cacheManager.GetOrSet(ctx, key, s.ttlConfig.RecentActivity, func() (interface{}, error) {
-		s.logger.Debug("Computing recent activity", zap.String("cache_key", key), zap.Int("limit", limit))
-		return s.computeRecentActivity(ctx, limit)
-	})
-
-	if err != nil {
-		s.logger.Error("Failed to get recent activity", zap.Error(err))
-		return nil, err
-	}
-
-	return result.([]models.ActivityItem), nil
+// CPUMetrics métricas de CPU
+type CPUMetrics struct {
+	Usage     float64 `json:"usage"`       // porcentaje
+	LoadAvg1  float64 `json:"load_avg_1"`  // load average 1 min
+	LoadAvg5  float64 `json:"load_avg_5"`  // load average 5 min
+	LoadAvg15 float64 `json:"load_avg_15"` // load average 15 min
 }
 
-// GetWorkflowStatus obtiene estado de workflows con caché
-func (s *cachedDashboardService) GetWorkflowStatus(ctx context.Context, limit int) ([]models.WorkflowStatusItem, error) {
-	key := cache.DashboardKeys.Build("workflow_status", fmt.Sprintf("limit_%d", limit))
-
-	result, err := s.cacheManager.GetOrSet(ctx, key, s.ttlConfig.WorkflowStatus, func() (interface{}, error) {
-		s.logger.Debug("Computing workflow status", zap.String("cache_key", key), zap.Int("limit", limit))
-		return s.computeWorkflowStatus(ctx, limit)
-	})
-
-	if err != nil {
-		s.logger.Error("Failed to get workflow status", zap.Error(err))
-		return nil, err
-	}
-
-	return result.([]models.WorkflowStatusItem), nil
+// MemoryMetrics métricas de memoria
+type MemoryMetrics struct {
+	Used      int64   `json:"used"`      // bytes
+	Total     int64   `json:"total"`     // bytes
+	Available int64   `json:"available"` // bytes
+	Usage     float64 `json:"usage"`     // porcentaje
 }
 
-// GetQueueStatus obtiene estado de colas con caché de alta frecuencia
-func (s *cachedDashboardService) GetQueueStatus(ctx context.Context) (*models.QueueStatus, error) {
-	key := cache.QueueKeys.Build("status")
-
-	result, err := s.cacheManager.GetOrSet(ctx, key, s.ttlConfig.QueueStatus, func() (interface{}, error) {
-		s.logger.Debug("Computing queue status", zap.String("cache_key", key))
-		return s.computeQueueStatus(ctx)
-	})
-
-	if err != nil {
-		s.logger.Error("Failed to get queue status", zap.Error(err))
-		return nil, err
-	}
-
-	return result.(*models.QueueStatus), nil
+// DiskMetrics métricas de disco
+type DiskMetrics struct {
+	Used      int64   `json:"used"`      // bytes
+	Total     int64   `json:"total"`     // bytes
+	Available int64   `json:"available"` // bytes
+	Usage     float64 `json:"usage"`     // porcentaje
 }
 
-// GetDashboardMetrics obtiene métricas específicas con caché
-func (s *cachedDashboardService) GetDashboardMetrics(ctx context.Context, metrics []string, timeRange string) (map[string]interface{}, error) {
-	key := cache.MetricsKeys.Build("dashboard", timeRange, fmt.Sprintf("metrics_%v", metrics))
+// ===============================================
+// SYSTEM HEALTH
+// ===============================================
 
-	result, err := s.cacheManager.GetOrSet(ctx, key, s.ttlConfig.Metrics, func() (interface{}, error) {
-		s.logger.Debug("Computing dashboard metrics",
-			zap.String("cache_key", key),
-			zap.Strings("metrics", metrics),
-			zap.String("time_range", timeRange))
-		return s.baseService.GetDashboardMetrics(ctx, metrics, timeRange)
-	})
-
-	if err != nil {
-		s.logger.Error("Failed to get dashboard metrics", zap.Error(err))
-		return nil, err
-	}
-
-	return result.(map[string]interface{}), nil
+// SystemHealth estado de salud del sistema
+type SystemHealth struct {
+	Status     string            `json:"status"` // "healthy", "warning", "critical"
+	Score      int               `json:"score"`  // 0-100
+	Components []ComponentHealth `json:"components"`
+	Issues     []HealthIssue     `json:"issues,omitempty"`
+	LastCheck  time.Time         `json:"last_check"`
 }
 
-// GetActiveAlerts obtiene alertas activas - implementación local (sin caché por ser crítico)
-func (s *cachedDashboardService) GetActiveAlerts(ctx context.Context) ([]models.Alert, error) {
-	// Las alertas son críticas, no se cachean para tener datos en tiempo real
-	// Implementación básica - en producción esto vendría de un sistema de monitoreo
-	alerts := []models.Alert{}
-
-	// Verificar alertas de cola
-	queueLength, err := s.queueRepo.GetQueueLength(ctx, "main")
-	if err == nil && queueLength > 100 {
-		alerts = append(alerts, models.Alert{
-			ID:        "queue_high",
-			Type:      "warning",
-			Title:     "High Queue Length",
-			Message:   fmt.Sprintf("Queue has %d pending tasks", queueLength),
-			Severity:  "medium",
-			Timestamp: time.Now(),
-			Actions:   []models.AlertAction{{Type: "investigate", Description: "Check queue status"}},
-		})
-	}
-
-	// Verificar alertas de tareas fallidas
-	failedTasks, err := s.queueRepo.GetFailedTasksCount(ctx)
-	if err == nil && failedTasks > 50 {
-		alerts = append(alerts, models.Alert{
-			ID:        "high_failures",
-			Type:      "error",
-			Title:     "High Failure Rate",
-			Message:   fmt.Sprintf("There are %d failed tasks", failedTasks),
-			Severity:  "high",
-			Timestamp: time.Now(),
-			Actions:   []models.AlertAction{{Type: "restart", Description: "Restart failed tasks"}},
-		})
-	}
-
-	return alerts, nil
+// ComponentHealth salud de un componente específico
+type ComponentHealth struct {
+	Name        string    `json:"name"`
+	Status      string    `json:"status"` // "healthy", "warning", "critical"
+	Description string    `json:"description,omitempty"`
+	LastCheck   time.Time `json:"last_check"`
 }
 
-// GetWorkflowHealth obtiene salud de workflow específico con caché
-func (s *cachedDashboardService) GetWorkflowHealth(ctx context.Context, workflowID string) (*models.WorkflowStatusItem, error) {
-	key := cache.WorkflowKeys.BuildWithID(workflowID, "health")
-
-	result, err := s.cacheManager.GetOrSet(ctx, key, s.ttlConfig.WorkflowStatus, func() (interface{}, error) {
-		s.logger.Debug("Computing workflow health",
-			zap.String("cache_key", key),
-			zap.String("workflow_id", workflowID))
-
-		// Implementación local de GetWorkflowHealth
-		objID, err := primitive.ObjectIDFromHex(workflowID)
-		if err != nil {
-			return nil, fmt.Errorf("invalid workflow ID: %w", err)
-		}
-
-		workflow, err := s.workflowRepo.GetByID(ctx, objID)
-		if err != nil {
-			return nil, fmt.Errorf("workflow not found: %w", err)
-		}
-
-		item := &models.WorkflowStatusItem{
-			ID:             workflow.ID.Hex(),
-			Name:           workflow.Name,
-			Status:         string(workflow.Status),
-			IsActive:       workflow.Status == models.WorkflowStatusActive,
-			LastExecution:  s.getLastExecutionTime(workflow.Stats),
-			SuccessRate:    s.calculateSuccessRateFromPointer(workflow.Stats),
-			TotalRuns:      s.getTotalExecutions(workflow.Stats),
-			SuccessfulRuns: s.getSuccessfulExecutions(workflow.Stats),
-			FailedRuns:     s.getFailedExecutions(workflow.Stats),
-			AvgRunTime:     s.getAverageExecutionTime(workflow.Stats),
-			Healthy:        s.determineWorkflowHealthFromPointer(workflow.Stats),
-			TriggerType:    s.getWorkflowTriggerType(workflow),
-			Tags:           workflow.Tags,
-		}
-
-		return item, nil
-	})
-
-	if err != nil {
-		s.logger.Error("Failed to get workflow health", zap.String("workflow_id", workflowID), zap.Error(err))
-		return nil, err
-	}
-
-	return result.(*models.WorkflowStatusItem), nil
+// HealthIssue problema de salud detectado
+type HealthIssue struct {
+	Component string     `json:"component"`
+	Severity  string     `json:"severity"` // "low", "medium", "high", "critical"
+	Message   string     `json:"message"`
+	Detected  time.Time  `json:"detected"`
+	Resolved  *time.Time `json:"resolved,omitempty"`
 }
 
-// GetPerformanceData obtiene datos de rendimiento con caché
-func (s *cachedDashboardService) GetPerformanceData(ctx context.Context, timeRange string) (*models.PerformanceData, error) {
-	key := cache.MetricsKeys.Build("performance", timeRange)
+// ===============================================
+// ACTIVITY ITEMS
+// ===============================================
 
-	result, err := s.cacheManager.GetOrSet(ctx, key, s.ttlConfig.Metrics, func() (interface{}, error) {
-		s.logger.Debug("Computing performance data",
-			zap.String("cache_key", key),
-			zap.String("time_range", timeRange))
-		return s.baseService.GetPerformanceData(ctx, timeRange)
-	})
-
-	if err != nil {
-		s.logger.Error("Failed to get performance data", zap.Error(err))
-		return nil, err
-	}
-
-	return result.(*models.PerformanceData), nil
+// ActivityItem representa una actividad reciente
+type ActivityItem struct {
+	ID           string                 `json:"id"`
+	Type         string                 `json:"type"` // "workflow_started", "workflow_completed", "workflow_failed", etc.
+	Title        string                 `json:"title"`
+	Description  string                 `json:"description,omitempty"`
+	UserID       *primitive.ObjectID    `json:"user_id,omitempty"`
+	UserName     string                 `json:"user_name,omitempty"`
+	WorkflowID   *primitive.ObjectID    `json:"workflow_id,omitempty"`
+	WorkflowName string                 `json:"workflow_name,omitempty"`
+	Status       string                 `json:"status,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	Timestamp    time.Time              `json:"timestamp"`
 }
 
-// RefreshDashboardData refresca los datos del dashboard e invalida caché
-func (s *cachedDashboardService) RefreshDashboardData(ctx context.Context) error {
-	s.logger.Info("Refreshing dashboard data and invalidating cache")
+// ===============================================
+// ALERTS
+// ===============================================
 
-	// Invalidar todos los cachés relacionados con dashboard
-	patterns := []string{
-		cache.DashboardKeys.Build("*"),
-		cache.MetricsKeys.Build("*"),
-		cache.SystemKeys.Build("*"),
-		cache.QueueKeys.Build("*"),
-	}
-
-	for _, pattern := range patterns {
-		if err := s.cacheManager.InvalidatePattern(ctx, pattern, "manual_refresh"); err != nil {
-			s.logger.Warn("Failed to invalidate cache pattern", zap.String("pattern", pattern), zap.Error(err))
-		}
-	}
-
-	// Ejecutar warmup para precargar datos críticos
-	if err := s.cacheManager.ExecuteWarmup(ctx); err != nil {
-		s.logger.Warn("Failed to execute cache warmup", zap.Error(err))
-	}
-
-	return s.baseService.RefreshDashboardData(ctx)
+// Alert representa una alerta del sistema
+type Alert struct {
+	ID         string        `json:"id"`
+	Type       string        `json:"type"` // "info", "warning", "error", "critical"
+	Title      string        `json:"title"`
+	Message    string        `json:"message"`
+	Severity   string        `json:"severity"` // "low", "medium", "high", "critical"
+	Source     string        `json:"source,omitempty"`
+	Component  string        `json:"component,omitempty"`
+	Actions    []AlertAction `json:"actions,omitempty"`
+	Timestamp  time.Time     `json:"timestamp"`
+	Resolved   *time.Time    `json:"resolved,omitempty"`
+	ResolvedBy string        `json:"resolved_by,omitempty"`
 }
 
-// ValidateFilter valida filtros
-func (s *cachedDashboardService) ValidateFilter(filter *models.DashboardFilter) error {
-	return s.baseService.ValidateFilter(filter)
+// AlertAction acción sugerida para una alerta
+type AlertAction struct {
+	Type        string `json:"type"` // "investigate", "restart", "ignore", etc.
+	Description string `json:"description"`
+	URL         string `json:"url,omitempty"`
 }
 
-// Métodos de computación (llamados cuando no hay datos en caché)
+// ===============================================
+// PERFORMANCE DATA
+// ===============================================
 
-func (s *cachedDashboardService) computeDashboardSummary(ctx context.Context, filter *models.DashboardFilter) (*models.DashboardSummary, error) {
-	// Usar operaciones en paralelo para optimizar tiempo de respuesta
-	type result struct {
-		totalWorkflows  int64
-		activeWorkflows int64
-		totalUsers      int64
-		queueLength     int64
-		err             error
-	}
-
-	ch := make(chan result, 4)
-
-	// Ejecutar consultas en paralelo
-	go func() {
-		count, err := s.workflowRepo.Count(ctx)
-		ch <- result{totalWorkflows: count, err: err}
-	}()
-
-	go func() {
-		count, err := s.workflowRepo.CountActiveWorkflows(ctx)
-		ch <- result{activeWorkflows: count, err: err}
-	}()
-
-	go func() {
-		count, err := s.userRepo.Count(ctx)
-		ch <- result{totalUsers: count, err: err}
-	}()
-
-	go func() {
-		length, err := s.queueRepo.GetQueueLength(ctx, "main")
-		ch <- result{queueLength: length, err: err}
-	}()
-
-	// Recopilar resultados
-	summary := &models.DashboardSummary{
-		SystemStatus: "healthy",
-		LastUpdate:   time.Now(),
-	}
-
-	for i := 0; i < 4; i++ {
-		res := <-ch
-		if res.err != nil {
-			s.logger.Error("Error computing dashboard summary component", zap.Error(res.err))
-			continue
-		}
-
-		if res.totalWorkflows > 0 {
-			summary.TotalWorkflows = int(res.totalWorkflows)
-		}
-		if res.activeWorkflows > 0 {
-			summary.ActiveWorkflows = int(res.activeWorkflows)
-		}
-		if res.queueLength >= 0 {
-			summary.CurrentQueueLength = int(res.queueLength)
-		}
-	}
-
-	return summary, nil
+// PerformanceData datos de rendimiento del sistema
+type PerformanceData struct {
+	TimeRange           string                    `json:"time_range"`
+	ExecutionTrends     []ExecutionTrendPoint     `json:"execution_trends"`
+	QueueMetrics        []QueueMetricPoint        `json:"queue_metrics"`
+	SuccessRateHistory  []SuccessRatePoint        `json:"success_rate_history"`
+	ResponseTimeHistory []ResponseTimePoint       `json:"response_time_history"`
+	TopWorkflows        []WorkflowPerformanceItem `json:"top_workflows"`
+	LastUpdated         time.Time                 `json:"last_updated"`
 }
 
-func (s *cachedDashboardService) computeSystemHealth(ctx context.Context) (*models.SystemHealth, error) {
-	health := &models.SystemHealth{
-		Status:      "healthy",
-		LastHealthy: time.Now(),
-		Version:     "1.0.0",
-	}
-
-	// Verificar MongoDB
-	if _, err := s.workflowRepo.Count(ctx); err != nil {
-		health.Status = "critical"
-		s.logger.Error("MongoDB health check failed", zap.Error(err))
-	}
-
-	// Verificar Redis/Queue
-	if err := s.queueRepo.Ping(ctx); err != nil {
-		if health.Status == "healthy" {
-			health.Status = "warning"
-		}
-		s.logger.Error("Queue health check failed", zap.Error(err))
-	}
-
-	// Cache health check skipped - no ping method available
-	s.logger.Debug("Cache health check skipped - no ping method available")
-
-	return health, nil
+// ExecutionTrendPoint punto de tendencia de ejecuciones
+type ExecutionTrendPoint struct {
+	Timestamp  time.Time `json:"timestamp"`
+	Total      int64     `json:"total"`
+	Successful int64     `json:"successful"`
+	Failed     int64     `json:"failed"`
 }
 
-func (s *cachedDashboardService) computeQuickStats(ctx context.Context) (*models.QuickStats, error) {
-	stats := &models.QuickStats{}
-
-	// Obtener estadísticas básicas en paralelo
-	type statResult struct {
-		name  string
-		value int64
-		err   error
-	}
-
-	ch := make(chan statResult, 5)
-
-	go func() {
-		count, err := s.workflowRepo.Count(ctx)
-		ch <- statResult{"workflows", count, err}
-	}()
-
-	go func() {
-		count, err := s.userRepo.Count(ctx)
-		ch <- statResult{"users", count, err}
-	}()
-
-	go func() {
-		length, err := s.queueRepo.GetQueueLength(ctx, "main")
-		ch <- statResult{"queue", length, err}
-	}()
-
-	go func() {
-		count, err := s.queueRepo.GetProcessingTasksCount(ctx)
-		ch <- statResult{"processing", count, err}
-	}()
-
-	go func() {
-		count, err := s.queueRepo.GetFailedTasksCount(ctx)
-		ch <- statResult{"failed", count, err}
-	}()
-
-	// Recopilar resultados
-	for i := 0; i < 5; i++ {
-		res := <-ch
-		if res.err != nil {
-			s.logger.Warn("Error computing quick stat", zap.String("stat", res.name), zap.Error(res.err))
-			continue
-		}
-
-		switch res.name {
-		case "workflows":
-			stats.TotalWorkflows = int(res.value)
-		case "users":
-			stats.TotalUsers = int(res.value)
-		case "queue":
-			stats.QueueLength = int(res.value)
-		case "processing":
-			stats.RunningExecutions = int(res.value)
-		case "failed":
-			stats.ErrorsLast24h = int(res.value)
-		}
-	}
-
-	return stats, nil
+// QueueMetricPoint punto de métricas de cola
+type QueueMetricPoint struct {
+	Timestamp  time.Time `json:"timestamp"`
+	Queued     int64     `json:"queued"`
+	Processing int64     `json:"processing"`
+	Failed     int64     `json:"failed"`
+	Retrying   int64     `json:"retrying"`
 }
 
-func (s *cachedDashboardService) computeRecentActivity(ctx context.Context, limit int) ([]models.ActivityItem, error) {
-	// Obtener logs recientes
-	logs, _, err := s.logRepo.GetByWorkflowID(ctx, primitive.NilObjectID, repository.PaginationOptions{
-		Page:     1,
-		PageSize: limit,
-		SortBy:   "created_at",
-		SortDesc: true,
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	// Convertir logs a activity items
-	activities := make([]models.ActivityItem, 0, len(logs))
-	for _, log := range logs {
-		activity := models.ActivityItem{
-			ID:           log.ID.Hex(),
-			Type:         "workflow_execution",
-			WorkflowName: log.WorkflowName,
-			UserID:       log.UserID.Hex(),
-			Message:      fmt.Sprintf("Workflow %s executed", log.WorkflowName),
-			Timestamp:    log.CreatedAt,
-			Status:       string(log.Status),
-			Metadata: map[string]interface{}{
-				"workflow_id":  log.WorkflowID.Hex(),
-				"trigger_type": log.TriggerType,
-			},
-		}
-		activities = append(activities, activity)
-	}
-
-	return activities, nil
+// SuccessRatePoint punto de tasa de éxito
+type SuccessRatePoint struct {
+	Timestamp   time.Time `json:"timestamp"`
+	SuccessRate float64   `json:"success_rate"`
 }
 
-func (s *cachedDashboardService) computeWorkflowStatus(ctx context.Context, limit int) ([]models.WorkflowStatusItem, error) {
-	// Obtener workflows activos
-	workflows, err := s.workflowRepo.ListByStatus(ctx, models.WorkflowStatusActive, 1, limit)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convertir a workflow status items
-	items := make([]models.WorkflowStatusItem, 0, len(workflows.Workflows))
-	for _, workflow := range workflows.Workflows {
-		item := models.WorkflowStatusItem{
-			ID:             workflow.ID.Hex(),
-			Name:           workflow.Name,
-			Status:         string(workflow.Status),
-			IsActive:       workflow.Status == models.WorkflowStatusActive,
-			LastExecution:  s.getLastExecutionTime(workflow.Stats),
-			SuccessRate:    s.calculateSuccessRateFromPointer(workflow.Stats),
-			TotalRuns:      s.getTotalExecutions(workflow.Stats),
-			SuccessfulRuns: s.getSuccessfulExecutions(workflow.Stats),
-			FailedRuns:     s.getFailedExecutions(workflow.Stats),
-			AvgRunTime:     s.getAverageExecutionTime(workflow.Stats),
-			Healthy:        s.determineWorkflowHealthFromPointer(workflow.Stats),
-			TriggerType:    s.getWorkflowTriggerType(workflow),
-			Tags:           workflow.Tags,
-		}
-		items = append(items, item)
-	}
-
-	return items, nil
+// ResponseTimePoint punto de tiempo de respuesta
+type ResponseTimePoint struct {
+	Timestamp   time.Time `json:"timestamp"`
+	AvgResponse float64   `json:"avg_response"`
+	P50Response float64   `json:"p50_response"`
+	P95Response float64   `json:"p95_response"`
+	P99Response float64   `json:"p99_response"`
 }
 
-func (s *cachedDashboardService) computeQueueStatus(ctx context.Context) (*models.QueueStatus, error) {
-	status := &models.QueueStatus{}
-
-	// Obtener estadísticas de cola en paralelo
-	type queueResult struct {
-		name  string
-		value int64
-		err   error
-	}
-
-	ch := make(chan queueResult, 4)
-
-	go func() {
-		length, err := s.queueRepo.GetQueueLength(ctx, "main")
-		ch <- queueResult{"pending", length, err}
-	}()
-
-	go func() {
-		count, err := s.queueRepo.GetProcessingTasksCount(ctx)
-		ch <- queueResult{"processing", count, err}
-	}()
-
-	go func() {
-		count, err := s.queueRepo.GetFailedTasksCount(ctx)
-		ch <- queueResult{"failed", count, err}
-	}()
-
-	go func() {
-		count, err := s.queueRepo.GetRetryingTasksCount(ctx)
-		ch <- queueResult{"retrying", count, err}
-	}()
-
-	// Recopilar resultados
-	for i := 0; i < 4; i++ {
-		res := <-ch
-		if res.err != nil {
-			s.logger.Warn("Error computing queue status", zap.String("metric", res.name), zap.Error(res.err))
-			continue
-		}
-
-		switch res.name {
-		case "pending":
-			status.Pending = int(res.value)
-		case "processing":
-			status.Processing = int(res.value)
-		case "failed":
-			status.Failed = int(res.value)
-		case "retrying":
-			status.RetryJobs = int(res.value)
-		}
-	}
-
-	// Determinar estado de salud de la cola usando el método del modelo
-	status.QueueHealth = status.GetQueueHealth()
-
-	return status, nil
+// WorkflowPerformanceItem elemento de rendimiento de workflow
+type WorkflowPerformanceItem struct {
+	ID               string     `json:"id"`
+	Name             string     `json:"name"`
+	TotalRuns        int64      `json:"total_runs"`
+	SuccessfulRuns   int64      `json:"successful_runs"`
+	FailedRuns       int64      `json:"failed_runs"`
+	SuccessRate      float64    `json:"success_rate"`
+	AvgExecutionTime float64    `json:"avg_execution_time"`
+	LastExecution    *time.Time `json:"last_execution"`
 }
 
-// Métodos auxiliares
+// ===============================================
+// METRICS & ANALYTICS STRUCTURES (AGREGADAS PARA INTERFACES.GO)
+// ===============================================
 
-func (s *cachedDashboardService) buildFilterKey(filter *models.DashboardFilter) string {
-	if filter == nil {
-		return "default"
-	}
-
-	// Construir clave basada en filtros
-	userID := ""
-	if len(filter.UserIDs) > 0 {
-		userID = filter.UserIDs[0]
-	}
-
-	return fmt.Sprintf("user_%s_range_%s", userID, filter.TimeRange)
+// TimeSeriesPoint punto de datos de serie temporal
+type TimeSeriesPoint struct {
+	Timestamp time.Time              `json:"timestamp"`
+	Value     float64                `json:"value"`
+	Label     string                 `json:"label,omitempty"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
 
-func (s *cachedDashboardService) getOrComputeData(ctx context.Context, key string, ttl time.Duration, computeFunc func() (interface{}, error)) interface{} {
-	result, err := s.cacheManager.GetOrSet(ctx, key, ttl, computeFunc)
-	if err != nil {
-		s.logger.Error("Cache operation failed", zap.String("key", key), zap.Error(err))
-		// Fallback: computar directamente si el caché falla
-		if result, err := computeFunc(); err == nil {
-			return result
-		}
-		return nil
-	}
-	return result
+// WorkflowCount conteo de workflows por categoría
+type WorkflowCount struct {
+	WorkflowID   string  `json:"workflow_id"`
+	WorkflowName string  `json:"workflow_name"`
+	Count        int64   `json:"count"`
+	Percentage   float64 `json:"percentage"`
 }
 
-// Funciones auxiliares para manejar WorkflowStats punteros
-func (s *cachedDashboardService) getLastExecutionTime(stats *models.WorkflowStats) *time.Time {
-	if stats == nil {
-		return nil
-	}
-	return stats.LastExecutedAt
+// TriggerCount conteo por tipo de trigger
+type TriggerCount struct {
+	TriggerType string  `json:"trigger_type"`
+	Count       int64   `json:"count"`
+	Percentage  float64 `json:"percentage"`
 }
 
-func (s *cachedDashboardService) calculateSuccessRateFromPointer(stats *models.WorkflowStats) float64 {
-	if stats == nil || stats.TotalExecutions == 0 {
-		return 100.0
-	}
-	return (float64(stats.SuccessfulRuns) / float64(stats.TotalExecutions)) * 100
+// ErrorCount conteo de errores por tipo
+type ErrorCount struct {
+	ErrorType  string     `json:"error_type"`
+	ErrorCode  string     `json:"error_code,omitempty"`
+	Count      int64      `json:"count"`
+	Percentage float64    `json:"percentage"`
+	LastSeen   *time.Time `json:"last_seen,omitempty"`
 }
 
-func (s *cachedDashboardService) getTotalExecutions(stats *models.WorkflowStats) int64 {
-	if stats == nil {
-		return 0
-	}
-	return stats.TotalExecutions
-}
-
-func (s *cachedDashboardService) getSuccessfulExecutions(stats *models.WorkflowStats) int64 {
-	if stats == nil {
-		return 0
-	}
-	return stats.SuccessfulRuns
-}
-
-func (s *cachedDashboardService) getFailedExecutions(stats *models.WorkflowStats) int64 {
-	if stats == nil {
-		return 0
-	}
-	return stats.FailedRuns
-}
-
-func (s *cachedDashboardService) getAverageExecutionTime(stats *models.WorkflowStats) float64 {
-	if stats == nil {
-		return 0.0
-	}
-	return stats.AverageExecutionTime
-}
-
-func (s *cachedDashboardService) determineWorkflowHealthFromPointer(stats *models.WorkflowStats) bool {
-	if stats == nil || stats.TotalExecutions == 0 {
-		return true
-	}
-	successRate := (float64(stats.SuccessfulRuns) / float64(stats.TotalExecutions)) * 100
-	return successRate >= 90.0
-}
-
-func (s *cachedDashboardService) getWorkflowTriggerType(workflow *models.Workflow) string {
-	if len(workflow.Triggers) > 0 {
-		return workflow.Triggers[0].Type
-	}
-	return "manual"
-}
-
-// Funciones auxiliares existentes (mantenidas para compatibilidad)
-func (s *cachedDashboardService) calculateSuccessRate(stats models.WorkflowStats) float64 {
-	total := stats.SuccessfulRuns + stats.FailedRuns
-	if total == 0 {
-		return 0
-	}
-	return float64(stats.SuccessfulRuns) / float64(total) * 100
-}
-
-func (s *cachedDashboardService) determineWorkflowHealth(stats models.WorkflowStats) string {
-	successRate := s.calculateSuccessRate(stats)
-
-	switch {
-	case successRate >= 95:
-		return "excellent"
-	case successRate >= 85:
-		return "good"
-	case successRate >= 70:
-		return "fair"
-	default:
-		return "poor"
-	}
-}
-
-func (s *cachedDashboardService) determineWorkflowHealthBool(stats models.WorkflowStats) bool {
-	successRate := s.calculateSuccessRate(stats)
-	return successRate >= 90.0
-}
-
-// setupWarmupTasks configura tareas de precalentamiento
-func (s *cachedDashboardService) setupWarmupTasks() {
-	// Warmup para datos críticos del dashboard
-	tasks := []cache.WarmupTask{
-		{
-			Name: "dashboard_summary",
-			Key:  cache.DashboardKeys.Build("summary"),
-			TTL:  s.ttlConfig.Summary,
-			Fetcher: func(ctx context.Context) (interface{}, error) {
-				return s.computeDashboardSummary(ctx, nil)
-			},
-			Schedule: time.Minute,
-			Priority: 1,
-		},
-		{
-			Name: "system_health",
-			Key:  cache.SystemKeys.Build("health"),
-			TTL:  s.ttlConfig.SystemHealth,
-			Fetcher: func(ctx context.Context) (interface{}, error) {
-				return s.computeSystemHealth(ctx)
-			},
-			Schedule: 30 * time.Second,
-			Priority: 1,
-		},
-		{
-			Name: "quick_stats",
-			Key:  cache.DashboardKeys.Build("quick_stats"),
-			TTL:  s.ttlConfig.QuickStats,
-			Fetcher: func(ctx context.Context) (interface{}, error) {
-				return s.computeQuickStats(ctx)
-			},
-			Schedule: time.Minute,
-			Priority: 2,
-		},
-		{
-			Name: "queue_status",
-			Key:  cache.QueueKeys.Build("status"),
-			TTL:  s.ttlConfig.QueueStatus,
-			Fetcher: func(ctx context.Context) (interface{}, error) {
-				return s.computeQueueStatus(ctx)
-			},
-			Schedule: 10 * time.Second,
-			Priority: 1,
-		},
-	}
-
-	for _, task := range tasks {
-		s.cacheManager.AddWarmupTask(task)
-	}
-
-	s.logger.Info("Dashboard cache warmup tasks configured", zap.Int("tasks", len(tasks)))
+// HourlyStats estadísticas por hora
+type HourlyStats struct {
+	Hour        int     `json:"hour"` // 0-23
+	Date        string  `json:"date"` // YYYY-MM-DD
+	Executions  int64   `json:"executions"`
+	Successful  int64   `json:"successful"`
+	Failed      int64   `json:"failed"`
+	AvgDuration float64 `json:"avg_duration"` // milliseconds
+	SuccessRate float64 `json:"success_rate"` // percentage
 }

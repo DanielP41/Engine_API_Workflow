@@ -272,7 +272,7 @@ type SystemHealthResponse struct {
 	LastCheck     time.Time                        `json:"last_check"` // AGREGADO: para compatibilidad
 	Uptime        int64                            `json:"uptime"`     // seconds
 	Services      map[string]ResponseServiceHealth `json:"services"`   // CAMBIADO: tipo específico
-	Metrics       SystemMetrics                    `json:"metrics"`
+	Metrics       SystemMetrics                    `json:"metrics"`    // USAR la definición de dashboard.go
 	Dependencies  []DependencyHealth               `json:"dependencies"`
 }
 
@@ -285,41 +285,10 @@ type ResponseServiceHealth struct {
 	Message      string    `json:"message,omitempty"`
 }
 
-// SystemMetrics métricas del sistema
-type SystemMetrics struct {
-	CPU        CPUMetrics     `json:"cpu"`
-	Memory     MemoryMetrics  `json:"memory"`
-	Disk       DiskMetrics    `json:"disk"`
-	Network    NetworkMetrics `json:"network"`
-	Goroutines int            `json:"goroutines"`
-}
+// ESTRUCTURAS SYSTEMMETRICS, CPUMETRICS, MEMORYMETRICS, DISKMETRICS ELIMINADAS
+// ESTAS ESTÁN DEFINIDAS EN dashboard.go Y SE REUTILIZAN AQUÍ
 
-// CPUMetrics métricas de CPU
-type CPUMetrics struct {
-	Usage     float64 `json:"usage"` // percentage
-	LoadAvg1  float64 `json:"load_avg_1"`
-	LoadAvg5  float64 `json:"load_avg_5"`
-	LoadAvg15 float64 `json:"load_avg_15"`
-}
-
-// MemoryMetrics métricas de memoria
-type MemoryMetrics struct {
-	Used      int64   `json:"used"`      // bytes
-	Total     int64   `json:"total"`     // bytes
-	Available int64   `json:"available"` // bytes
-	Usage     float64 `json:"usage"`     // percentage
-}
-
-// DiskMetrics métricas de disco
-type DiskMetrics struct {
-	Used      int64   `json:"used"`      // bytes
-	Total     int64   `json:"total"`     // bytes
-	Available int64   `json:"available"` // bytes
-	Usage     float64 `json:"usage"`     // percentage
-	IOPS      int64   `json:"iops"`
-}
-
-// NetworkMetrics métricas de red
+// NetworkMetrics métricas de red (MANTENER - esta no estaba duplicada)
 type NetworkMetrics struct {
 	BytesSent       int64 `json:"bytes_sent"`
 	BytesReceived   int64 `json:"bytes_received"`

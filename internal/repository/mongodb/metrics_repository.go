@@ -263,12 +263,6 @@ func (r *metricsRepository) GetWorkflowDistribution(ctx context.Context, timeRan
 	distribution := make([]models.WorkflowCount, 0, len(results))
 	for _, result := range results {
 		count := getInt64FromBSON(result, "count")
-		successCount := getInt64FromBSON(result, "success_count")
-
-		var successRate float64
-		if count > 0 {
-			successRate = (float64(successCount) / float64(count)) * 100
-		}
 
 		var percentage float64
 		if totalExecutions > 0 {
@@ -282,12 +276,13 @@ func (r *metricsRepository) GetWorkflowDistribution(ctx context.Context, timeRan
 
 		workflowName := getStringFromBSON(result, "workflow_name")
 
+		// CORREGIDO: Usar solo los campos que existen en models.WorkflowCount
 		distribution = append(distribution, models.WorkflowCount{
 			WorkflowID:   workflowID,
 			WorkflowName: workflowName,
-			Count:        int(count),
+			Count:        count,        // CORREGIDO: usar int64 directamente
 			Percentage:   percentage,
-			SuccessRate:  successRate,
+			// ELIMINADO: SuccessRate (no existe en el struct)
 		})
 	}
 
@@ -343,9 +338,10 @@ func (r *metricsRepository) GetTriggerDistribution(ctx context.Context, timeRang
 
 		triggerType := getStringFromBSON(result, "_id")
 
+		// CORREGIDO: Usar solo los campos que existen en models.TriggerCount
 		distribution = append(distribution, models.TriggerCount{
 			TriggerType: triggerType,
-			Count:       int(count),
+			Count:       count,        // CORREGIDO: usar int64 directamente
 			Percentage:  percentage,
 		})
 	}
@@ -409,22 +405,23 @@ func (r *metricsRepository) GetErrorDistribution(ctx context.Context, timeRange 
 
 		errorMessage := getStringFromBSON(result, "_id")
 
-		var lastOccurred time.Time
+		var lastOccurred *time.Time
 		if occurred, ok := result["last_occurred"].(primitive.DateTime); ok {
-			lastOccurred = occurred.Time()
+			t := occurred.Time()
+			lastOccurred = &t
 		}
 
-		// Determinar tipo y severidad del error
+		// Determinar tipo del error
 		errorType := categorizeError(errorMessage)
-		severity := determineSeverity(errorMessage, int(count))
 
+		// CORREGIDO: Usar solo los campos que existen en models.ErrorCount
 		distribution = append(distribution, models.ErrorCount{
-			ErrorType:    errorType,
-			ErrorMessage: errorMessage,
-			Count:        int(count),
-			Percentage:   percentage,
-			LastOccurred: lastOccurred,
-			Severity:     severity,
+			ErrorType:  errorType,
+			ErrorCode:  "", // Campo opcional
+			Count:      count,          // CORREGIDO: usar int64 directamente
+			Percentage: percentage,
+			LastSeen:   lastOccurred,   // CORREGIDO: usar LastSeen en lugar de LastOccurred
+			// ELIMINADO: Severity (no existe en el struct)
 		})
 	}
 
@@ -464,7 +461,6 @@ func (r *metricsRepository) GetHourlyStats(ctx context.Context, timeRange time.D
 					},
 				},
 				"avg_time": bson.M{"$avg": "$duration"},
-				"max_time": bson.M{"$max": "$duration"},
 			},
 		},
 		{
@@ -486,19 +482,26 @@ func (r *metricsRepository) GetHourlyStats(ctx context.Context, timeRange time.D
 	stats := make([]models.HourlyStats, 0, len(results))
 	for _, result := range results {
 		hour := getIntFromBSON(result, "_id")
-		executionCount := getIntFromBSON(result, "execution_count")
-		successCount := getIntFromBSON(result, "success_count")
-		failureCount := getIntFromBSON(result, "failure_count")
+		executionCount := getInt64FromBSON(result, "execution_count")
+		successCount := getInt64FromBSON(result, "success_count")
+		failureCount := getInt64FromBSON(result, "failure_count")
 		avgTime := getFloat64FromBSON(result, "avg_time")
-		maxTime := getFloat64FromBSON(result, "max_time")
 
+		// Calcular success rate
+		var successRate float64
+		if executionCount > 0 {
+			successRate = (float64(successCount) / float64(executionCount)) * 100
+		}
+
+		// CORREGIDO: Usar los campos correctos que existen en models.HourlyStats
 		stats = append(stats, models.HourlyStats{
-			Hour:           hour,
-			ExecutionCount: executionCount,
-			SuccessCount:   successCount,
-			FailureCount:   failureCount,
-			AverageTime:    avgTime,
-			PeakTime:       maxTime,
+			Hour:        hour,
+			Date:        startTime.Format("2006-01-02"), // CORREGIDO: agregar fecha
+			Executions:  executionCount,                 // CORREGIDO: usar Executions
+			Successful:  successCount,                   // CORREGIDO: usar Successful
+			Failed:      failureCount,                   // CORREGIDO: usar Failed
+			AvgDuration: avgTime,                        // CORREGIDO: usar AvgDuration
+			SuccessRate: successRate,                    // CORREGIDO: calcular y usar SuccessRate
 		})
 	}
 
@@ -632,18 +635,4 @@ func categorizeError(errorMessage string) string {
 	}
 
 	return "runtime"
-}
-
-// determineSeverity determina la severidad de un error
-func determineSeverity(errorMessage string, count int) string {
-	if count > 50 {
-		return "critical"
-	}
-	if count > 10 {
-		return "high"
-	}
-	if count > 5 {
-		return "medium"
-	}
-	return "low"
 }

@@ -459,15 +459,13 @@ func (s *cachedDashboardService) computeSystemHealth(ctx context.Context) (*mode
 		s.logger.Error("Queue health check failed", zap.Error(err))
 	}
 
-	// CORREGIDO: Eliminar verificación de cache.Ping que no existe
-	// Solo loggear que no se puede verificar el cache
+	// Cache health check skipped - no ping method available
 	s.logger.Debug("Cache health check skipped - no ping method available")
 
 	return health, nil
 }
 
 func (s *cachedDashboardService) computeQuickStats(ctx context.Context) (*models.QuickStats, error) {
-	// CORREGIDO: Usar solo campos que existen en models.QuickStats
 	stats := &models.QuickStats{}
 
 	// Obtener estadísticas básicas en paralelo
@@ -514,19 +512,14 @@ func (s *cachedDashboardService) computeQuickStats(ctx context.Context) (*models
 
 		switch res.name {
 		case "workflows":
-			// CORREGIDO: Convertir int64 a int
 			stats.TotalWorkflows = int(res.value)
 		case "users":
-			// CORREGIDO: Convertir int64 a int
 			stats.TotalUsers = int(res.value)
 		case "queue":
-			// CORREGIDO: Usar campo que existe (QueueLength)
 			stats.QueueLength = int(res.value)
 		case "processing":
-			// CORREGIDO: Usar campo que existe (RunningExecutions)
 			stats.RunningExecutions = int(res.value)
 		case "failed":
-			// CORREGIDO: Mapear a campo existente (ErrorsLast24h)
 			stats.ErrorsLast24h = int(res.value)
 		}
 	}
@@ -553,15 +546,14 @@ func (s *cachedDashboardService) computeRecentActivity(ctx context.Context, limi
 		activity := models.ActivityItem{
 			ID:           log.ID.Hex(),
 			Type:         "workflow_execution",
-			WorkflowName: log.WorkflowName, // CORREGIDO: Usar campo que existe
+			WorkflowName: log.WorkflowName,
 			UserID:       log.UserID.Hex(),
-			Message:      fmt.Sprintf("Workflow %s executed", log.WorkflowName), // CORREGIDO: Usar Message en lugar de Description
+			Message:      fmt.Sprintf("Workflow %s executed", log.WorkflowName),
 			Timestamp:    log.CreatedAt,
 			Status:       string(log.Status),
 			Metadata: map[string]interface{}{
 				"workflow_id":  log.WorkflowID.Hex(),
 				"trigger_type": log.TriggerType,
-				// CORREGIDO: Eliminar execution_id que no existe
 			},
 		}
 		activities = append(activities, activity)
@@ -571,7 +563,7 @@ func (s *cachedDashboardService) computeRecentActivity(ctx context.Context, limi
 }
 
 func (s *cachedDashboardService) computeWorkflowStatus(ctx context.Context, limit int) ([]models.WorkflowStatusItem, error) {
-	// CORREGIDO: ListByStatus retorna 2 valores, no 3
+	// Obtener workflows activos
 	workflows, err := s.workflowRepo.ListByStatus(ctx, models.WorkflowStatusActive, 1, limit)
 	if err != nil {
 		return nil, err
@@ -601,6 +593,7 @@ func (s *cachedDashboardService) computeWorkflowStatus(ctx context.Context, limi
 	return items, nil
 }
 
+// ✅ FUNCIÓN CORREGIDA - Esta es la clave que soluciona los errores
 func (s *cachedDashboardService) computeQueueStatus(ctx context.Context) (*models.QueueStatus, error) {
 	status := &models.QueueStatus{
 		Timestamp: time.Now(),
@@ -663,6 +656,13 @@ func (s *cachedDashboardService) computeQueueStatus(ctx context.Context) (*model
 	} else {
 		status.Health = "healthy"
 	}
+
+	// ✅ AGREGADO: Mantener compatibilidad con campos alternativos (ESTO FALTABA)
+	status.Pending = int(status.QueuedTasks)
+	status.Processing = int(status.ProcessingTasks)
+	status.Failed = int(status.FailedTasks)
+	status.RetryJobs = int(status.RetryingTasks)
+	status.QueueHealth = status.Health
 
 	return status, nil
 }
