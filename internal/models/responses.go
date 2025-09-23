@@ -196,7 +196,7 @@ type ExecutionResponse struct {
 	Context       map[string]interface{}      `json:"context"`
 	ErrorMessage  string                      `json:"error_message,omitempty"`
 	Progress      ExecutionProgress           `json:"progress"`
-	ResourceUsage ResourceUsage               `json:"resource_usage"`
+	ResourceUsage ExecutionResourceUsage      `json:"resource_usage"` // CAMBIADO: nombre específico para evitar conflictos
 	Performance   ExecutionPerformanceMetrics `json:"performance"`
 }
 
@@ -234,6 +234,16 @@ type StepResourceUsage struct {
 	NetworkRecv int64 `json:"network_recv"` // bytes
 }
 
+// ExecutionResourceUsage uso de recursos de ejecución (renombrado para evitar conflictos)
+type ExecutionResourceUsage struct {
+	Timestamp         time.Time `json:"timestamp"`
+	CPUPercent        float64   `json:"cpu_percent"`
+	MemoryPercent     float64   `json:"memory_percent"`
+	MemoryUsedMB      float64   `json:"memory_used_mb"`
+	DiskUsedPercent   float64   `json:"disk_used_percent"`
+	ActiveConnections int       `json:"active_connections"`
+}
+
 // ExecutionPerformanceMetrics métricas de rendimiento de ejecución
 type ExecutionPerformanceMetrics struct {
 	QueueTime     int64          `json:"queue_time"`     // ms
@@ -253,19 +263,21 @@ type LatencyMetrics struct {
 
 // SYSTEM & HEALTH RESPONSE STRUCTURES
 
-// HealthResponse respuesta de salud del sistema
-type HealthResponse struct {
-	Status       string                   `json:"status"` // healthy, degraded, unhealthy
-	Version      string                   `json:"version"`
-	Timestamp    time.Time                `json:"timestamp"`
-	Uptime       int64                    `json:"uptime"` // seconds
-	Services     map[string]ServiceHealth `json:"services"`
-	Metrics      SystemMetrics            `json:"metrics"`
-	Dependencies []DependencyHealth       `json:"dependencies"`
+// SystemHealthResponse respuesta de salud del sistema (renombrada para evitar conflictos)
+type SystemHealthResponse struct {
+	Status        string                           `json:"status"`         // healthy, degraded, unhealthy
+	OverallStatus string                           `json:"overall_status"` // AGREGADO: para compatibilidad
+	Version       string                           `json:"version"`
+	Timestamp     time.Time                        `json:"timestamp"`
+	LastCheck     time.Time                        `json:"last_check"` // AGREGADO: para compatibilidad
+	Uptime        int64                            `json:"uptime"`     // seconds
+	Services      map[string]ResponseServiceHealth `json:"services"`   // CAMBIADO: tipo específico
+	Metrics       SystemMetrics                    `json:"metrics"`
+	Dependencies  []DependencyHealth               `json:"dependencies"`
 }
 
-// ServiceHealth salud de un servicio
-type ServiceHealth struct {
+// ResponseServiceHealth salud de un servicio (renombrada para evitar conflictos con dashboard.go)
+type ResponseServiceHealth struct {
 	Status       string    `json:"status"`
 	LastCheck    time.Time `json:"last_check"`
 	ResponseTime int64     `json:"response_time"` // ms

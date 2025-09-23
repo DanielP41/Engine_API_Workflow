@@ -103,7 +103,7 @@ func (s *cachedDashboardService) GetCompleteDashboard(ctx context.Context, filte
 	return result.(*models.DashboardData), nil
 }
 
-// GetDashboardSummary obtiene resumen del dashboard con caché optimizado (CORREGIDO: agregado parámetro filter)
+// GetDashboardSummary obtiene resumen del dashboard con caché optimizado
 func (s *cachedDashboardService) GetDashboardSummary(ctx context.Context, filter *models.DashboardFilter) (*models.DashboardSummary, error) {
 	key := cache.DashboardKeys.Build("summary", s.buildFilterKey(filter))
 
@@ -258,7 +258,6 @@ func (s *cachedDashboardService) GetActiveAlerts(ctx context.Context) ([]models.
 			Message:   fmt.Sprintf("Queue has %d pending tasks", queueLength),
 			Severity:  "medium",
 			Timestamp: time.Now(),
-			Source:    "queue_monitor",
 			Actions:   []models.AlertAction{{Type: "investigate", Description: "Check queue status"}},
 		})
 	}
@@ -273,7 +272,6 @@ func (s *cachedDashboardService) GetActiveAlerts(ctx context.Context) ([]models.
 			Message:   fmt.Sprintf("There are %d failed tasks", failedTasks),
 			Severity:  "high",
 			Timestamp: time.Now(),
-			Source:    "task_monitor",
 			Actions:   []models.AlertAction{{Type: "restart", Description: "Restart failed tasks"}},
 		})
 	}
@@ -306,14 +304,14 @@ func (s *cachedDashboardService) GetWorkflowHealth(ctx context.Context, workflow
 			Name:           workflow.Name,
 			Status:         string(workflow.Status),
 			IsActive:       workflow.Status == models.WorkflowStatusActive,
-			LastExecution:  workflow.Stats.LastExecutedAt,
-			SuccessRate:    s.calculateSuccessRate(workflow.Stats),
-			TotalRuns:      workflow.Stats.TotalRuns,
-			SuccessfulRuns: workflow.Stats.SuccessfulRuns,
-			FailedRuns:     workflow.Stats.FailedRuns,
-			AvgRunTime:     workflow.Stats.AverageExecutionTime,
-			Healthy:        s.determineWorkflowHealthBool(workflow.Stats),
-			TriggerType:    string(workflow.TriggerType),
+			LastExecution:  s.getLastExecutionTime(workflow.Stats),
+			SuccessRate:    s.calculateSuccessRateFromPointer(workflow.Stats),
+			TotalRuns:      s.getTotalExecutions(workflow.Stats),
+			SuccessfulRuns: s.getSuccessfulExecutions(workflow.Stats),
+			FailedRuns:     s.getFailedExecutions(workflow.Stats),
+			AvgRunTime:     s.getAverageExecutionTime(workflow.Stats),
+			Healthy:        s.determineWorkflowHealthFromPointer(workflow.Stats),
+			TriggerType:    s.getWorkflowTriggerType(workflow),
 			Tags:           workflow.Tags,
 		}
 
@@ -413,7 +411,7 @@ func (s *cachedDashboardService) computeDashboardSummary(ctx context.Context, fi
 		ch <- result{queueLength: length, err: err}
 	}()
 
-	// Recopilar resultados (CORREGIDO: sin campo Timestamp)
+	// Recopilar resultados
 	summary := &models.DashboardSummary{
 		SystemStatus: "healthy",
 		LastUpdate:   time.Now(),
@@ -442,75 +440,35 @@ func (s *cachedDashboardService) computeDashboardSummary(ctx context.Context, fi
 
 func (s *cachedDashboardService) computeSystemHealth(ctx context.Context) (*models.SystemHealth, error) {
 	health := &models.SystemHealth{
-		OverallStatus: "healthy",
-		LastCheck:     time.Now(),
-		Services:      make(map[string]models.ServiceHealth),
+		Status:      "healthy",
+		LastHealthy: time.Now(),
+		Version:     "1.0.0",
 	}
 
 	// Verificar MongoDB
 	if _, err := s.workflowRepo.Count(ctx); err != nil {
-		health.Services["mongodb"] = models.ServiceHealth{
-			Status:       "unhealthy",
-			LastCheck:    time.Now(),
-			ResponseTime: 0,
-			Message:      err.Error(),
-		}
-		health.OverallStatus = "degraded"
-	} else {
-		health.Services["mongodb"] = models.ServiceHealth{
-			Status:       "healthy",
-			LastCheck:    time.Now(),
-			ResponseTime: 50,
-			Message:      "Connected",
-		}
+		health.Status = "critical"
+		s.logger.Error("MongoDB health check failed", zap.Error(err))
 	}
 
 	// Verificar Redis/Queue
 	if err := s.queueRepo.Ping(ctx); err != nil {
-		health.Services["redis"] = models.ServiceHealth{
-			Status:       "unhealthy",
-			LastCheck:    time.Now(),
-			ResponseTime: 0,
-			Message:      err.Error(),
+		if health.Status == "healthy" {
+			health.Status = "warning"
 		}
-		health.OverallStatus = "degraded"
-	} else {
-		health.Services["redis"] = models.ServiceHealth{
-			Status:       "healthy",
-			LastCheck:    time.Now(),
-			ResponseTime: 25,
-			Message:      "Connected",
-		}
+		s.logger.Error("Queue health check failed", zap.Error(err))
 	}
 
-	// Verificar Cache
-	if err := s.cacheManager.Ping(ctx); err != nil {
-		health.Services["cache"] = models.ServiceHealth{
-			Status:       "unhealthy",
-			LastCheck:    time.Now(),
-			ResponseTime: 0,
-			Message:      err.Error(),
-		}
-		// Cache no es crítico, solo degraded si está caído
-		if health.OverallStatus == "healthy" {
-			health.OverallStatus = "degraded"
-		}
-	} else {
-		health.Services["cache"] = models.ServiceHealth{
-			Status:       "healthy",
-			LastCheck:    time.Now(),
-			ResponseTime: 15,
-			Message:      "Connected",
-		}
-	}
+	// CORREGIDO: Eliminar verificación de cache.Ping que no existe
+	// Solo loggear que no se puede verificar el cache
+	s.logger.Debug("Cache health check skipped - no ping method available")
 
 	return health, nil
 }
 
 func (s *cachedDashboardService) computeQuickStats(ctx context.Context) (*models.QuickStats, error) {
-	stats := &models.QuickStats{
-		Timestamp: time.Now(),
-	}
+	// CORREGIDO: Usar solo campos que existen en models.QuickStats
+	stats := &models.QuickStats{}
 
 	// Obtener estadísticas básicas en paralelo
 	type statResult struct {
@@ -556,15 +514,20 @@ func (s *cachedDashboardService) computeQuickStats(ctx context.Context) (*models
 
 		switch res.name {
 		case "workflows":
-			stats.TotalWorkflows = res.value
+			// CORREGIDO: Convertir int64 a int
+			stats.TotalWorkflows = int(res.value)
 		case "users":
-			stats.TotalUsers = res.value
+			// CORREGIDO: Convertir int64 a int
+			stats.TotalUsers = int(res.value)
 		case "queue":
-			stats.QueuedTasks = res.value
+			// CORREGIDO: Usar campo que existe (QueueLength)
+			stats.QueueLength = int(res.value)
 		case "processing":
-			stats.ProcessingTasks = res.value
+			// CORREGIDO: Usar campo que existe (RunningExecutions)
+			stats.RunningExecutions = int(res.value)
 		case "failed":
-			stats.FailedTasks = res.value
+			// CORREGIDO: Mapear a campo existente (ErrorsLast24h)
+			stats.ErrorsLast24h = int(res.value)
 		}
 	}
 
@@ -588,16 +551,17 @@ func (s *cachedDashboardService) computeRecentActivity(ctx context.Context, limi
 	activities := make([]models.ActivityItem, 0, len(logs))
 	for _, log := range logs {
 		activity := models.ActivityItem{
-			ID:          log.ID.Hex(),
-			Type:        "workflow_execution",
-			Description: fmt.Sprintf("Workflow %s executed", log.WorkflowName),
-			UserID:      log.UserID.Hex(),
-			Timestamp:   log.CreatedAt,
-			Status:      string(log.Status),
+			ID:           log.ID.Hex(),
+			Type:         "workflow_execution",
+			WorkflowName: log.WorkflowName, // CORREGIDO: Usar campo que existe
+			UserID:       log.UserID.Hex(),
+			Message:      fmt.Sprintf("Workflow %s executed", log.WorkflowName), // CORREGIDO: Usar Message en lugar de Description
+			Timestamp:    log.CreatedAt,
+			Status:       string(log.Status),
 			Metadata: map[string]interface{}{
 				"workflow_id":  log.WorkflowID.Hex(),
-				"execution_id": log.ExecutionID,
 				"trigger_type": log.TriggerType,
+				// CORREGIDO: Eliminar execution_id que no existe
 			},
 		}
 		activities = append(activities, activity)
@@ -607,8 +571,8 @@ func (s *cachedDashboardService) computeRecentActivity(ctx context.Context, limi
 }
 
 func (s *cachedDashboardService) computeWorkflowStatus(ctx context.Context, limit int) ([]models.WorkflowStatusItem, error) {
-	// Obtener workflows activos
-	workflows, _, err := s.workflowRepo.ListByStatus(ctx, models.WorkflowStatusActive, 1, limit)
+	// CORREGIDO: ListByStatus retorna 2 valores, no 3
+	workflows, err := s.workflowRepo.ListByStatus(ctx, models.WorkflowStatusActive, 1, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -621,14 +585,14 @@ func (s *cachedDashboardService) computeWorkflowStatus(ctx context.Context, limi
 			Name:           workflow.Name,
 			Status:         string(workflow.Status),
 			IsActive:       workflow.Status == models.WorkflowStatusActive,
-			LastExecution:  workflow.Stats.LastExecutedAt,
-			SuccessRate:    s.calculateSuccessRate(workflow.Stats),
-			TotalRuns:      workflow.Stats.TotalRuns,
-			SuccessfulRuns: workflow.Stats.SuccessfulRuns,
-			FailedRuns:     workflow.Stats.FailedRuns,
-			AvgRunTime:     workflow.Stats.AverageExecutionTime,
-			Healthy:        s.determineWorkflowHealthBool(workflow.Stats),
-			TriggerType:    string(workflow.TriggerType),
+			LastExecution:  s.getLastExecutionTime(workflow.Stats),
+			SuccessRate:    s.calculateSuccessRateFromPointer(workflow.Stats),
+			TotalRuns:      s.getTotalExecutions(workflow.Stats),
+			SuccessfulRuns: s.getSuccessfulExecutions(workflow.Stats),
+			FailedRuns:     s.getFailedExecutions(workflow.Stats),
+			AvgRunTime:     s.getAverageExecutionTime(workflow.Stats),
+			Healthy:        s.determineWorkflowHealthFromPointer(workflow.Stats),
+			TriggerType:    s.getWorkflowTriggerType(workflow),
 			Tags:           workflow.Tags,
 		}
 		items = append(items, item)
@@ -732,6 +696,65 @@ func (s *cachedDashboardService) getOrComputeData(ctx context.Context, key strin
 	return result
 }
 
+// Funciones auxiliares para manejar WorkflowStats punteros
+func (s *cachedDashboardService) getLastExecutionTime(stats *models.WorkflowStats) *time.Time {
+	if stats == nil {
+		return nil
+	}
+	return stats.LastExecutedAt
+}
+
+func (s *cachedDashboardService) calculateSuccessRateFromPointer(stats *models.WorkflowStats) float64 {
+	if stats == nil || stats.TotalExecutions == 0 {
+		return 100.0
+	}
+	return (float64(stats.SuccessfulRuns) / float64(stats.TotalExecutions)) * 100
+}
+
+func (s *cachedDashboardService) getTotalExecutions(stats *models.WorkflowStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.TotalExecutions
+}
+
+func (s *cachedDashboardService) getSuccessfulExecutions(stats *models.WorkflowStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.SuccessfulRuns
+}
+
+func (s *cachedDashboardService) getFailedExecutions(stats *models.WorkflowStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.FailedRuns
+}
+
+func (s *cachedDashboardService) getAverageExecutionTime(stats *models.WorkflowStats) float64 {
+	if stats == nil {
+		return 0.0
+	}
+	return stats.AverageExecutionTime
+}
+
+func (s *cachedDashboardService) determineWorkflowHealthFromPointer(stats *models.WorkflowStats) bool {
+	if stats == nil || stats.TotalExecutions == 0 {
+		return true
+	}
+	successRate := (float64(stats.SuccessfulRuns) / float64(stats.TotalExecutions)) * 100
+	return successRate >= 90.0
+}
+
+func (s *cachedDashboardService) getWorkflowTriggerType(workflow *models.Workflow) string {
+	if len(workflow.Triggers) > 0 {
+		return workflow.Triggers[0].Type
+	}
+	return "manual"
+}
+
+// Funciones auxiliares existentes (mantenidas para compatibilidad)
 func (s *cachedDashboardService) calculateSuccessRate(stats models.WorkflowStats) float64 {
 	total := stats.SuccessfulRuns + stats.FailedRuns
 	if total == 0 {
