@@ -56,6 +56,84 @@ type QueueItem struct {
 	DelayUntil  *time.Time             `json:"delay_until,omitempty"`
 }
 
+// ================================
+// FUNCIONES AUXILIARES DE CONVERSIÓN
+// ================================
+
+// objectIDToString convierte primitive.ObjectID a string
+func objectIDToString(id primitive.ObjectID) string {
+	if id.IsZero() {
+		return ""
+	}
+	return id.Hex()
+}
+
+// stringToObjectIDPtr convierte string a *primitive.ObjectID
+func stringToObjectIDPtr(s string) *primitive.ObjectID {
+	if s == "" {
+		return nil
+	}
+	if objID, err := primitive.ObjectIDFromHex(s); err == nil {
+		return &objID
+	}
+	return nil
+}
+
+// intToTaskPriority convierte int a models.TaskPriority
+func intToTaskPriority(priority int) models.TaskPriority {
+	return models.TaskPriority(priority)
+}
+
+// stringToTaskStatus convierte string a models.TaskStatus
+func stringToTaskStatus(status string) models.TaskStatus {
+	switch status {
+	case "pending":
+		return models.TaskStatusPending
+	case "processing":
+		return models.TaskStatusProcessing
+	case "completed":
+		return models.TaskStatusCompleted
+	case "failed":
+		return models.TaskStatusFailed
+	case "cancelled":
+		return models.TaskStatusCancelled
+	case "queued":
+		return models.TaskStatusPending // Mapear 'queued' a 'pending'
+	default:
+		return models.TaskStatusPending
+	}
+}
+
+// convertQueueItemToTask convierte QueueItem a models.QueueTask
+func convertQueueItemToTask(item *QueueItem) *models.QueueTask {
+	task := &models.QueueTask{
+		ID:           primitive.NewObjectID(), // Generar nuevo ObjectID
+		WorkflowID:   item.WorkflowID,
+		ExecutionID:  &item.ExecutionID, // Convertir a pointer
+		UserID:       item.UserID,
+		TaskName:     "workflow_execution",
+		TaskType:     "workflow",
+		Status:       stringToTaskStatus(item.Status),
+		Priority:     intToTaskPriority(item.Priority),
+		QueueName:    "main",
+		Payload:      item.Payload,
+		CreatedAt:    item.CreatedAt,
+		StartedAt:    item.ProcessedAt,
+		CompletedAt:  item.CompletedAt,
+		UpdatedAt:    time.Now(),
+		Attempts:     item.RetryCount,
+		MaxAttempts:  item.MaxRetries,
+		ErrorMessage: item.Error,
+	}
+
+	// Mapear campos específicos
+	if item.FailedAt != nil {
+		task.CompletedAt = item.FailedAt
+	}
+
+	return task
+}
+
 // Basic queue operations
 func (r *queueRepository) Push(ctx context.Context, queueName string, data interface{}) error {
 	jsonData, err := json.Marshal(data)
@@ -188,7 +266,7 @@ func (r *queueRepository) ProcessDelayedJobs(ctx context.Context, queueName stri
 
 // GetQueueLength implementa el método de la interfaz
 func (r *queueRepository) GetQueueLength(ctx context.Context, queueName string) (int64, error) {
-	if queueName == "workflow:queue" || queueName == "" {
+	if queueName == "workflow:queue" || queueName == "" || queueName == "main" {
 		return r.client.ZCard(ctx, WorkflowQueue).Result()
 	}
 	return r.client.LLen(ctx, queueName).Result()
@@ -315,19 +393,8 @@ func (r *queueRepository) Dequeue(ctx context.Context) (*models.QueueTask, error
 		return nil, fmt.Errorf("failed to move item to processing: %w", err)
 	}
 
-	task := &models.QueueTask{
-		ID:          item.ID,
-		WorkflowID:  item.WorkflowID,
-		ExecutionID: item.ExecutionID,
-		UserID:      item.UserID,
-		Payload:     item.Payload,
-		Priority:    item.Priority,
-		RetryCount:  item.RetryCount,
-		MaxRetries:  item.MaxRetries,
-		Status:      models.QueueTaskStatus(item.Status),
-		CreatedAt:   item.CreatedAt,
-		ProcessedAt: item.ProcessedAt,
-	}
+	// Convertir QueueItem a models.QueueTask usando función auxiliar
+	task := convertQueueItemToTask(&item)
 
 	return task, nil
 }
@@ -584,18 +651,8 @@ func (r *queueRepository) GetOldestPendingTask(ctx context.Context) (*models.Que
 		return nil, fmt.Errorf("failed to unmarshal queue item: %w", err)
 	}
 
-	task := &models.QueueTask{
-		ID:          item.ID,
-		WorkflowID:  item.WorkflowID,
-		ExecutionID: item.ExecutionID,
-		UserID:      item.UserID,
-		Payload:     item.Payload,
-		Priority:    item.Priority,
-		RetryCount:  item.RetryCount,
-		MaxRetries:  item.MaxRetries,
-		Status:      models.QueueTaskStatus(item.Status),
-		CreatedAt:   item.CreatedAt,
-	}
+	// Convertir usando función auxiliar
+	task := convertQueueItemToTask(&item)
 
 	return task, nil
 }
@@ -862,23 +919,13 @@ func (r *queueRepository) getTasksByStatus(ctx context.Context, status string) (
 			continue
 		}
 
-		task := &models.QueueTask{
-			ID:          item.ID,
-			WorkflowID:  item.WorkflowID,
-			ExecutionID: item.ExecutionID,
-			UserID:      item.UserID,
-			Payload:     item.Payload,
-			Priority:    item.Priority,
-			RetryCount:  item.RetryCount,
-			MaxRetries:  item.MaxRetries,
-			Status:      models.QueueTaskStatus(item.Status),
-			LastError:   item.Error,
-			ScheduledAt: item.DelayUntil,
-			CreatedAt:   item.CreatedAt,
-			ProcessedAt: item.ProcessedAt,
-			CompletedAt: item.CompletedAt,
-			FailedAt:    item.FailedAt,
-			Error:       item.Error,
+		// Usar función auxiliar de conversión
+		task := convertQueueItemToTask(&item)
+
+		// Mapear campos específicos que no están en la función auxiliar
+		task.LastError = item.Error
+		if item.DelayUntil != nil {
+			task.ScheduledAt = item.DelayUntil
 		}
 
 		tasks = append(tasks, task)

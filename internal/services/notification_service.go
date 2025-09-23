@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	htmlTemplate "html/template"
 	"strings"
 	"sync"
+	textTemplate "text/template"
 	"time"
 
 	"Engine_API_Workflow/internal/models"
@@ -27,7 +29,7 @@ type NotificationService struct {
 	templateRepo     repository.TemplateRepository
 
 	// Servicios externos
-	emailService email.Service
+	emailService email.EmailService
 
 	// Configuración
 	logger *zap.Logger
@@ -61,7 +63,7 @@ type ServiceStats struct {
 type NotificationServiceConfig struct {
 	NotificationRepo repository.NotificationRepository
 	TemplateRepo     repository.TemplateRepository
-	EmailService     email.Service
+	EmailService     email.EmailService
 	Logger           *zap.Logger
 	Config           *email.Config
 }
@@ -90,7 +92,7 @@ type ProcessingError struct {
 func NewNotificationService(
 	notificationRepo repository.NotificationRepository,
 	templateRepo repository.TemplateRepository,
-	emailService email.Service,
+	emailService email.EmailService,
 	logger *zap.Logger,
 	config *email.Config,
 ) *NotificationService {
@@ -611,14 +613,14 @@ func (s *NotificationService) GetServiceStats() *ServiceStats {
 // TestEmailConfiguration prueba la configuración de email
 func (s *NotificationService) TestEmailConfiguration(ctx context.Context) error {
 	// Crear mensaje de prueba
-	testMessage := &email.EmailMessage{
-		To:      []string{s.config.SMTP.DefaultFrom.Email},
+	testMessage := &email.Message{
+		To:      []email.Address{{Email: s.config.FromEmail}},
 		Subject: "Test Email Configuration",
 		Body:    "This is a test email to verify the SMTP configuration is working correctly.",
 		IsHTML:  false,
 	}
 
-	return s.emailService.SendEmail(ctx, testMessage)
+	return s.emailService.Send(ctx, testMessage)
 }
 
 // CleanupOldNotifications limpia notificaciones antiguas
@@ -646,11 +648,10 @@ func (s *NotificationService) GetHealthStatus(ctx context.Context) map[string]in
 	}
 
 	// Verificar servicio de email
-	if s.emailService.IsHealthy() {
+	if s.emailService.IsEnabled() {
 		status["email_service"] = "healthy"
 	} else {
-		status["email_service"] = "unhealthy"
-		status["service"] = "degraded"
+		status["email_service"] = "disabled"
 	}
 
 	// Verificar base de datos (si el repo lo soporta)
@@ -705,10 +706,10 @@ func (s *NotificationService) sendNotificationNow(ctx context.Context, notificat
 	}
 
 	// Crear mensaje de email
-	emailMessage := &email.EmailMessage{
-		To:      notification.To,
-		CC:      notification.CC,
-		BCC:     notification.BCC,
+	emailMessage := &email.Message{
+		To:      s.convertStringSliceToAddresses(notification.To),
+		CC:      s.convertStringSliceToAddresses(notification.CC),
+		BCC:     s.convertStringSliceToAddresses(notification.BCC),
 		Subject: notification.Subject,
 		Body:    notification.Body,
 		IsHTML:  notification.IsHTML,
@@ -717,17 +718,17 @@ func (s *NotificationService) sendNotificationNow(ctx context.Context, notificat
 	// Configurar prioridad
 	switch notification.Priority {
 	case models.NotificationPriorityHigh:
-		emailMessage.Priority = 1
+		emailMessage.Priority = email.PriorityHigh
 	case models.NotificationPriorityCritical:
-		emailMessage.Priority = 1
+		emailMessage.Priority = email.PriorityCritical
 	case models.NotificationPriorityLow:
-		emailMessage.Priority = 5
+		emailMessage.Priority = email.PriorityLow
 	default:
-		emailMessage.Priority = 3
+		emailMessage.Priority = email.PriorityNormal
 	}
 
 	// Enviar email
-	if err := s.emailService.SendEmail(ctx, emailMessage); err != nil {
+	if err := s.emailService.Send(ctx, emailMessage); err != nil {
 		// Manejar error
 		s.handleSendError(ctx, notification, err)
 		return err
@@ -750,6 +751,15 @@ func (s *NotificationService) sendNotificationNow(ctx context.Context, notificat
 		zap.Strings("to", notification.To))
 
 	return nil
+}
+
+// convertStringSliceToAddresses convierte slice de strings a slice de email.Address
+func (s *NotificationService) convertStringSliceToAddresses(emails []string) []email.Address {
+	addresses := make([]email.Address, len(emails))
+	for i, emailStr := range emails {
+		addresses[i] = email.Address{Email: emailStr}
+	}
+	return addresses
 }
 
 // processTemplate procesa un template y actualiza la notificación

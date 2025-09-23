@@ -16,6 +16,7 @@ import (
 	"Engine_API_Workflow/internal/repository"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // BackupService define la interfaz para el servicio de backup
@@ -223,8 +224,8 @@ func (s *backupService) createMongoDBBackup(ctx context.Context, backupPath stri
 	)
 
 	// Configurar logging de salida
-	cmd.Stdout = &logWriter{logger: s.logger, level: zap.InfoLevel}
-	cmd.Stderr = &logWriter{logger: s.logger, level: zap.ErrorLevel}
+	cmd.Stdout = &logWriter{logger: s.logger, level: zapcore.InfoLevel}
+	cmd.Stderr = &logWriter{logger: s.logger, level: zapcore.ErrorLevel}
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("mongodump failed: %w", err)
@@ -260,8 +261,8 @@ func (s *backupService) createRedisBackup(ctx context.Context, backupPath string
 		cmd.Args = append(cmd.Args, "-a", s.config.RedisPassword)
 	}
 
-	cmd.Stdout = &logWriter{logger: s.logger, level: zap.InfoLevel}
-	cmd.Stderr = &logWriter{logger: s.logger, level: zap.ErrorLevel}
+	cmd.Stdout = &logWriter{logger: s.logger, level: zapcore.InfoLevel}
+	cmd.Stderr = &logWriter{logger: s.logger, level: zapcore.ErrorLevel}
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("redis backup failed: %w", err)
@@ -686,8 +687,8 @@ func (s *backupService) restoreMongoDBBackup(ctx context.Context, backupPath str
 		backupPath,
 	)
 
-	cmd.Stdout = &logWriter{logger: s.logger, level: zap.InfoLevel}
-	cmd.Stderr = &logWriter{logger: s.logger, level: zap.ErrorLevel}
+	cmd.Stdout = &logWriter{logger: s.logger, level: zapcore.InfoLevel}
+	cmd.Stderr = &logWriter{logger: s.logger, level: zapcore.ErrorLevel}
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("mongorestore failed: %w", err)
@@ -838,13 +839,13 @@ func (s *backupService) validateMongoDBBackup(mongoPath string) error {
 // logWriter implementa io.Writer para logging
 type logWriter struct {
 	logger *zap.Logger
-	level  zap.AtomicLevel
+	level  zapcore.Level
 }
 
 func (lw *logWriter) Write(p []byte) (n int, err error) {
 	msg := strings.TrimSpace(string(p))
 	if msg != "" {
-		lw.logger.Log(lw.level.Level(), msg)
+		lw.logger.Log(lw.level, msg)
 	}
 	return len(p), nil
 }

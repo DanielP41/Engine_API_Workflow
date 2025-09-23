@@ -2,6 +2,8 @@ package models
 
 import (
 	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // ===============================================
@@ -10,24 +12,44 @@ import (
 
 // QueueTask representa una tarea en la cola
 type QueueTask struct {
-	ID          string                 `json:"id" db:"id"`
-	WorkflowID  string                 `json:"workflow_id" db:"workflow_id"`
-	ExecutionID *string                `json:"execution_id" db:"execution_id"`
-	UserID      string                 `json:"user_id" db:"user_id"`
-	Status      TaskStatus             `json:"status" db:"status"`
-	Priority    TaskPriority           `json:"priority" db:"priority"`
-	Type        string                 `json:"type" db:"type"`
-	Payload     map[string]interface{} `json:"payload" db:"payload"`
-	Config      *TaskConfig            `json:"config,omitempty" db:"config"`
-	ScheduledAt time.Time              `json:"scheduled_at" db:"scheduled_at"`
-	StartedAt   *time.Time             `json:"started_at,omitempty" db:"started_at"`
-	CompletedAt *time.Time             `json:"completed_at,omitempty" db:"completed_at"`
-	RetryCount  int                    `json:"retry_count" db:"retry_count"`
-	MaxRetries  int                    `json:"max_retries" db:"max_retries"`
-	LastError   string                 `json:"last_error,omitempty" db:"last_error"`
-	Results     map[string]interface{} `json:"results,omitempty" db:"results"`
-	CreatedAt   time.Time              `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time              `json:"updated_at" db:"updated_at"`
+	ID          primitive.ObjectID     `json:"id" bson:"_id,omitempty"`
+	WorkflowID  primitive.ObjectID     `json:"workflow_id" bson:"workflow_id"`
+	ExecutionID *string                `json:"execution_id" bson:"execution_id"`
+	UserID      primitive.ObjectID     `json:"user_id" bson:"user_id"`
+	TaskName    string                 `json:"task_name" bson:"task_name"`
+	TaskType    string                 `json:"task_type" bson:"task_type"`
+	Status      TaskStatus             `json:"status" bson:"status"`
+	Priority    TaskPriority           `json:"priority" bson:"priority"`
+	QueueName   string                 `json:"queue_name" bson:"queue_name"`
+	Payload     map[string]interface{} `json:"payload" bson:"payload"`
+	Result      map[string]interface{} `json:"result,omitempty" bson:"result,omitempty"`
+	Config      *TaskConfig            `json:"config,omitempty" bson:"config,omitempty"`
+
+	// Timestamps
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty" bson:"scheduled_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at" bson:"created_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty" bson:"started_at,omitempty"`
+	ProcessedAt *time.Time `json:"processed_at,omitempty" bson:"processed_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty" bson:"completed_at,omitempty"`
+	UpdatedAt   time.Time  `json:"updated_at" bson:"updated_at"`
+
+	// Reintento y manejo de errores
+	Attempts    int        `json:"attempts" bson:"attempts"`
+	MaxAttempts int        `json:"max_attempts" bson:"max_attempts"`
+	RetryCount  int        `json:"retry_count" bson:"retry_count"` // Alias para Attempts
+	MaxRetries  int        `json:"max_retries" bson:"max_retries"` // Alias para MaxAttempts
+	LastAttempt *time.Time `json:"last_attempt,omitempty" bson:"last_attempt,omitempty"`
+	NextRetry   *time.Time `json:"next_retry,omitempty" bson:"next_retry,omitempty"`
+
+	// Errores
+	LastError    string `json:"last_error,omitempty" bson:"last_error"`
+	ErrorMessage string `json:"error_message,omitempty" bson:"error_message"` // Alias para LastError
+
+	// Resultados (alias para compatibilidad)
+	Results map[string]interface{} `json:"results,omitempty" bson:"results,omitempty"`
+
+	// Campos adicionales para compatibilidad
+	Type string `json:"type,omitempty" bson:"type,omitempty"` // Alias para TaskType
 }
 
 // TaskStatus estados de una tarea
@@ -43,6 +65,9 @@ const (
 	TaskStatusRetrying   TaskStatus = "retrying"
 	TaskStatusScheduled  TaskStatus = "scheduled"
 )
+
+// QueueTaskStatus alias para TaskStatus (compatibilidad con Redis repository)
+type QueueTaskStatus = TaskStatus
 
 // IsActive verifica si una tarea está en estado activo
 func (ts TaskStatus) IsActive() bool {
@@ -246,13 +271,28 @@ type TaskSearchResult struct {
 
 // CanRetry verifica si una tarea puede ser reintentada
 func (qt *QueueTask) CanRetry() bool {
-	return qt.Status == TaskStatusFailed && qt.RetryCount < qt.MaxRetries
+	maxRetries := qt.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = qt.MaxAttempts
+	}
+
+	retryCount := qt.RetryCount
+	if retryCount == 0 {
+		retryCount = qt.Attempts
+	}
+
+	return qt.Status == TaskStatusFailed && retryCount < maxRetries
 }
 
 // GetDuration obtiene la duración de ejecución de la tarea
 func (qt *QueueTask) GetDuration() *time.Duration {
-	if qt.StartedAt != nil && qt.CompletedAt != nil {
-		duration := qt.CompletedAt.Sub(*qt.StartedAt)
+	startTime := qt.StartedAt
+	if startTime == nil {
+		startTime = qt.ProcessedAt
+	}
+
+	if startTime != nil && qt.CompletedAt != nil {
+		duration := qt.CompletedAt.Sub(*startTime)
 		return &duration
 	}
 	return nil
@@ -260,18 +300,35 @@ func (qt *QueueTask) GetDuration() *time.Duration {
 
 // IsExpired verifica si una tarea ha expirado
 func (qt *QueueTask) IsExpired(timeout time.Duration) bool {
-	if qt.StartedAt == nil {
+	startTime := qt.StartedAt
+	if startTime == nil {
+		startTime = qt.ProcessedAt
+	}
+
+	if startTime == nil {
 		return false
 	}
-	return time.Since(*qt.StartedAt) > timeout
+	return time.Since(*startTime) > timeout
 }
 
 // GetWaitTime obtiene el tiempo de espera en cola
 func (qt *QueueTask) GetWaitTime() time.Duration {
-	if qt.StartedAt != nil {
-		return qt.StartedAt.Sub(qt.ScheduledAt)
+	startTime := qt.StartedAt
+	if startTime == nil {
+		startTime = qt.ProcessedAt
 	}
-	return time.Since(qt.ScheduledAt)
+
+	if startTime != nil {
+		if qt.ScheduledAt != nil {
+			return startTime.Sub(*qt.ScheduledAt)
+		}
+		return startTime.Sub(qt.CreatedAt)
+	}
+
+	if qt.ScheduledAt != nil {
+		return time.Since(*qt.ScheduledAt)
+	}
+	return time.Since(qt.CreatedAt)
 }
 
 // UpdateStatus actualiza el estado de la tarea
@@ -282,7 +339,12 @@ func (qt *QueueTask) UpdateStatus(status TaskStatus) {
 	switch status {
 	case TaskStatusProcessing:
 		now := time.Now()
-		qt.StartedAt = &now
+		if qt.StartedAt == nil {
+			qt.StartedAt = &now
+		}
+		if qt.ProcessedAt == nil {
+			qt.ProcessedAt = &now
+		}
 	case TaskStatusCompleted, TaskStatusFailed, TaskStatusCancelled:
 		if qt.CompletedAt == nil {
 			now := time.Now()
@@ -294,14 +356,60 @@ func (qt *QueueTask) UpdateStatus(status TaskStatus) {
 // AddError añade un error a la tarea e incrementa el contador de reintentos
 func (qt *QueueTask) AddError(err error) {
 	qt.LastError = err.Error()
+	qt.ErrorMessage = err.Error()
 	qt.RetryCount++
+	qt.Attempts++
 	qt.UpdatedAt = time.Now()
 
-	if qt.RetryCount >= qt.MaxRetries {
+	maxRetries := qt.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = qt.MaxAttempts
+	}
+
+	if qt.RetryCount >= maxRetries {
 		qt.Status = TaskStatusFailed
 		now := time.Now()
 		qt.CompletedAt = &now
 	} else {
 		qt.Status = TaskStatusRetrying
+		qt.LastAttempt = &qt.UpdatedAt
+	}
+}
+
+// SyncAliasFields sincroniza campos que son alias entre sí
+func (qt *QueueTask) SyncAliasFields() {
+	// Sincronizar contadores de reintentos
+	if qt.Attempts == 0 && qt.RetryCount > 0 {
+		qt.Attempts = qt.RetryCount
+	} else if qt.RetryCount == 0 && qt.Attempts > 0 {
+		qt.RetryCount = qt.Attempts
+	}
+
+	// Sincronizar límites máximos
+	if qt.MaxAttempts == 0 && qt.MaxRetries > 0 {
+		qt.MaxAttempts = qt.MaxRetries
+	} else if qt.MaxRetries == 0 && qt.MaxAttempts > 0 {
+		qt.MaxRetries = qt.MaxAttempts
+	}
+
+	// Sincronizar errores
+	if qt.ErrorMessage == "" && qt.LastError != "" {
+		qt.ErrorMessage = qt.LastError
+	} else if qt.LastError == "" && qt.ErrorMessage != "" {
+		qt.LastError = qt.ErrorMessage
+	}
+
+	// Sincronizar tipos
+	if qt.Type == "" && qt.TaskType != "" {
+		qt.Type = qt.TaskType
+	} else if qt.TaskType == "" && qt.Type != "" {
+		qt.TaskType = qt.Type
+	}
+
+	// Sincronizar resultados
+	if qt.Results == nil && qt.Result != nil {
+		qt.Results = qt.Result
+	} else if qt.Result == nil && qt.Results != nil {
+		qt.Result = qt.Results
 	}
 }
