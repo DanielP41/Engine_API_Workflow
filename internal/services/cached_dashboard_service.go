@@ -411,10 +411,20 @@ func (s *cachedDashboardService) computeDashboardSummary(ctx context.Context, fi
 		ch <- result{queueLength: length, err: err}
 	}()
 
-	// Recopilar resultados
+	// CORREGIDO: Usar solo los campos que existen en models.DashboardSummary
 	summary := &models.DashboardSummary{
-		SystemStatus: "healthy",
-		LastUpdate:   time.Now(),
+		TotalWorkflows:       0,
+		ActiveWorkflows:      0,
+		TotalExecutions:      0,
+		SuccessfulRuns:       0,
+		FailedRuns:          0,
+		SuccessRate:         0.0,
+		AverageExecutionTime: 0.0,
+		QueueLength:         0,           // CORRECTO: usar QueueLength
+		ProcessingTasks:     0,
+		LastUpdated:        time.Now(),   // CORRECTO: usar LastUpdated
+		// ELIMINADO: SystemStatus (no existe en el struct)
+		// ELIMINADO: LastUpdate (debe ser LastUpdated)
 	}
 
 	for i := 0; i < 4; i++ {
@@ -431,7 +441,7 @@ func (s *cachedDashboardService) computeDashboardSummary(ctx context.Context, fi
 			summary.ActiveWorkflows = int(res.activeWorkflows)
 		}
 		if res.queueLength >= 0 {
-			summary.CurrentQueueLength = int(res.queueLength)
+			summary.QueueLength = res.queueLength  // CORREGIDO: usar QueueLength
 		}
 	}
 
@@ -439,15 +449,21 @@ func (s *cachedDashboardService) computeDashboardSummary(ctx context.Context, fi
 }
 
 func (s *cachedDashboardService) computeSystemHealth(ctx context.Context) (*models.SystemHealth, error) {
+	// CORREGIDO: Usar solo los campos que existen en models.SystemHealth
 	health := &models.SystemHealth{
-		Status:      "healthy",
-		LastHealthy: time.Now(),
-		Version:     "1.0.0",
+		Status:     "healthy",
+		Score:      100,
+		Components: []models.ComponentHealth{},
+		Issues:     []models.HealthIssue{},
+		LastCheck:  time.Now(),    // CORRECTO: usar LastCheck
+		// ELIMINADO: LastHealthy (no existe en SystemHealth)
+		// ELIMINADO: Version (no existe en SystemHealth)
 	}
 
 	// Verificar MongoDB
 	if _, err := s.workflowRepo.Count(ctx); err != nil {
 		health.Status = "critical"
+		health.Score = 30
 		s.logger.Error("MongoDB health check failed", zap.Error(err))
 	}
 
@@ -455,6 +471,7 @@ func (s *cachedDashboardService) computeSystemHealth(ctx context.Context) (*mode
 	if err := s.queueRepo.Ping(ctx); err != nil {
 		if health.Status == "healthy" {
 			health.Status = "warning"
+			health.Score = 70
 		}
 		s.logger.Error("Queue health check failed", zap.Error(err))
 	}
@@ -512,18 +529,20 @@ func (s *cachedDashboardService) computeQuickStats(ctx context.Context) (*models
 
 		switch res.name {
 		case "workflows":
-			stats.TotalWorkflows = int(res.value)
+			stats.ActiveWorkflows = res.value  // CORREGIDO: usar ActiveWorkflows
 		case "users":
-			stats.TotalUsers = int(res.value)
+			// No hay campo TotalUsers en QuickStats, usar otro campo o eliminar
+			continue
 		case "queue":
-			stats.QueueLength = int(res.value)
+			stats.QueuedTasks = res.value
 		case "processing":
-			stats.RunningExecutions = int(res.value)
+			stats.RunningTasks = res.value
 		case "failed":
-			stats.ErrorsLast24h = int(res.value)
+			stats.FailedToday = res.value
 		}
 	}
 
+	stats.LastUpdated = time.Now()
 	return stats, nil
 }
 
@@ -546,11 +565,11 @@ func (s *cachedDashboardService) computeRecentActivity(ctx context.Context, limi
 		activity := models.ActivityItem{
 			ID:           log.ID.Hex(),
 			Type:         "workflow_execution",
+			Title:        fmt.Sprintf("Workflow %s executed", log.WorkflowName),
+			Description:  fmt.Sprintf("Status: %s", log.Status),
 			WorkflowName: log.WorkflowName,
-			UserID:       log.UserID.Hex(),
-			Message:      fmt.Sprintf("Workflow %s executed", log.WorkflowName),
-			Timestamp:    log.CreatedAt,
 			Status:       string(log.Status),
+			Timestamp:    log.CreatedAt,
 			Metadata: map[string]interface{}{
 				"workflow_id":  log.WorkflowID.Hex(),
 				"trigger_type": log.TriggerType,
@@ -593,7 +612,6 @@ func (s *cachedDashboardService) computeWorkflowStatus(ctx context.Context, limi
 	return items, nil
 }
 
-// ✅ FUNCIÓN CORREGIDA - Esta es la clave que soluciona los errores
 func (s *cachedDashboardService) computeQueueStatus(ctx context.Context) (*models.QueueStatus, error) {
 	status := &models.QueueStatus{
 		Timestamp: time.Now(),
@@ -657,7 +675,7 @@ func (s *cachedDashboardService) computeQueueStatus(ctx context.Context) (*model
 		status.Health = "healthy"
 	}
 
-	// ✅ AGREGADO: Mantener compatibilidad con campos alternativos (ESTO FALTABA)
+	// Mantener compatibilidad con campos alternativos
 	status.Pending = int(status.QueuedTasks)
 	status.Processing = int(status.ProcessingTasks)
 	status.Failed = int(status.FailedTasks)

@@ -1,6 +1,7 @@
 package models
 
 import (
+	"fmt"   
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -334,4 +335,70 @@ type HourlyStats struct {
 	Failed      int64   `json:"failed"`
 	AvgDuration float64 `json:"avg_duration"` // milliseconds
 	SuccessRate float64 `json:"success_rate"` // percentage
+}
+
+// ===============================================
+// 🆕 MODELOS FALTANTES - AGREGADOS
+// ===============================================
+
+// WeeklyStats estadísticas por semana
+type WeeklyStats struct {
+	Week            string  `json:"week" bson:"week"`                         // Formato "2024-W01"
+	ExecutionCount  int     `json:"execution_count" bson:"execution_count"`   // Número de ejecuciones
+	SuccessRate     float64 `json:"success_rate" bson:"success_rate"`         // Porcentaje de éxito
+	AverageTime     float64 `json:"average_time" bson:"average_time"`         // Tiempo promedio en ms
+	ActiveWorkflows int     `json:"active_workflows" bson:"active_workflows"` // Workflows activos
+}
+
+// ResourceUsage uso de recursos del sistema
+type ResourceUsage struct {
+	Timestamp         time.Time `json:"timestamp" bson:"timestamp"`                     // Timestamp del punto de datos
+	CPUPercent        float64   `json:"cpu_percent" bson:"cpu_percent"`                 // Porcentaje de uso de CPU
+	MemoryPercent     float64   `json:"memory_percent" bson:"memory_percent"`           // Porcentaje de uso de memoria
+	MemoryUsedMB      float64   `json:"memory_used_mb" bson:"memory_used_mb"`           // Memoria usada en MB
+	DiskUsedPercent   float64   `json:"disk_used_percent" bson:"disk_used_percent"`     // Porcentaje de uso de disco
+	ActiveConnections int       `json:"active_connections" bson:"active_connections"`   // Conexiones activas
+}
+
+// ===============================================
+// MÉTODOS HELPER PARA LOS NUEVOS MODELOS
+// ===============================================
+
+// GetWeekNumber extrae el número de semana de la cadena Week
+func (ws *WeeklyStats) GetWeekNumber() int {
+	// Extraer número de semana de formato "2024-W01"
+	if len(ws.Week) >= 6 && ws.Week[4:6] == "-W" {
+		weekNum := 0
+		fmt.Sscanf(ws.Week[6:], "%d", &weekNum)
+		return weekNum
+	}
+	return 0
+}
+
+// GetYear extrae el año de la cadena Week
+func (ws *WeeklyStats) GetYear() int {
+	// Extraer año de formato "2024-W01"
+	if len(ws.Week) >= 4 {
+		year := 0
+		fmt.Sscanf(ws.Week[:4], "%d", &year)
+		return year
+	}
+	return 0
+}
+
+// IsHighLoad determina si el uso de recursos es alto
+func (ru *ResourceUsage) IsHighLoad() bool {
+	return ru.CPUPercent > 80.0 || ru.MemoryPercent > 85.0 || ru.DiskUsedPercent > 90.0
+}
+
+// GetLoadLevel retorna el nivel de carga del sistema
+func (ru *ResourceUsage) GetLoadLevel() string {
+	if ru.CPUPercent > 90.0 || ru.MemoryPercent > 95.0 || ru.DiskUsedPercent > 95.0 {
+		return "critical"
+	} else if ru.CPUPercent > 80.0 || ru.MemoryPercent > 85.0 || ru.DiskUsedPercent > 90.0 {
+		return "high"
+	} else if ru.CPUPercent > 60.0 || ru.MemoryPercent > 70.0 || ru.DiskUsedPercent > 80.0 {
+		return "medium"
+	}
+	return "low"
 }

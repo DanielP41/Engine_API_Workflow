@@ -157,14 +157,14 @@ func (s *dashboardServiceImpl) GetWorkflowStatus(ctx context.Context, limit int)
 			Name:           workflow.Name,
 			Status:         string(workflow.Status),
 			IsActive:       workflow.Status == models.WorkflowStatusActive,
-			LastExecution:  workflow.Stats.LastExecutedAt,
-			SuccessRate:    s.calculateSuccessRate(&workflow.Stats),
-			TotalRuns:      workflow.Stats.TotalRuns,
-			SuccessfulRuns: workflow.Stats.SuccessfulRuns,
-			FailedRuns:     workflow.Stats.FailedRuns,
-			AvgRunTime:     workflow.Stats.AverageExecutionTime,
-			Healthy:        s.determineWorkflowHealth(&workflow.Stats),
-			TriggerType:    string(workflow.TriggerType),
+			LastExecution:  s.getLastExecutionFromStats(workflow.Stats),
+			SuccessRate:    s.calculateSuccessRateFromStats(workflow.Stats),
+			TotalRuns:      s.getTotalExecutionsFromStats(workflow.Stats),      // CORREGIDO: usar TotalExecutions
+			SuccessfulRuns: s.getSuccessfulExecutionsFromStats(workflow.Stats), // CORREGIDO: método helper
+			FailedRuns:     s.getFailedExecutionsFromStats(workflow.Stats),     // CORREGIDO: método helper
+			AvgRunTime:     s.getAverageExecutionTimeFromStats(workflow.Stats), // CORREGIDO: método helper
+			Healthy:        s.determineWorkflowHealthFromStats(workflow.Stats), // CORREGIDO: método helper
+			TriggerType:    s.getTriggerTypeFromWorkflow(workflow),             // CORREGIDO: método helper
 			Tags:           workflow.Tags,
 		}
 		items = append(items, item)
@@ -173,7 +173,7 @@ func (s *dashboardServiceImpl) GetWorkflowStatus(ctx context.Context, limit int)
 	return items, nil
 }
 
-// GetQueueStatus obtiene estado de las colas - FUNCIÓN CORREGIDA
+// GetQueueStatus obtiene estado de las colas
 func (s *dashboardServiceImpl) GetQueueStatus(ctx context.Context) (*models.QueueStatus, error) {
 	s.logger.Info("Getting queue status")
 
@@ -192,14 +192,13 @@ func (s *dashboardServiceImpl) GetQueueStatus(ctx context.Context) (*models.Queu
 		health = "healthy"
 	}
 
-	// ✅ CORREGIDO: Usar los campos correctos del struct QueueStatus
 	status := &models.QueueStatus{
-		QueuedTasks:     queuedTasks,     // ✅ Campo corregido
-		ProcessingTasks: processingTasks, // ✅ Campo corregido
-		FailedTasks:     failedTasks,     // ✅ Campo corregido
-		RetryingTasks:   retryingTasks,   // ✅ Campo corregido
-		Health:          health,          // ✅ Campo corregido
-		Timestamp:       time.Now(),      // ✅ Campo corregido
+		QueuedTasks:     queuedTasks,
+		ProcessingTasks: processingTasks,
+		FailedTasks:     failedTasks,
+		RetryingTasks:   retryingTasks,
+		Health:          health,
+		Timestamp:       time.Now(),
 
 		// Mantener compatibilidad con campos alternativos
 		Pending:     int(queuedTasks),
@@ -442,16 +441,71 @@ func (s *dashboardServiceImpl) ValidateFilter(filter *models.DashboardFilter) er
 	return nil
 }
 
-// Métodos auxiliares
+// MÉTODOS AUXILIARES CORREGIDOS
 
-func (s *dashboardServiceImpl) calculateSuccessRate(stats *models.WorkflowStats) float64 {
-	if stats.TotalExecutions == 0 {
+// Helper methods para manejar WorkflowStats con nil safety
+func (s *dashboardServiceImpl) getLastExecutionFromStats(stats *models.WorkflowStats) *time.Time {
+	if stats == nil {
+		return nil
+	}
+	return stats.LastExecutedAt
+}
+
+func (s *dashboardServiceImpl) calculateSuccessRateFromStats(stats *models.WorkflowStats) float64 {
+	if stats == nil || stats.TotalExecutions == 0 {
 		return 100.0
 	}
 	return (float64(stats.SuccessfulRuns) / float64(stats.TotalExecutions)) * 100
 }
 
-func (s *dashboardServiceImpl) determineWorkflowHealth(stats *models.WorkflowStats) bool {
-	successRate := s.calculateSuccessRate(stats)
+func (s *dashboardServiceImpl) getTotalExecutionsFromStats(stats *models.WorkflowStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.TotalExecutions // CORREGIDO: usar TotalExecutions en lugar de TotalRuns
+}
+
+func (s *dashboardServiceImpl) getSuccessfulExecutionsFromStats(stats *models.WorkflowStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.SuccessfulRuns
+}
+
+func (s *dashboardServiceImpl) getFailedExecutionsFromStats(stats *models.WorkflowStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.FailedRuns
+}
+
+func (s *dashboardServiceImpl) getAverageExecutionTimeFromStats(stats *models.WorkflowStats) float64 {
+	if stats == nil {
+		return 0.0
+	}
+	return stats.AverageExecutionTime
+}
+
+func (s *dashboardServiceImpl) determineWorkflowHealthFromStats(stats *models.WorkflowStats) bool {
+	if stats == nil || stats.TotalExecutions == 0 {
+		return true
+	}
+	successRate := (float64(stats.SuccessfulRuns) / float64(stats.TotalExecutions)) * 100
 	return successRate >= 90.0
+}
+
+func (s *dashboardServiceImpl) getTriggerTypeFromWorkflow(workflow *models.Workflow) string {
+	if len(workflow.Triggers) > 0 {
+		return workflow.Triggers[0].Type
+	}
+	return "manual"
+}
+
+// Métodos auxiliares originales mantenidos para compatibilidad
+func (s *dashboardServiceImpl) calculateSuccessRate(stats *models.WorkflowStats) float64 {
+	return s.calculateSuccessRateFromStats(stats)
+}
+
+func (s *dashboardServiceImpl) determineWorkflowHealth(stats *models.WorkflowStats) bool {
+	return s.determineWorkflowHealthFromStats(stats)
 }

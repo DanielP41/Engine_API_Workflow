@@ -276,13 +276,13 @@ func (r *metricsRepository) GetWorkflowDistribution(ctx context.Context, timeRan
 
 		workflowName := getStringFromBSON(result, "workflow_name")
 
-		// CORREGIDO: Usar solo los campos que existen en models.WorkflowCount
+		
 		distribution = append(distribution, models.WorkflowCount{
 			WorkflowID:   workflowID,
 			WorkflowName: workflowName,
-			Count:        count,        // CORREGIDO: usar int64 directamente
+			Count:        count,      
 			Percentage:   percentage,
-			// ELIMINADO: SuccessRate (no existe en el struct)
+			
 		})
 	}
 
@@ -338,10 +338,10 @@ func (r *metricsRepository) GetTriggerDistribution(ctx context.Context, timeRang
 
 		triggerType := getStringFromBSON(result, "_id")
 
-		// CORREGIDO: Usar solo los campos que existen en models.TriggerCount
+		
 		distribution = append(distribution, models.TriggerCount{
 			TriggerType: triggerType,
-			Count:       count,        // CORREGIDO: usar int64 directamente
+			Count:       count,      
 			Percentage:  percentage,
 		})
 	}
@@ -414,14 +414,14 @@ func (r *metricsRepository) GetErrorDistribution(ctx context.Context, timeRange 
 		// Determinar tipo del error
 		errorType := categorizeError(errorMessage)
 
-		// CORREGIDO: Usar solo los campos que existen en models.ErrorCount
+		
 		distribution = append(distribution, models.ErrorCount{
 			ErrorType:  errorType,
 			ErrorCode:  "", // Campo opcional
-			Count:      count,          // CORREGIDO: usar int64 directamente
+			Count:      count,        
 			Percentage: percentage,
-			LastSeen:   lastOccurred,   // CORREGIDO: usar LastSeen en lugar de LastOccurred
-			// ELIMINADO: Severity (no existe en el struct)
+			LastSeen:   lastOccurred, 
+			
 		})
 	}
 
@@ -493,15 +493,15 @@ func (r *metricsRepository) GetHourlyStats(ctx context.Context, timeRange time.D
 			successRate = (float64(successCount) / float64(executionCount)) * 100
 		}
 
-		// CORREGIDO: Usar los campos correctos que existen en models.HourlyStats
+		
 		stats = append(stats, models.HourlyStats{
 			Hour:        hour,
-			Date:        startTime.Format("2006-01-02"), // CORREGIDO: agregar fecha
-			Executions:  executionCount,                 // CORREGIDO: usar Executions
-			Successful:  successCount,                   // CORREGIDO: usar Successful
-			Failed:      failureCount,                   // CORREGIDO: usar Failed
-			AvgDuration: avgTime,                        // CORREGIDO: usar AvgDuration
-			SuccessRate: successRate,                    // CORREGIDO: calcular y usar SuccessRate
+			Date:        startTime.Format("2006-01-02"), 
+			Executions:  executionCount,                 
+			Successful:  successCount,                   
+			Failed:      failureCount,                   
+			AvgDuration: avgTime,                        
+			SuccessRate: successRate,                    
 		})
 	}
 

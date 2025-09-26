@@ -68,13 +68,13 @@ func (s *cachedWorkflowService) Create(ctx context.Context, req *models.CreateWo
 	// Precargar el workflow recién creado en caché
 	go func() {
 		ctx := context.Background()
-		key := cache.WorkflowKeys.BuildWithID(response.ID, "config")
+		key := cache.WorkflowKeys.BuildWithID(response.ID.Hex(), "config") // CORREGIDO: .Hex()
 		if err := s.cacheManager.Set(ctx, key, response, s.workflowTTL); err != nil {
-			s.logger.Warn("Failed to cache new workflow", zap.String("workflow_id", response.ID), zap.Error(err))
+			s.logger.Warn("Failed to cache new workflow", zap.String("workflow_id", response.ID.Hex()), zap.Error(err)) // CORREGIDO: .Hex()
 		}
 	}()
 
-	s.logger.Info("Workflow created and cached", zap.String("workflow_id", response.ID))
+	s.logger.Info("Workflow created and cached", zap.String("workflow_id", response.ID.Hex())) // CORREGIDO: .Hex()
 	return response, nil
 }
 
@@ -197,15 +197,15 @@ func (s *cachedWorkflowService) Clone(ctx context.Context, workflowID primitive.
 	// Precargar workflow clonado en caché
 	go func() {
 		ctx := context.Background()
-		key := cache.WorkflowKeys.BuildWithID(response.ID, "config")
+		key := cache.WorkflowKeys.BuildWithID(response.ID.Hex(), "config") // CORREGIDO: .Hex()
 		if err := s.cacheManager.Set(ctx, key, response, s.workflowTTL); err != nil {
-			s.logger.Warn("Failed to cache cloned workflow", zap.String("workflow_id", response.ID), zap.Error(err))
+			s.logger.Warn("Failed to cache cloned workflow", zap.String("workflow_id", response.ID.Hex()), zap.Error(err)) // CORREGIDO: .Hex()
 		}
 	}()
 
 	s.logger.Info("Workflow cloned and cached",
 		zap.String("original_id", workflowID.Hex()),
-		zap.String("cloned_id", response.ID))
+		zap.String("cloned_id", response.ID.Hex())) // CORREGIDO: .Hex()
 	return response, nil
 }
 
@@ -299,9 +299,10 @@ func (s *cachedWorkflowService) buildSearchCacheKey(filters repository.WorkflowS
 	if filters.Tags != nil && len(filters.Tags) > 0 {
 		parts = append(parts, fmt.Sprintf("tags_%x", hashSlice(filters.Tags)))
 	}
-	if filters.Category != nil && *filters.Category != "" {
-		parts = append(parts, fmt.Sprintf("cat_%s", *filters.Category))
-	}
+	// ELIMINADO: filters.Category no existe en WorkflowSearchFilters
+	// if filters.Category != nil && *filters.Category != "" {
+	//     parts = append(parts, fmt.Sprintf("cat_%s", *filters.Category))
+	// }
 
 	// Agregar paginación
 	parts = append(parts, s.buildPaginationKey(opts))
