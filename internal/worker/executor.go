@@ -23,6 +23,7 @@ type WorkflowExecutor struct {
 	slackExecutor     *SlackActionExecutor
 	webhookExecutor   *WebhookActionExecutor
 	transformExecutor *TransformActionExecutor // 🆕 NUEVO EJECUTOR
+	databaseExecutor  *DatabaseActionExecutor  // 🔧 AGREGADO - CAMPO FALTANTE
 }
 
 // ExecutionContext contexto de ejecución del workflow
@@ -86,6 +87,12 @@ func (e *WorkflowExecutor) SetActionExecutors(
 func (e *WorkflowExecutor) SetTransformExecutor(transformExec *TransformActionExecutor) {
 	e.transformExecutor = transformExec
 	e.logger.Info("Transform executor configured", zap.Bool("transform_enabled", transformExec != nil))
+}
+
+// 🔧 NUEVO MÉTODO AGREGADO: Configurar DatabaseActionExecutor
+func (e *WorkflowExecutor) SetDatabaseExecutor(databaseExec *DatabaseActionExecutor) {
+	e.databaseExecutor = databaseExec
+	e.logger.Info("Database executor configured", zap.Bool("database_enabled", databaseExec != nil))
 }
 
 // Execute compatible con la interfaz del worker engine
