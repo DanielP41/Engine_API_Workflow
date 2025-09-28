@@ -44,7 +44,7 @@ type Worker struct {
 	stopCh   chan struct{}
 	isActive bool
 	mutex    sync.RWMutex
-	stats    WorkerStats
+	stats    PoolWorkerStats // CORREGIDO: usar PoolWorkerStats
 	logger   *zap.Logger
 
 	// Funcionalidades avanzadas
@@ -54,17 +54,17 @@ type Worker struct {
 	taskTimeout   time.Duration
 }
 
-// WorkerStats estadísticas de un worker
-type WorkerStats struct {
-	TasksProcessed  int64
-	TasksSucceeded  int64
-	TasksFailed     int64
+// PoolWorkerStats estadísticas de un worker del pool - CORREGIDO: renombrado para evitar conflicto
+type PoolWorkerStats struct {
+	TasksProcessed  int64 // CORREGIDO: campo requerido
+	TasksSucceeded  int64 // CORREGIDO: campo requerido
+	TasksFailed     int64 // CORREGIDO: campo requerido
 	LastTaskTime    time.Time
-	TotalRunTime    time.Duration
-	IsIdle          bool
+	TotalRunTime    time.Duration // CORREGIDO: campo requerido
+	IsIdle          bool          // CORREGIDO: campo requerido
 	AverageTaskTime time.Duration
 	TasksPerSecond  float64
-	ErrorRate       float64
+	ErrorRate       float64 // CORREGIDO: campo requerido
 	LastErrorTime   time.Time
 	LastError       string
 }
@@ -245,7 +245,7 @@ func (p *WorkerPool) createWorker(id int) error {
 		tasksCh:       make(chan *models.QueueTask, p.config.TaskChannelSize),
 		stopCh:        make(chan struct{}),
 		logger:        p.logger.With(zap.Int("worker_id", id)),
-		stats:         WorkerStats{IsIdle: true},
+		stats:         PoolWorkerStats{IsIdle: true}, // CORREGIDO: usar PoolWorkerStats
 		startTime:     time.Now(),
 		lastHeartbeat: time.Now(),
 		isHealthy:     true,

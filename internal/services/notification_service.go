@@ -617,12 +617,11 @@ func (s *NotificationService) GetServiceStats() *ServiceStats {
 
 // TestEmailConfiguration prueba la configuración de email
 func (s *NotificationService) TestEmailConfiguration(ctx context.Context) error {
-	// Crear mensaje de prueba - CORREGIDO: usar From en lugar de FromEmail
+	// Crear mensaje de prueba - CORREGIDO: usar SMTP.DefaultFrom.Email y TextBody
 	testMessage := &email.Message{
-		To:      []email.Address{{Email: s.config.From}}, // CORREGIDO: era s.config.FromEmail
-		Subject: "Test Email Configuration",
-		Content: "This is a test email to verify the SMTP configuration is working correctly.", // CORREGIDO: era Body
-		// CORREGIDO: Eliminar IsHTML ya que no existe en el modelo
+		To:       []email.Address{{Email: s.config.SMTP.DefaultFrom.Email}}, // CORREGIDO
+		Subject:  "Test Email Configuration",
+		TextBody: "This is a test email to verify the SMTP configuration is working correctly.", // CORREGIDO
 	}
 
 	return s.emailService.Send(ctx, testMessage)
@@ -711,14 +710,19 @@ func (s *NotificationService) sendNotificationNow(ctx context.Context, notificat
 		return fmt.Errorf("failed to update status to processing: %w", err)
 	}
 
-	// Crear mensaje de email - CORREGIDO: usar Content en lugar de Body, quitar IsHTML
+	// Crear mensaje de email - CORREGIDO: usar TextBody/HTMLBody según el tipo
 	emailMessage := &email.Message{
 		To:      s.convertStringSliceToAddresses(notification.To),
 		CC:      s.convertStringSliceToAddresses(notification.CC),
 		BCC:     s.convertStringSliceToAddresses(notification.BCC),
 		Subject: notification.Subject,
-		Content: notification.Body, // CORREGIDO: era Body
-		// CORREGIDO: Eliminar IsHTML ya que no existe en el modelo
+	}
+
+	// Configurar contenido según el tipo - CORREGIDO
+	if notification.IsHTML {
+		emailMessage.HTMLBody = notification.Body
+	} else {
+		emailMessage.TextBody = notification.Body
 	}
 
 	// Configurar prioridad
@@ -748,10 +752,10 @@ func (s *NotificationService) sendNotificationNow(ctx context.Context, notificat
 			zap.Error(err))
 	}
 
-	// Actualizar estadísticas
+	// Actualizar estadísticas - CORREGIDO: statsMux en lugar de statsMutex
 	s.statsMux.Lock()
 	s.stats.EmailsSentToday++
-	s.statsMutex.Unlock()
+	s.statsMux.Unlock()
 
 	s.logger.Info("Notification sent successfully",
 		zap.String("id", notification.ID.Hex()),
