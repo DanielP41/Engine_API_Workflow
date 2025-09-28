@@ -328,11 +328,13 @@ func (s *logService) generateHourlyStats() []models.HourlyStats {
 
 	for i := 0; i < 24; i++ {
 		hourlyStats[i] = models.HourlyStats{
-			Hour:           i,
-			ExecutionCount: 0, // En producción, calcular desde la base de datos
-			SuccessCount:   0,
-			FailureCount:   0,
-			AverageTime:    0.0,
+			Hour:        i,
+			Date:        time.Now().Format("2006-01-02"), // CORREGIDO: Agregado campo Date requerido
+			Executions:  0,                               // CORREGIDO: era ExecutionCount
+			Successful:  0,                               // CORREGIDO: era SuccessCount
+			Failed:      0,                               // CORREGIDO: era FailureCount
+			AvgDuration: 0.0,                             // CORREGIDO: era AverageTime
+			SuccessRate: 0.0,                             // CORREGIDO: Agregado campo SuccessRate requerido
 		}
 	}
 

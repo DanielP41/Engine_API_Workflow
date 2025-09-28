@@ -172,16 +172,12 @@ func (s *metricsService) GetWorkflowDistribution(ctx context.Context, timeRange 
 		}
 
 		if stats.TotalExecutions > 0 {
-			var successRate float64
-			if stats.TotalExecutions > 0 {
-				successRate = (float64(stats.SuccessfulRuns) / float64(stats.TotalExecutions)) * 100
-			}
-
 			distribution = append(distribution, models.WorkflowCount{
 				WorkflowID:   workflow.ID.Hex(),
 				WorkflowName: workflow.Name,
-				Count:        int(stats.TotalExecutions),
-				SuccessRate:  successRate,
+				Count:        stats.TotalExecutions, // CORREGIDO: quitar int() conversión
+				Percentage:   0,                     // Se calculará después
+				// CORREGIDO: Eliminar SuccessRate ya que no existe en el modelo WorkflowCount
 			})
 
 			totalExecutions += stats.TotalExecutions
@@ -252,28 +248,28 @@ func (s *metricsService) GetErrorDistribution(ctx context.Context, timeRange tim
 	// Implementación básica - en el futuro esto debería analizar logs reales
 	distribution := []models.ErrorCount{
 		{
-			ErrorType:    "timeout",
-			ErrorMessage: "Execution timeout",
-			Count:        15,
-			Percentage:   50.0,
-			LastOccurred: time.Now().Add(-2 * time.Hour),
-			Severity:     "warning",
+			ErrorType:  "timeout",
+			ErrorCode:  "TIMEOUT_ERROR",                                // CORREGIDO: era ErrorMessage
+			Count:      15,
+			Percentage: 50.0,
+			LastSeen:   timePtr(time.Now().Add(-2 * time.Hour)),        // CORREGIDO: era LastOccurred
+			// CORREGIDO: Eliminar Severity ya que no existe en el modelo
 		},
 		{
-			ErrorType:    "validation",
-			ErrorMessage: "Invalid input data",
-			Count:        10,
-			Percentage:   33.3,
-			LastOccurred: time.Now().Add(-1 * time.Hour),
-			Severity:     "warning",
+			ErrorType:  "validation",
+			ErrorCode:  "VALIDATION_ERROR",                             // CORREGIDO: era ErrorMessage
+			Count:      10,
+			Percentage: 33.3,
+			LastSeen:   timePtr(time.Now().Add(-1 * time.Hour)),        // CORREGIDO: era LastOccurred
+			// CORREGIDO: Eliminar Severity ya que no existe en el modelo
 		},
 		{
-			ErrorType:    "system",
-			ErrorMessage: "Internal server error",
-			Count:        5,
-			Percentage:   16.7,
-			LastOccurred: time.Now().Add(-30 * time.Minute),
-			Severity:     "critical",
+			ErrorType:  "system",
+			ErrorCode:  "INTERNAL_ERROR",                               // CORREGIDO: era ErrorMessage
+			Count:      5,
+			Percentage: 16.7,
+			LastSeen:   timePtr(time.Now().Add(-30 * time.Minute)),     // CORREGIDO: era LastOccurred
+			// CORREGIDO: Eliminar Severity ya que no existe en el modelo
 		},
 	}
 
@@ -293,17 +289,18 @@ func (s *metricsService) GetHourlyStats(ctx context.Context, timeRange time.Dura
 		hour := time.Now().Add(-time.Duration(hours-i) * time.Hour).Hour()
 
 		// Datos simulados - en el futuro esto debería consultar datos reales
-		executionCount := 10 + i%8
-		successCount := int(float64(executionCount) * 0.9)
+		executionCount := int64(10 + i%8)                               // CORREGIDO: convertir a int64
+		successCount := int64(float64(executionCount) * 0.9)            // CORREGIDO: convertir a int64
 		failureCount := executionCount - successCount
 
 		stats = append(stats, models.HourlyStats{
-			Hour:           hour,
-			ExecutionCount: executionCount,
-			SuccessCount:   successCount,
-			FailureCount:   failureCount,
-			AverageTime:    1000.0 + float64(i*50),  // ms
-			PeakTime:       2000.0 + float64(i*100), // ms
+			Hour:        hour,
+			Date:        time.Now().Format("2006-01-02"),               // CORREGIDO: Agregar campo Date requerido
+			Executions:  executionCount,                                // CORREGIDO: era ExecutionCount
+			Successful:  successCount,                                  // CORREGIDO: era SuccessCount
+			Failed:      failureCount,                                  // CORREGIDO: era FailureCount
+			AvgDuration: 1000.0 + float64(i*50),                       // CORREGIDO: era AverageTime
+			SuccessRate: (float64(successCount) / float64(executionCount)) * 100, // CORREGIDO: Agregar campo requerido
 		})
 	}
 
@@ -422,4 +419,9 @@ func (s *metricsService) calculateIntervals(timeRange time.Duration) int {
 	} else {
 		return 30 // 1 día cada punto para 30 días
 	}
+}
+
+// timePtr función auxiliar para crear punteros a time.Time
+func timePtr(t time.Time) *time.Time {
+	return &t
 }

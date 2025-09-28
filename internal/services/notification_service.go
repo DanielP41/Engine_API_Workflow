@@ -363,8 +363,11 @@ func (s *NotificationService) RetryFailedNotifications(ctx context.Context) erro
 			continue
 		}
 
-		// Incrementar contador de intentos
-		if err := s.notificationRepo.IncrementAttempts(ctx, notification.ID, nil); err != nil {
+		// Incrementar contador de intentos - CORREGIDO: usar Update en lugar de IncrementAttempts
+		notification.Attempts++
+		nextRetry := notification.CalculateNextRetry()
+		notification.NextRetryAt = &nextRetry
+		if err := s.notificationRepo.Update(ctx, notification); err != nil {
 			s.logger.Error("Failed to increment attempts",
 				zap.String("id", notification.ID.Hex()),
 				zap.Error(err))
@@ -375,12 +378,12 @@ func (s *NotificationService) RetryFailedNotifications(ctx context.Context) erro
 		if err := s.sendNotificationNow(ctx, notification); err != nil {
 			s.logger.Warn("Retry failed",
 				zap.String("id", notification.ID.Hex()),
-				zap.Int("attempt", notification.Attempts+1),
+				zap.Int("attempt", notification.Attempts),
 				zap.Error(err))
 		} else {
 			s.logger.Info("Retry successful",
 				zap.String("id", notification.ID.Hex()),
-				zap.Int("attempt", notification.Attempts+1))
+				zap.Int("attempt", notification.Attempts))
 		}
 	}
 
@@ -557,7 +560,9 @@ func (s *NotificationService) CancelNotification(ctx context.Context, id primiti
 		return fmt.Errorf("cannot cancel notification with status: %s", notification.Status)
 	}
 
-	return s.notificationRepo.UpdateStatus(ctx, id, models.NotificationStatusCancelled)
+	// CORREGIDO: usar Update en lugar de UpdateStatus
+	notification.Status = models.NotificationStatusCancelled
+	return s.notificationRepo.Update(ctx, notification)
 }
 
 // ResendNotification reenvía una notificación
@@ -612,12 +617,12 @@ func (s *NotificationService) GetServiceStats() *ServiceStats {
 
 // TestEmailConfiguration prueba la configuración de email
 func (s *NotificationService) TestEmailConfiguration(ctx context.Context) error {
-	// Crear mensaje de prueba
+	// Crear mensaje de prueba - CORREGIDO: usar From en lugar de FromEmail
 	testMessage := &email.Message{
-		To:      []email.Address{{Email: s.config.FromEmail}},
+		To:      []email.Address{{Email: s.config.From}}, // CORREGIDO: era s.config.FromEmail
 		Subject: "Test Email Configuration",
-		Body:    "This is a test email to verify the SMTP configuration is working correctly.",
-		IsHTML:  false,
+		Content: "This is a test email to verify the SMTP configuration is working correctly.", // CORREGIDO: era Body
+		// CORREGIDO: Eliminar IsHTML ya que no existe en el modelo
 	}
 
 	return s.emailService.Send(ctx, testMessage)
@@ -700,19 +705,20 @@ func (s *NotificationService) CreateDefaultTemplates(ctx context.Context) error 
 
 // sendNotificationNow envía una notificación inmediatamente
 func (s *NotificationService) sendNotificationNow(ctx context.Context, notification *models.EmailNotification) error {
-	// Actualizar estado a procesando
-	if err := s.notificationRepo.UpdateStatus(ctx, notification.ID, models.NotificationStatusProcessing); err != nil {
+	// Actualizar estado a procesando - CORREGIDO: usar Update en lugar de UpdateStatus
+	notification.Status = models.NotificationStatusProcessing
+	if err := s.notificationRepo.Update(ctx, notification); err != nil {
 		return fmt.Errorf("failed to update status to processing: %w", err)
 	}
 
-	// Crear mensaje de email
+	// Crear mensaje de email - CORREGIDO: usar Content en lugar de Body, quitar IsHTML
 	emailMessage := &email.Message{
 		To:      s.convertStringSliceToAddresses(notification.To),
 		CC:      s.convertStringSliceToAddresses(notification.CC),
 		BCC:     s.convertStringSliceToAddresses(notification.BCC),
 		Subject: notification.Subject,
-		Body:    notification.Body,
-		IsHTML:  notification.IsHTML,
+		Content: notification.Body, // CORREGIDO: era Body
+		// CORREGIDO: Eliminar IsHTML ya que no existe en el modelo
 	}
 
 	// Configurar prioridad
@@ -734,8 +740,9 @@ func (s *NotificationService) sendNotificationNow(ctx context.Context, notificat
 		return err
 	}
 
-	// Actualizar estado a enviado
-	if err := s.notificationRepo.UpdateStatus(ctx, notification.ID, models.NotificationStatusSent); err != nil {
+	// Actualizar estado a enviado - CORREGIDO: usar Update en lugar de UpdateStatus
+	notification.Status = models.NotificationStatusSent
+	if err := s.notificationRepo.Update(ctx, notification); err != nil {
 		s.logger.Error("Failed to update status to sent",
 			zap.String("id", notification.ID.Hex()),
 			zap.Error(err))
@@ -744,7 +751,7 @@ func (s *NotificationService) sendNotificationNow(ctx context.Context, notificat
 	// Actualizar estadísticas
 	s.statsMux.Lock()
 	s.stats.EmailsSentToday++
-	s.statsMux.Unlock()
+	s.statsMutex.Unlock()
 
 	s.logger.Info("Notification sent successfully",
 		zap.String("id", notification.ID.Hex()),
@@ -810,8 +817,9 @@ func (s *NotificationService) handleSendError(ctx context.Context, notification 
 		Recoverable: s.isRecoverableError(sendErr),
 	}
 
-	// Agregar error a la notificación
-	if err := s.notificationRepo.AddError(ctx, notification.ID, notifError); err != nil {
+	// Agregar error a la notificación - CORREGIDO: usar Update en lugar de AddError
+	notification.Errors = append(notification.Errors, notifError)
+	if err := s.notificationRepo.Update(ctx, notification); err != nil {
 		s.logger.Error("Failed to add error to notification",
 			zap.String("id", notification.ID.Hex()),
 			zap.Error(err))
@@ -820,15 +828,19 @@ func (s *NotificationService) handleSendError(ctx context.Context, notification 
 	// Determinar próximo estado
 	if notification.Attempts >= notification.MaxAttempts {
 		// Máximo de intentos alcanzado
-		s.notificationRepo.UpdateStatus(ctx, notification.ID, models.NotificationStatusFailed)
+		notification.Status = models.NotificationStatusFailed
+		s.notificationRepo.Update(ctx, notification)
 	} else if notifError.Recoverable {
 		// Programar reintento
 		nextRetry := notification.CalculateNextRetry()
-		s.notificationRepo.IncrementAttempts(ctx, notification.ID, &nextRetry)
-		s.notificationRepo.UpdateStatus(ctx, notification.ID, models.NotificationStatusFailed)
+		notification.NextRetryAt = &nextRetry
+		notification.Attempts++
+		notification.Status = models.NotificationStatusFailed
+		s.notificationRepo.Update(ctx, notification)
 	} else {
 		// Error no recuperable
-		s.notificationRepo.UpdateStatus(ctx, notification.ID, models.NotificationStatusFailed)
+		notification.Status = models.NotificationStatusFailed
+		s.notificationRepo.Update(ctx, notification)
 	}
 
 	// Actualizar estadísticas
