@@ -96,7 +96,8 @@ func (h *DashboardHandler) GetDashboardSummary(c *fiber.Ctx) error {
 		return utils.HandleError(c, err)
 	}
 
-	summary, err := h.dashboardService.GetDashboardSummary(c.Context())
+	// CORREGIDO: Pasar nil como segundo parámetro
+	summary, err := h.dashboardService.GetDashboardSummary(c.Context(), nil)
 	if err != nil {
 		h.logger.Error("Failed to get dashboard summary", zap.Error(err), zap.String("user_id", userID.Hex()))
 		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get dashboard summary", nil)

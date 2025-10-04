@@ -177,6 +177,45 @@ func (cm *CacheManager) GetOrSet(ctx context.Context, key string, ttl time.Durat
 	return value, nil
 }
 
+// Ping verifica la conectividad del caché
+func (cm *CacheManager) Ping(ctx context.Context) error {
+	return cm.primary.Ping(ctx)
+}
+
+// GetKeys obtiene claves que coinciden con un patrón
+func (cm *CacheManager) GetKeys(ctx context.Context, pattern string) ([]string, error) {
+	return cm.primary.GetKeys(ctx, pattern)
+}
+
+// Clear limpia todo el caché
+func (cm *CacheManager) Clear(ctx context.Context) error {
+	cm.recordInvalidation()
+
+	// Limpiar caché primario
+	err := cm.primary.Clear(ctx)
+	if err != nil {
+		cm.logger.Error("Failed to clear primary cache", zap.Error(err))
+		return err
+	}
+
+	// Limpiar caché secundario si existe
+	if cm.secondary != nil {
+		go func() {
+			if secErr := cm.secondary.Clear(context.Background()); secErr != nil {
+				cm.logger.Warn("Failed to clear secondary cache", zap.Error(secErr))
+			}
+		}()
+	}
+
+	cm.logger.Info("Cache cleared successfully")
+	return nil
+}
+
+// GetTTL obtiene el tiempo de vida restante de una clave
+func (cm *CacheManager) GetTTL(ctx context.Context, key string) (time.Duration, error) {
+	return cm.primary.GetTTL(ctx, key)
+}
+
 // InvalidatePattern invalida todas las claves que coinciden con un patrón
 func (cm *CacheManager) InvalidatePattern(ctx context.Context, pattern string, reason string) error {
 	cm.recordInvalidation()

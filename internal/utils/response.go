@@ -98,6 +98,17 @@ func SuccessResponse(c *fiber.Ctx, statusCode int, message string, data interfac
 	return c.Status(statusCode).JSON(response)
 }
 
+// CreatedResponse crea una respuesta de recurso creado (201) - NUEVA FUNCIÓN AGREGADA
+func CreatedResponse(c *fiber.Ctx, message string, data interface{}) error {
+	response := DataResponse{
+		Success:   true,
+		Message:   message,
+		Data:      data,
+		Timestamp: time.Now(),
+	}
+	return c.Status(fiber.StatusCreated).JSON(response)
+}
+
 // ErrorResponse crea una respuesta de error (VERSIÓN COMPATIBLE CON HANDLERS)
 func ErrorResponse(c *fiber.Ctx, statusCode int, message string, details interface{}) error {
 	errorDetail := &ErrorDetail{
@@ -340,4 +351,44 @@ func NewErrorResponse(message string, code string) ErrorResponseStruct {
 		},
 		Timestamp: time.Now(),
 	}
+}
+
+//FUNCIONES PARA MIDDLEWARE (COMPATIBILIDAD)
+
+// SuccessResponse versión simple que retorna Response struct (para middleware)
+func SuccessResponseData(message string, data interface{}) DataResponse {
+	return DataResponse{
+		Success:   true,
+		Message:   message,
+		Data:      data,
+		Timestamp: time.Now(),
+	}
+}
+
+// ErrorResponse versión simple que retorna ErrorResponse struct (para middleware)
+func ErrorResponseData(message string, details interface{}) ErrorResponseStruct {
+	return ErrorResponseStruct{
+		Success: false,
+		Message: message,
+		Error: &ErrorDetail{
+			Code:    "ERROR",
+			Message: message,
+			Details: details,
+		},
+		Timestamp: time.Now(),
+	}
+}
+
+// GetCurrentUserRole extrae el rol del usuario del contexto de Fiber
+func GetCurrentUserRole(c *fiber.Ctx) (string, error) {
+	userRole := c.Locals("userRole")
+	if userRole == nil {
+		return "", errors.New("no user role in context")
+	}
+
+	if role, ok := userRole.(string); ok {
+		return role, nil
+	}
+
+	return "", errors.New("invalid user role format")
 }

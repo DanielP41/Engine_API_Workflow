@@ -34,6 +34,10 @@ type DashboardService interface {
 	GetDashboardMetrics(ctx context.Context, metrics []string, timeRange string) (map[string]interface{}, error)
 	GetPerformanceData(ctx context.Context, timeRange string) (*models.PerformanceData, error)
 
+	// NUEVOS MÉTODOS AGREGADOS
+	GetActiveAlerts(ctx context.Context) ([]models.Alert, error)
+	GetWorkflowHealth(ctx context.Context, workflowID string) (*models.WorkflowStatusItem, error)
+
 	// Operaciones de mantenimiento
 	RefreshDashboardData(ctx context.Context) error
 	ValidateFilter(filter *models.DashboardFilter) error
@@ -72,8 +76,6 @@ func NewDashboardService(
 func (s *dashboardServiceImpl) GetCompleteDashboard(ctx context.Context, filter *models.DashboardFilter) (*models.DashboardData, error) {
 	s.logger.Info("Getting complete dashboard data")
 
-	// Implementar lógica para obtener datos completos del dashboard
-	// Esta es una implementación básica
 	summary, err := s.GetDashboardSummary(ctx, filter)
 	if err != nil {
 		return nil, err
@@ -117,7 +119,7 @@ func (s *dashboardServiceImpl) GetCompleteDashboard(ctx context.Context, filter 
 		WorkflowStatus: workflowStatus,
 		QueueStatus:    queueStatus,
 		SystemHealth:   systemHealth,
-		Alerts:         []models.Alert{}, // Implementar alertas según necesidades
+		Alerts:         []models.Alert{},
 		LastUpdated:    time.Now(),
 	}, nil
 }
@@ -126,7 +128,6 @@ func (s *dashboardServiceImpl) GetCompleteDashboard(ctx context.Context, filter 
 func (s *dashboardServiceImpl) GetDashboardSummary(ctx context.Context, filter *models.DashboardFilter) (*models.DashboardSummary, error) {
 	s.logger.Info("Getting dashboard summary")
 
-	// Implementación básica - expandir según necesidades
 	totalWorkflows, _ := s.workflowRepo.Count(ctx)
 	activeWorkflows, _ := s.workflowRepo.CountActiveWorkflows(ctx)
 	queueLength, _ := s.queueRepo.GetQueueLength(ctx, "main")
@@ -159,12 +160,12 @@ func (s *dashboardServiceImpl) GetWorkflowStatus(ctx context.Context, limit int)
 			IsActive:       workflow.Status == models.WorkflowStatusActive,
 			LastExecution:  s.getLastExecutionFromStats(workflow.Stats),
 			SuccessRate:    s.calculateSuccessRateFromStats(workflow.Stats),
-			TotalRuns:      s.getTotalExecutionsFromStats(workflow.Stats),      // CORREGIDO: usar TotalExecutions
-			SuccessfulRuns: s.getSuccessfulExecutionsFromStats(workflow.Stats), // CORREGIDO: método helper
-			FailedRuns:     s.getFailedExecutionsFromStats(workflow.Stats),     // CORREGIDO: método helper
-			AvgRunTime:     s.getAverageExecutionTimeFromStats(workflow.Stats), // CORREGIDO: método helper
-			Healthy:        s.determineWorkflowHealthFromStats(workflow.Stats), // CORREGIDO: método helper
-			TriggerType:    s.getTriggerTypeFromWorkflow(workflow),             // CORREGIDO: método helper
+			TotalRuns:      s.getTotalExecutionsFromStats(workflow.Stats),
+			SuccessfulRuns: s.getSuccessfulExecutionsFromStats(workflow.Stats),
+			FailedRuns:     s.getFailedExecutionsFromStats(workflow.Stats),
+			AvgRunTime:     s.getAverageExecutionTimeFromStats(workflow.Stats),
+			Healthy:        s.determineWorkflowHealthFromStats(workflow.Stats),
+			TriggerType:    s.getTriggerTypeFromWorkflow(workflow),
 			Tags:           workflow.Tags,
 		}
 		items = append(items, item)
@@ -182,7 +183,6 @@ func (s *dashboardServiceImpl) GetQueueStatus(ctx context.Context) (*models.Queu
 	failedTasks, _ := s.queueRepo.GetFailedTasksCount(ctx)
 	retryingTasks, _ := s.queueRepo.GetRetryingTasksCount(ctx)
 
-	// Determinar estado de salud
 	var health string
 	if failedTasks > processingTasks*2 {
 		health = "unhealthy"
@@ -199,13 +199,11 @@ func (s *dashboardServiceImpl) GetQueueStatus(ctx context.Context) (*models.Queu
 		RetryingTasks:   retryingTasks,
 		Health:          health,
 		Timestamp:       time.Now(),
-
-		// Mantener compatibilidad con campos alternativos
-		Pending:     int(queuedTasks),
-		Processing:  int(processingTasks),
-		Failed:      int(failedTasks),
-		RetryJobs:   int(retryingTasks),
-		QueueHealth: health,
+		Pending:         int(queuedTasks),
+		Processing:      int(processingTasks),
+		Failed:          int(failedTasks),
+		RetryJobs:       int(retryingTasks),
+		QueueHealth:     health,
 	}
 
 	return status, nil
@@ -215,7 +213,6 @@ func (s *dashboardServiceImpl) GetQueueStatus(ctx context.Context) (*models.Queu
 func (s *dashboardServiceImpl) GetSystemMetrics(ctx context.Context, timeRange string) (*models.SystemMetrics, error) {
 	s.logger.Info("Getting system metrics", zap.String("time_range", timeRange))
 
-	// Implementación básica - expandir según necesidades
 	return &models.SystemMetrics{
 		CPU: models.CPUMetrics{
 			Usage:     45.2,
@@ -224,15 +221,15 @@ func (s *dashboardServiceImpl) GetSystemMetrics(ctx context.Context, timeRange s
 			LoadAvg15: 1.0,
 		},
 		Memory: models.MemoryMetrics{
-			Used:      2 * 1024 * 1024 * 1024, // 2GB
-			Total:     8 * 1024 * 1024 * 1024, // 8GB
-			Available: 6 * 1024 * 1024 * 1024, // 6GB
+			Used:      2 * 1024 * 1024 * 1024,
+			Total:     8 * 1024 * 1024 * 1024,
+			Available: 6 * 1024 * 1024 * 1024,
 			Usage:     25.0,
 		},
 		Disk: models.DiskMetrics{
-			Used:      50 * 1024 * 1024 * 1024,  // 50GB
-			Total:     500 * 1024 * 1024 * 1024, // 500GB
-			Available: 450 * 1024 * 1024 * 1024, // 450GB
+			Used:      50 * 1024 * 1024 * 1024,
+			Total:     500 * 1024 * 1024 * 1024,
+			Available: 450 * 1024 * 1024 * 1024,
 			Usage:     10.0,
 		},
 		Goroutines:  150,
@@ -283,8 +280,8 @@ func (s *dashboardServiceImpl) GetQuickStats(ctx context.Context) (*models.Quick
 		ActiveWorkflows:  totalWorkflows,
 		QueuedTasks:      queueLength,
 		RunningTasks:     processingTasks,
-		CompletedToday:   0, // Implementar según necesidades
-		FailedToday:      0, // Implementar según necesidades
+		CompletedToday:   0,
+		FailedToday:      0,
 		SuccessRateToday: 95.5,
 		AvgResponseTime:  2.3,
 		SystemLoad:       0.65,
@@ -296,7 +293,6 @@ func (s *dashboardServiceImpl) GetQuickStats(ctx context.Context) (*models.Quick
 func (s *dashboardServiceImpl) GetRecentActivity(ctx context.Context, limit int) ([]models.ActivityItem, error) {
 	s.logger.Info("Getting recent activity", zap.Int("limit", limit))
 
-	// Implementación básica usando logs
 	logs, _, err := s.logRepo.GetByWorkflowID(ctx, primitive.NilObjectID, repository.PaginationOptions{
 		Page:     1,
 		PageSize: limit,
@@ -333,7 +329,6 @@ func (s *dashboardServiceImpl) GetRecentActivity(ctx context.Context, limit int)
 func (s *dashboardServiceImpl) GetSystemHealth(ctx context.Context) (*models.SystemHealth, error) {
 	s.logger.Info("Getting system health")
 
-	// Implementación básica - expandir según necesidades
 	components := []models.ComponentHealth{
 		{
 			Name:        "Database",
@@ -368,7 +363,6 @@ func (s *dashboardServiceImpl) GetSystemHealth(ctx context.Context) (*models.Sys
 func (s *dashboardServiceImpl) GetPerformanceData(ctx context.Context, timeRange string) (*models.PerformanceData, error) {
 	s.logger.Info("Getting performance data", zap.String("time_range", timeRange))
 
-	// Implementación básica - expandir según necesidades
 	now := time.Now()
 
 	return &models.PerformanceData{
@@ -410,10 +404,98 @@ func (s *dashboardServiceImpl) GetPerformanceData(ctx context.Context, timeRange
 	}, nil
 }
 
+// GetActiveAlerts obtiene alertas activas del sistema (NUEVO MÉTODO)
+func (s *dashboardServiceImpl) GetActiveAlerts(ctx context.Context) ([]models.Alert, error) {
+	s.logger.Info("Getting active alerts")
+
+	alerts := make([]models.Alert, 0)
+
+	failedTasks, _ := s.queueRepo.GetFailedTasksCount(ctx)
+	if failedTasks > 10 {
+		alerts = append(alerts, models.Alert{
+			ID:        "high_failures",
+			Type:      "error",
+			Title:     "High Failure Rate",
+			Message:   fmt.Sprintf("There are %d failed tasks in the queue", failedTasks),
+			Severity:  "high",
+			Timestamp: time.Now(),
+			Actions: []models.AlertAction{
+				{Type: "restart", Description: "Restart failed tasks"},
+				{Type: "investigate", Description: "Investigate error logs"},
+			},
+		})
+	}
+
+	queuedTasks, _ := s.queueRepo.GetQueueLength(ctx, "main")
+	if queuedTasks > 100 {
+		alerts = append(alerts, models.Alert{
+			ID:        "high_queue_length",
+			Type:      "warning",
+			Title:     "High Queue Length",
+			Message:   fmt.Sprintf("There are %d tasks waiting in the queue", queuedTasks),
+			Severity:  "medium",
+			Timestamp: time.Now(),
+			Actions: []models.AlertAction{
+				{Type: "scale", Description: "Scale up workers"},
+			},
+		})
+	}
+
+	activeWorkflows, _ := s.workflowRepo.CountActiveWorkflows(ctx)
+	totalWorkflows, _ := s.workflowRepo.Count(ctx)
+	if activeWorkflows == 0 && totalWorkflows > 0 {
+		alerts = append(alerts, models.Alert{
+			ID:        "no_active_workflows",
+			Type:      "info",
+			Title:     "No Active Workflows",
+			Message:   "There are no active workflows running",
+			Severity:  "low",
+			Timestamp: time.Now(),
+			Actions: []models.AlertAction{
+				{Type: "activate", Description: "Activate workflows"},
+			},
+		})
+	}
+
+	return alerts, nil
+}
+
+// GetWorkflowHealth obtiene la salud de un workflow específico (NUEVO MÉTODO)
+func (s *dashboardServiceImpl) GetWorkflowHealth(ctx context.Context, workflowID string) (*models.WorkflowStatusItem, error) {
+	s.logger.Info("Getting workflow health", zap.String("workflow_id", workflowID))
+
+	objID, err := primitive.ObjectIDFromHex(workflowID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid workflow ID: %w", err)
+	}
+
+	workflow, err := s.workflowRepo.GetByID(ctx, objID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow not found: %s", workflowID)
+	}
+
+	item := &models.WorkflowStatusItem{
+		ID:             workflow.ID.Hex(),
+		Name:           workflow.Name,
+		Status:         string(workflow.Status),
+		IsActive:       workflow.Status == models.WorkflowStatusActive,
+		LastExecution:  s.getLastExecutionFromStats(workflow.Stats),
+		SuccessRate:    s.calculateSuccessRateFromStats(workflow.Stats),
+		TotalRuns:      s.getTotalExecutionsFromStats(workflow.Stats),
+		SuccessfulRuns: s.getSuccessfulExecutionsFromStats(workflow.Stats),
+		FailedRuns:     s.getFailedExecutionsFromStats(workflow.Stats),
+		AvgRunTime:     s.getAverageExecutionTimeFromStats(workflow.Stats),
+		Healthy:        s.determineWorkflowHealthFromStats(workflow.Stats),
+		TriggerType:    s.getTriggerTypeFromWorkflow(workflow),
+		Tags:           workflow.Tags,
+	}
+
+	return item, nil
+}
+
 // RefreshDashboardData refresca datos del dashboard
 func (s *dashboardServiceImpl) RefreshDashboardData(ctx context.Context) error {
 	s.logger.Info("Refreshing dashboard data")
-	// Implementar lógica de refresh según necesidades
 	return nil
 }
 
@@ -423,7 +505,6 @@ func (s *dashboardServiceImpl) ValidateFilter(filter *models.DashboardFilter) er
 		return nil
 	}
 
-	// Validaciones básicas
 	if filter.TimeRange != "" {
 		validRanges := []string{"1h", "24h", "7d", "30d"}
 		valid := false
@@ -441,9 +522,8 @@ func (s *dashboardServiceImpl) ValidateFilter(filter *models.DashboardFilter) er
 	return nil
 }
 
-// MÉTODOS AUXILIARES CORREGIDOS
+// MÉTODOS AUXILIARES
 
-// Helper methods para manejar WorkflowStats con nil safety
 func (s *dashboardServiceImpl) getLastExecutionFromStats(stats *models.WorkflowStats) *time.Time {
 	if stats == nil {
 		return nil
@@ -462,7 +542,7 @@ func (s *dashboardServiceImpl) getTotalExecutionsFromStats(stats *models.Workflo
 	if stats == nil {
 		return 0
 	}
-	return stats.TotalExecutions // CORREGIDO: usar TotalExecutions en lugar de TotalRuns
+	return stats.TotalExecutions
 }
 
 func (s *dashboardServiceImpl) getSuccessfulExecutionsFromStats(stats *models.WorkflowStats) int64 {
@@ -501,7 +581,6 @@ func (s *dashboardServiceImpl) getTriggerTypeFromWorkflow(workflow *models.Workf
 	return "manual"
 }
 
-// Métodos auxiliares originales mantenidos para compatibilidad
 func (s *dashboardServiceImpl) calculateSuccessRate(stats *models.WorkflowStats) float64 {
 	return s.calculateSuccessRateFromStats(stats)
 }

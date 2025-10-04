@@ -1,7 +1,7 @@
 package models
 
 import (
-	"fmt"   
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -44,6 +44,7 @@ type DashboardFilter struct {
 	WorkflowIDs []string   `json:"workflow_ids,omitempty"`
 	Status      []string   `json:"status,omitempty"`
 	Tags        []string   `json:"tags,omitempty"`
+	Environment string     `json:"environment,omitempty"` // AGREGADO: Campo Environment
 	StartDate   *time.Time `json:"start_date,omitempty"`
 	EndDate     *time.Time `json:"end_date,omitempty"`
 	TimeRange   string     `json:"time_range,omitempty"` // "1h", "24h", "7d", "30d"
@@ -352,12 +353,12 @@ type WeeklyStats struct {
 
 // ResourceUsage uso de recursos del sistema
 type ResourceUsage struct {
-	Timestamp         time.Time `json:"timestamp" bson:"timestamp"`                     // Timestamp del punto de datos
-	CPUPercent        float64   `json:"cpu_percent" bson:"cpu_percent"`                 // Porcentaje de uso de CPU
-	MemoryPercent     float64   `json:"memory_percent" bson:"memory_percent"`           // Porcentaje de uso de memoria
-	MemoryUsedMB      float64   `json:"memory_used_mb" bson:"memory_used_mb"`           // Memoria usada en MB
-	DiskUsedPercent   float64   `json:"disk_used_percent" bson:"disk_used_percent"`     // Porcentaje de uso de disco
-	ActiveConnections int       `json:"active_connections" bson:"active_connections"`   // Conexiones activas
+	Timestamp         time.Time `json:"timestamp" bson:"timestamp"`                   // Timestamp del punto de datos
+	CPUPercent        float64   `json:"cpu_percent" bson:"cpu_percent"`               // Porcentaje de uso de CPU
+	MemoryPercent     float64   `json:"memory_percent" bson:"memory_percent"`         // Porcentaje de uso de memoria
+	MemoryUsedMB      float64   `json:"memory_used_mb" bson:"memory_used_mb"`         // Memoria usada en MB
+	DiskUsedPercent   float64   `json:"disk_used_percent" bson:"disk_used_percent"`   // Porcentaje de uso de disco
+	ActiveConnections int       `json:"active_connections" bson:"active_connections"` // Conexiones activas
 }
 
 // ===============================================

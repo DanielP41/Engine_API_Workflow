@@ -13,13 +13,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// CacheHandler maneja las operaciones relacionadas con el caché
 type CacheHandler struct {
 	cacheManager *cache.CacheManager
 	logger       *zap.Logger
 }
 
-// NewCacheHandler crea un nuevo handler de caché
 func NewCacheHandler(cacheManager *cache.CacheManager, logger *zap.Logger) *CacheHandler {
 	return &CacheHandler{
 		cacheManager: cacheManager,
@@ -27,25 +25,13 @@ func NewCacheHandler(cacheManager *cache.CacheManager, logger *zap.Logger) *Cach
 	}
 }
 
-// GetStats obtiene estadísticas del caché
-// @Summary Obtener estadísticas del caché
-// @Description Obtiene estadísticas detalladas del sistema de caché
-// @Tags cache
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Success 200 {object} utils.Response{data=cache.CacheStats}
-// @Failure 401 {object} utils.ErrorResponse
-// @Failure 500 {object} utils.ErrorResponse
-// @Router /api/v1/cache/stats [get]
 func (h *CacheHandler) GetStats(c *fiber.Ctx) error {
 	stats, err := h.cacheManager.GetStats(c.Context())
 	if err != nil {
 		h.logger.Error("Failed to get cache stats", zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to get cache statistics")
+		return utils.InternalServerErrorResponse(c, "Failed to get cache statistics", err)
 	}
 
-	// Enriquecer estadísticas con información del manager
 	managerMetrics := h.cacheManager.GetMetrics()
 
 	enrichedStats := map[string]interface{}{
@@ -60,24 +46,12 @@ func (h *CacheHandler) GetStats(c *fiber.Ctx) error {
 		"timestamp": time.Now(),
 	}
 
-	return utils.SuccessResponse(c, "Cache statistics retrieved successfully", enrichedStats)
+	return utils.SuccessResponse(c, fiber.StatusOK, "Cache statistics retrieved successfully", enrichedStats)
 }
 
-// GetHealth verifica la salud del sistema de caché
-// @Summary Verificar salud del caché
-// @Description Verifica la conectividad y salud del sistema de caché
-// @Tags cache
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Success 200 {object} utils.Response
-// @Failure 401 {object} utils.ErrorResponse
-// @Failure 500 {object} utils.ErrorResponse
-// @Router /api/v1/cache/health [get]
 func (h *CacheHandler) GetHealth(c *fiber.Ctx) error {
 	start := time.Now()
 
-	// Verificar conectividad
 	err := h.cacheManager.Ping(c.Context())
 	latency := time.Since(start)
 
@@ -92,39 +66,24 @@ func (h *CacheHandler) GetHealth(c *fiber.Ctx) error {
 		health["error"] = err.Error()
 
 		h.logger.Error("Cache health check failed", zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Cache is unhealthy")
+		return utils.InternalServerErrorResponse(c, "Cache is unhealthy", err)
 	}
 
-	// Verificar latencia
 	if latency > 100*time.Millisecond {
 		health["status"] = "degraded"
 		health["warning"] = "High latency detected"
 	}
 
-	return utils.SuccessResponse(c, "Cache health check completed", health)
+	return utils.SuccessResponse(c, fiber.StatusOK, "Cache health check completed", health)
 }
 
-// GetKeys obtiene claves del caché que coinciden con un patrón
-// @Summary Obtener claves del caché
-// @Description Obtiene claves que coinciden con un patrón específico
-// @Tags cache
-// @Accept json
-// @Produce json
-// @Param pattern query string false "Patrón de búsqueda" default("*")
-// @Param limit query int false "Límite de resultados" default(100)
-// @Security BearerAuth
-// @Success 200 {object} utils.Response{data=[]string}
-// @Failure 400 {object} utils.ErrorResponse
-// @Failure 401 {object} utils.ErrorResponse
-// @Failure 500 {object} utils.ErrorResponse
-// @Router /api/v1/cache/keys [get]
 func (h *CacheHandler) GetKeys(c *fiber.Ctx) error {
 	pattern := c.Query("pattern", "*")
 	limitStr := c.Query("limit", "100")
 
 	limit, err := strconv.Atoi(limitStr)
 	if err != nil || limit <= 0 || limit > 1000 {
-		return utils.BadRequestResponse(c, "Invalid limit parameter (1-1000)")
+		return utils.BadRequestResponse(c, "Invalid limit parameter (1-1000)", nil)
 	}
 
 	h.logger.Info("Getting cache keys",
@@ -137,10 +96,9 @@ func (h *CacheHandler) GetKeys(c *fiber.Ctx) error {
 		h.logger.Error("Failed to get cache keys",
 			zap.String("pattern", pattern),
 			zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to get cache keys")
+		return utils.InternalServerErrorResponse(c, "Failed to get cache keys", err)
 	}
 
-	// Limitar resultados
 	if len(keys) > limit {
 		keys = keys[:limit]
 	}
@@ -153,23 +111,10 @@ func (h *CacheHandler) GetKeys(c *fiber.Ctx) error {
 		"timestamp":   time.Now(),
 	}
 
-	return utils.SuccessResponse(c, "Cache keys retrieved successfully", result)
+	return utils.SuccessResponse(c, fiber.StatusOK, "Cache keys retrieved successfully", result)
 }
 
-// ClearCache limpia todo el caché (solo admin)
-// @Summary Limpiar todo el caché
-// @Description Limpia completamente el caché (operación destructiva)
-// @Tags cache
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Success 200 {object} utils.Response
-// @Failure 401 {object} utils.ErrorResponse
-// @Failure 403 {object} utils.ErrorResponse
-// @Failure 500 {object} utils.ErrorResponse
-// @Router /api/v1/cache/admin/clear [delete]
 func (h *CacheHandler) ClearCache(c *fiber.Ctx) error {
-	// Esta operación debe ser registrada con detalle
 	h.logger.Warn("CRITICAL: Full cache clear initiated",
 		zap.String("user_id", getUserID(c)),
 		zap.String("user_email", getUserEmail(c)),
@@ -180,42 +125,27 @@ func (h *CacheHandler) ClearCache(c *fiber.Ctx) error {
 		h.logger.Error("Failed to clear cache",
 			zap.String("user_id", getUserID(c)),
 			zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to clear cache")
+		return utils.InternalServerErrorResponse(c, "Failed to clear cache", err)
 	}
 
 	h.logger.Info("Cache cleared successfully", zap.String("user_id", getUserID(c)))
 
-	return utils.SuccessResponse(c, "Cache cleared successfully", map[string]interface{}{
+	return utils.SuccessResponse(c, fiber.StatusOK, "Cache cleared successfully", map[string]interface{}{
 		"cleared_at": time.Now(),
 		"cleared_by": getUserID(c),
 	})
 }
 
-// ClearPattern limpia claves que coinciden con un patrón (solo admin)
-// @Summary Limpiar patrón del caché
-// @Description Limpia claves que coinciden con un patrón específico
-// @Tags cache
-// @Accept json
-// @Produce json
-// @Param pattern path string true "Patrón a limpiar"
-// @Security BearerAuth
-// @Success 200 {object} utils.Response
-// @Failure 400 {object} utils.ErrorResponse
-// @Failure 401 {object} utils.ErrorResponse
-// @Failure 403 {object} utils.ErrorResponse
-// @Failure 500 {object} utils.ErrorResponse
-// @Router /api/v1/cache/admin/pattern/{pattern} [delete]
 func (h *CacheHandler) ClearPattern(c *fiber.Ctx) error {
 	pattern := c.Params("pattern")
 	if pattern == "" {
-		return utils.BadRequestResponse(c, "Pattern parameter is required")
+		return utils.BadRequestResponse(c, "Pattern parameter is required", nil)
 	}
 
-	// Validar patrón para evitar borrados accidentales
 	dangerousPatterns := []string{"*", "**", ""}
 	for _, dangerous := range dangerousPatterns {
 		if pattern == dangerous {
-			return utils.BadRequestResponse(c, "Dangerous pattern not allowed. Use /clear for full cache clear")
+			return utils.BadRequestResponse(c, "Dangerous pattern not allowed. Use /clear for full cache clear", nil)
 		}
 	}
 
@@ -230,32 +160,20 @@ func (h *CacheHandler) ClearPattern(c *fiber.Ctx) error {
 			zap.String("pattern", pattern),
 			zap.String("user_id", getUserID(c)),
 			zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to clear cache pattern")
+		return utils.InternalServerErrorResponse(c, "Failed to clear cache pattern", err)
 	}
 
 	h.logger.Info("Cache pattern cleared successfully",
 		zap.String("pattern", pattern),
 		zap.String("user_id", getUserID(c)))
 
-	return utils.SuccessResponse(c, "Cache pattern cleared successfully", map[string]interface{}{
+	return utils.SuccessResponse(c, fiber.StatusOK, "Cache pattern cleared successfully", map[string]interface{}{
 		"pattern":    pattern,
 		"cleared_at": time.Now(),
 		"cleared_by": getUserID(c),
 	})
 }
 
-// ExecuteWarmup ejecuta precalentamiento del caché (solo admin)
-// @Summary Ejecutar precalentamiento del caché
-// @Description Ejecuta todas las tareas de precalentamiento configuradas
-// @Tags cache
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Success 200 {object} utils.Response
-// @Failure 401 {object} utils.ErrorResponse
-// @Failure 403 {object} utils.ErrorResponse
-// @Failure 500 {object} utils.ErrorResponse
-// @Router /api/v1/cache/admin/warmup [post]
 func (h *CacheHandler) ExecuteWarmup(c *fiber.Ctx) error {
 	start := time.Now()
 
@@ -267,7 +185,7 @@ func (h *CacheHandler) ExecuteWarmup(c *fiber.Ctx) error {
 		h.logger.Error("Failed to execute cache warmup",
 			zap.String("user_id", getUserID(c)),
 			zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to execute cache warmup")
+		return utils.InternalServerErrorResponse(c, "Failed to execute cache warmup", err)
 	}
 
 	duration := time.Since(start)
@@ -276,37 +194,22 @@ func (h *CacheHandler) ExecuteWarmup(c *fiber.Ctx) error {
 		zap.Duration("duration", duration),
 		zap.String("user_id", getUserID(c)))
 
-	return utils.SuccessResponse(c, "Cache warmup executed successfully", map[string]interface{}{
+	return utils.SuccessResponse(c, fiber.StatusOK, "Cache warmup executed successfully", map[string]interface{}{
 		"duration_ms": duration.Milliseconds(),
 		"executed_at": time.Now(),
 		"executed_by": getUserID(c),
 	})
 }
 
-// GetMetrics obtiene métricas detalladas del caché (solo admin)
-// @Summary Obtener métricas detalladas del caché
-// @Description Obtiene métricas completas del sistema de caché incluyendo warmup y invalidaciones
-// @Tags cache
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Success 200 {object} utils.Response{data=cache.CacheMetrics}
-// @Failure 401 {object} utils.ErrorResponse
-// @Failure 403 {object} utils.ErrorResponse
-// @Failure 500 {object} utils.ErrorResponse
-// @Router /api/v1/cache/admin/metrics [get]
 func (h *CacheHandler) GetMetrics(c *fiber.Ctx) error {
-	// Obtener métricas del manager
 	managerMetrics := h.cacheManager.GetMetrics()
 
-	// Obtener estadísticas de Redis
 	redisStats, err := h.cacheManager.GetStats(c.Context())
 	if err != nil {
 		h.logger.Error("Failed to get Redis stats for metrics", zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to get cache metrics")
+		return utils.InternalServerErrorResponse(c, "Failed to get cache metrics", err)
 	}
 
-	// Combinar todas las métricas
 	detailedMetrics := map[string]interface{}{
 		"manager": managerMetrics,
 		"redis":   redisStats,
@@ -341,10 +244,8 @@ func (h *CacheHandler) GetMetrics(c *fiber.Ctx) error {
 		"timestamp": time.Now(),
 	}
 
-	return utils.SuccessResponse(c, "Detailed cache metrics retrieved successfully", detailedMetrics)
+	return utils.SuccessResponse(c, fiber.StatusOK, "Detailed cache metrics retrieved successfully", detailedMetrics)
 }
-
-// Métodos auxiliares
 
 func (h *CacheHandler) calculateCacheEfficiency(stats *cache.CacheStats) float64 {
 	total := stats.HitCount + stats.MissCount
@@ -352,20 +253,17 @@ func (h *CacheHandler) calculateCacheEfficiency(stats *cache.CacheStats) float64
 		return 0
 	}
 
-	// Eficiencia considera tanto hit rate como memoria utilizada
 	hitRate := float64(stats.HitCount) / float64(total)
 
-	// Si tenemos información de memoria, incluirla en el cálculo
 	memoryEfficiency := 1.0
 	if stats.TotalKeys > 0 && stats.UsedMemory > 0 {
 		avgKeySize := float64(stats.UsedMemory) / float64(stats.TotalKeys)
-		// Eficiencia de memoria basada en tamaño promedio de clave (menor es mejor)
 		if avgKeySize > 0 {
-			memoryEfficiency = 1.0 / (1.0 + avgKeySize/1024) // Normalizar por KB
+			memoryEfficiency = 1.0 / (1.0 + avgKeySize/1024)
 		}
 	}
 
-	return (hitRate * 0.8) + (memoryEfficiency * 0.2) // 80% hit rate, 20% memory efficiency
+	return (hitRate * 0.8) + (memoryEfficiency * 0.2)
 }
 
 func (h *CacheHandler) calculateRequestsPerSecond(metrics *cache.CacheMetrics) float64 {
@@ -411,8 +309,6 @@ func (h *CacheHandler) formatUptime(seconds int64) string {
 	}
 }
 
-// Utility functions para obtener información del usuario
-
 func getUserID(c *fiber.Ctx) string {
 	if userID := c.Locals("user_id"); userID != nil {
 		return userID.(string)
@@ -427,39 +323,24 @@ func getUserEmail(c *fiber.Ctx) string {
 	return "unknown"
 }
 
-// CacheKeyRequest estructura para operaciones de clave específica
 type CacheKeyRequest struct {
 	Key   string      `json:"key" validate:"required"`
 	Value interface{} `json:"value,omitempty"`
-	TTL   int         `json:"ttl,omitempty"` // TTL en segundos
+	TTL   int         `json:"ttl,omitempty"`
 }
 
-// SetCacheKey establece una clave específica en el caché (solo admin)
-// @Summary Establecer clave en el caché
-// @Description Establece una clave específica en el caché con TTL opcional
-// @Tags cache
-// @Accept json
-// @Produce json
-// @Param request body CacheKeyRequest true "Datos de la clave"
-// @Security BearerAuth
-// @Success 200 {object} utils.Response
-// @Failure 400 {object} utils.ErrorResponse
-// @Failure 401 {object} utils.ErrorResponse
-// @Failure 403 {object} utils.ErrorResponse
-// @Failure 500 {object} utils.ErrorResponse
-// @Router /api/v1/cache/admin/key [post]
 func (h *CacheHandler) SetCacheKey(c *fiber.Ctx) error {
 	var req CacheKeyRequest
 
 	if err := c.BodyParser(&req); err != nil {
-		return utils.BadRequestResponse(c, "Invalid JSON format")
+		return utils.BadRequestResponse(c, "Invalid JSON format", nil)
 	}
 
 	if req.Key == "" {
-		return utils.BadRequestResponse(c, "Key is required")
+		return utils.BadRequestResponse(c, "Key is required", nil)
 	}
 
-	ttl := cache.TTLMedium // 5 minutos por defecto
+	ttl := cache.TTLMedium
 	if req.TTL > 0 {
 		ttl = time.Duration(req.TTL) * time.Second
 	}
@@ -474,10 +355,10 @@ func (h *CacheHandler) SetCacheKey(c *fiber.Ctx) error {
 			zap.String("key", req.Key),
 			zap.String("user_id", getUserID(c)),
 			zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to set cache key")
+		return utils.InternalServerErrorResponse(c, "Failed to set cache key", err)
 	}
 
-	return utils.SuccessResponse(c, "Cache key set successfully", map[string]interface{}{
+	return utils.SuccessResponse(c, fiber.StatusOK, "Cache key set successfully", map[string]interface{}{
 		"key":    req.Key,
 		"ttl":    ttl.String(),
 		"set_at": time.Now(),
@@ -485,24 +366,10 @@ func (h *CacheHandler) SetCacheKey(c *fiber.Ctx) error {
 	})
 }
 
-// GetCacheKey obtiene una clave específica del caché
-// @Summary Obtener clave del caché
-// @Description Obtiene el valor de una clave específica del caché
-// @Tags cache
-// @Accept json
-// @Produce json
-// @Param key path string true "Clave a obtener"
-// @Security BearerAuth
-// @Success 200 {object} utils.Response
-// @Failure 400 {object} utils.ErrorResponse
-// @Failure 401 {object} utils.ErrorResponse
-// @Failure 404 {object} utils.ErrorResponse
-// @Failure 500 {object} utils.ErrorResponse
-// @Router /api/v1/cache/key/{key} [get]
 func (h *CacheHandler) GetCacheKey(c *fiber.Ctx) error {
 	key := c.Params("key")
 	if key == "" {
-		return utils.BadRequestResponse(c, "Key parameter is required")
+		return utils.BadRequestResponse(c, "Key parameter is required", nil)
 	}
 
 	value, err := h.cacheManager.Get(c.Context(), key)
@@ -515,10 +382,9 @@ func (h *CacheHandler) GetCacheKey(c *fiber.Ctx) error {
 			zap.String("key", key),
 			zap.String("user_id", getUserID(c)),
 			zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to get cache key")
+		return utils.InternalServerErrorResponse(c, "Failed to get cache key", err)
 	}
 
-	// Obtener TTL restante
 	ttl, _ := h.cacheManager.GetTTL(c.Context(), key)
 
 	result := map[string]interface{}{
@@ -528,27 +394,13 @@ func (h *CacheHandler) GetCacheKey(c *fiber.Ctx) error {
 		"retrieved_at":  time.Now(),
 	}
 
-	return utils.SuccessResponse(c, "Cache key retrieved successfully", result)
+	return utils.SuccessResponse(c, fiber.StatusOK, "Cache key retrieved successfully", result)
 }
 
-// DeleteCacheKey elimina una clave específica del caché (solo admin)
-// @Summary Eliminar clave del caché
-// @Description Elimina una clave específica del caché
-// @Tags cache
-// @Accept json
-// @Produce json
-// @Param key path string true "Clave a eliminar"
-// @Security BearerAuth
-// @Success 200 {object} utils.Response
-// @Failure 400 {object} utils.ErrorResponse
-// @Failure 401 {object} utils.ErrorResponse
-// @Failure 403 {object} utils.ErrorResponse
-// @Failure 500 {object} utils.ErrorResponse
-// @Router /api/v1/cache/admin/key/{key} [delete]
 func (h *CacheHandler) DeleteCacheKey(c *fiber.Ctx) error {
 	key := c.Params("key")
 	if key == "" {
-		return utils.BadRequestResponse(c, "Key parameter is required")
+		return utils.BadRequestResponse(c, "Key parameter is required", nil)
 	}
 
 	h.logger.Info("Manual cache key deletion",
@@ -561,32 +413,21 @@ func (h *CacheHandler) DeleteCacheKey(c *fiber.Ctx) error {
 			zap.String("key", key),
 			zap.String("user_id", getUserID(c)),
 			zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to delete cache key")
+		return utils.InternalServerErrorResponse(c, "Failed to delete cache key", err)
 	}
 
-	return utils.SuccessResponse(c, "Cache key deleted successfully", map[string]interface{}{
+	return utils.SuccessResponse(c, fiber.StatusOK, "Cache key deleted successfully", map[string]interface{}{
 		"key":        key,
 		"deleted_at": time.Now(),
 		"deleted_by": getUserID(c),
 	})
 }
 
-// GetCacheInfo obtiene información general del sistema de caché
-// @Summary Obtener información del sistema de caché
-// @Description Obtiene información general y configuración del sistema de caché
-// @Tags cache
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Success 200 {object} utils.Response
-// @Failure 401 {object} utils.ErrorResponse
-// @Failure 500 {object} utils.ErrorResponse
-// @Router /api/v1/cache/info [get]
 func (h *CacheHandler) GetCacheInfo(c *fiber.Ctx) error {
 	stats, err := h.cacheManager.GetStats(c.Context())
 	if err != nil {
 		h.logger.Error("Failed to get cache info", zap.Error(err))
-		return utils.InternalServerErrorResponse(c, "Failed to get cache information")
+		return utils.InternalServerErrorResponse(c, "Failed to get cache information", err)
 	}
 
 	info := map[string]interface{}{
@@ -622,5 +463,5 @@ func (h *CacheHandler) GetCacheInfo(c *fiber.Ctx) error {
 		"timestamp": time.Now(),
 	}
 
-	return utils.SuccessResponse(c, "Cache information retrieved successfully", info)
+	return utils.SuccessResponse(c, fiber.StatusOK, "Cache information retrieved successfully", info)
 }

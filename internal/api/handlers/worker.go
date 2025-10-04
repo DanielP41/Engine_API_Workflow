@@ -35,7 +35,7 @@ func NewWorkerHandler(queueRepo repository.QueueRepository, workerEngine *worker
 	}
 }
 
-// GetWorkerStats obtiene estadísticas de los workers (ACTUALIZADO)
+// GetWorkerStats obtiene estadísticas de los workers (CORREGIDO)
 // @Summary Get worker statistics
 // @Description Get current statistics about worker engine and queue processing
 // @Tags workers
@@ -47,31 +47,47 @@ func NewWorkerHandler(queueRepo repository.QueueRepository, workerEngine *worker
 // @Failure 500 {object} utils.ErrorResponse
 // @Router /api/v1/workers/stats [get]
 func (h *WorkerHandler) GetWorkerStats(c *fiber.Ctx) error {
-	// Obtener estadísticas básicas
-	basicStats, err := h.workerEngine.GetStats(c.Context())
-	if err != nil {
-		h.logger.Error("Failed to get basic worker stats", zap.Error(err))
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get worker statistics", err.Error())
+	// CORREGIDO: Construir estadísticas básicas manualmente usando métodos disponibles
+	pool := h.workerEngine.GetPool()
+	basicStats := map[string]interface{}{
+		"is_running":     pool != nil,
+		"current_load":   h.workerEngine.GetCurrentLoad(),
+		"uptime":         h.workerEngine.GetUptime().String(),
+		"uptime_seconds": h.workerEngine.GetUptime().Seconds(),
+	}
+
+	if pool != nil {
+		basicStats["pool_stats"] = pool.GetStats()
 	}
 
 	// Intentar obtener estadísticas avanzadas
-	advancedStats, err := h.workerEngine.GetAdvancedStats(c.Context())
-	if err != nil {
-		h.logger.Warn("Failed to get advanced stats, using basic only", zap.Error(err))
-		return utils.SuccessResponse(c, fiber.StatusOK, "Worker statistics retrieved (basic)", basicStats)
+	metrics := h.workerEngine.GetMetricsCollector()
+	var advancedStats map[string]interface{}
+	if metrics != nil {
+		advancedStats = map[string]interface{}{
+			"metrics": metrics.GetMetrics(),
+		}
+
+		retryManager := h.workerEngine.GetRetryManager()
+		if retryManager != nil {
+			advancedStats["retry_stats"] = retryManager.GetRetryStats(c.Context())
+		}
 	}
 
 	// Combinar estadísticas
 	combinedStats := map[string]interface{}{
-		"basic":    basicStats,
-		"advanced": advancedStats,
-		"version":  "2.0",
+		"basic":   basicStats,
+		"version": "2.0",
+	}
+
+	if advancedStats != nil {
+		combinedStats["advanced"] = advancedStats
 	}
 
 	return utils.SuccessResponse(c, fiber.StatusOK, "Worker statistics retrieved successfully", combinedStats)
 }
 
-// GetAdvancedStats obtiene estadísticas avanzadas del sistema (NUEVO)
+// GetAdvancedStats obtiene estadísticas avanzadas del sistema (CORREGIDO)
 // @Summary Get advanced worker statistics
 // @Description Get comprehensive statistics including pool, metrics, and retries
 // @Tags workers
@@ -82,16 +98,34 @@ func (h *WorkerHandler) GetWorkerStats(c *fiber.Ctx) error {
 // @Failure 500 {object} utils.ErrorResponse
 // @Router /api/v1/workers/advanced/stats [get]
 func (h *WorkerHandler) GetAdvancedStats(c *fiber.Ctx) error {
-	stats, err := h.workerEngine.GetAdvancedStats(c.Context())
-	if err != nil {
-		h.logger.Error("Failed to get advanced stats", zap.Error(err))
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get advanced statistics", err.Error())
+	// CORREGIDO: Construir estadísticas avanzadas manualmente
+	stats := map[string]interface{}{
+		"timestamp": time.Now(),
+		"uptime":    h.workerEngine.GetUptime().String(),
+	}
+
+	// Pool stats
+	pool := h.workerEngine.GetPool()
+	if pool != nil {
+		stats["pool"] = pool.GetStats()
+	}
+
+	// Metrics
+	metrics := h.workerEngine.GetMetricsCollector()
+	if metrics != nil {
+		stats["metrics"] = metrics.GetMetrics()
+	}
+
+	// Retry stats
+	retryManager := h.workerEngine.GetRetryManager()
+	if retryManager != nil {
+		stats["retry_stats"] = retryManager.GetRetryStats(c.Context())
 	}
 
 	return utils.SuccessResponse(c, fiber.StatusOK, "Advanced statistics retrieved successfully", stats)
 }
 
-// GetHealthStatus obtiene el estado de salud completo (NUEVO)
+// GetHealthStatus obtiene el estado de salud completo (CORREGIDO)
 // @Summary Get comprehensive health status
 // @Description Get detailed health information including metrics and issues
 // @Tags workers
@@ -102,21 +136,43 @@ func (h *WorkerHandler) GetAdvancedStats(c *fiber.Ctx) error {
 // @Failure 500 {object} utils.ErrorResponse
 // @Router /api/v1/workers/health/detailed [get]
 func (h *WorkerHandler) GetHealthStatus(c *fiber.Ctx) error {
-	health, err := h.workerEngine.GetHealthStatus(c.Context())
-	if err != nil {
-		h.logger.Error("Failed to get health status", zap.Error(err))
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get health status", err.Error())
+	// CORREGIDO: Construir health status manualmente usando métodos disponibles
+	pool := h.workerEngine.GetPool()
+	metrics := h.workerEngine.GetMetricsCollector()
+
+	health := map[string]interface{}{
+		"is_healthy":   true,
+		"timestamp":    time.Now(),
+		"uptime":       h.workerEngine.GetUptime().String(),
+		"current_load": h.workerEngine.GetCurrentLoad(),
+	}
+
+	if pool != nil {
+		poolHealth := pool.GetHealthStatus()
+		health["is_healthy"] = poolHealth.IsHealthy
+		health["pool_health"] = poolHealth
+		health["pool_stats"] = pool.GetStats()
+	}
+
+	if metrics != nil {
+		health["metrics"] = metrics.GetMetrics()
+		// Intentar obtener health check del metrics collector
+		healthStatus, err := metrics.CheckHealth(c.Context(), pool, time.Now().Add(-h.workerEngine.GetUptime()))
+		if err == nil {
+			health["detailed_health"] = healthStatus
+			health["is_healthy"] = healthStatus.IsHealthy
+		}
 	}
 
 	status := fiber.StatusOK
-	if !health.IsHealthy {
+	if isHealthy, ok := health["is_healthy"].(bool); ok && !isHealthy {
 		status = fiber.StatusServiceUnavailable
 	}
 
 	return utils.SuccessResponse(c, status, "Health status retrieved", health)
 }
 
-// GetPoolStats obtiene estadísticas del pool de workers (NUEVO)
+// GetPoolStats obtiene estadísticas del pool de workers (CORREGIDO)
 // @Summary Get worker pool statistics
 // @Description Get detailed statistics about the worker pool
 // @Tags workers
@@ -127,7 +183,8 @@ func (h *WorkerHandler) GetHealthStatus(c *fiber.Ctx) error {
 // @Failure 500 {object} utils.ErrorResponse
 // @Router /api/v1/workers/pool/stats [get]
 func (h *WorkerHandler) GetPoolStats(c *fiber.Ctx) error {
-	pool := h.workerEngine.GetWorkerPool()
+	// CORREGIDO: Usar GetPool() en lugar de GetWorkerPool()
+	pool := h.workerEngine.GetPool()
 	if pool == nil {
 		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Worker pool not available", "")
 	}
@@ -154,7 +211,8 @@ func (h *WorkerHandler) ScaleWorkerPool(c *fiber.Ctx) error {
 		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Invalid request body", err.Error())
 	}
 
-	pool := h.workerEngine.GetWorkerPool()
+	// CORREGIDO: Usar GetPool() en lugar de GetWorkerPool()
+	pool := h.workerEngine.GetPool()
 	if pool == nil {
 		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Worker pool not available", "")
 	}
@@ -251,17 +309,8 @@ func (h *WorkerHandler) ResetMetrics(c *fiber.Ctx) error {
 // @Success 200 {object} utils.DataResponse
 // @Router /api/v1/workers/executors/info [get]
 func (h *WorkerHandler) GetExecutorInfo(c *fiber.Ctx) error {
-	// Obtener información de ejecutores desde el WorkflowExecutor
-	info := map[string]interface{}{
-		"executors_available": map[string]bool{
-			"http":    true,
-			"email":   true,
-			"slack":   true,
-			"webhook": true,
-		},
-		"mode":    "real", // o "simulated"
-		"version": "2.0",
-	}
+	// Obtener información de ejecutores desde el WorkerEngine
+	info := h.workerEngine.GetExecutorInfo()
 
 	return utils.SuccessResponse(c, fiber.StatusOK, "Executor information retrieved", info)
 }
@@ -313,11 +362,12 @@ func (h *WorkerHandler) GetQueueStats(c *fiber.Ctx) error {
 	return utils.SuccessResponse(c, fiber.StatusOK, "Queue statistics retrieved successfully", stats)
 }
 
-// Helper function para extraer IDs de tareas
+// Helper function para extraer IDs de tareas (CORREGIDO)
 func extractTaskIDs(tasks []*models.QueueTask) []string {
 	ids := make([]string, len(tasks))
 	for i, task := range tasks {
-		ids[i] = task.ID
+		// CORREGIDO: Convertir primitive.ObjectID a string usando .Hex()
+		ids[i] = task.ID.Hex()
 	}
 	return ids
 }
@@ -445,7 +495,7 @@ func (h *WorkerHandler) ClearQueue(c *fiber.Ctx) error {
 	})
 }
 
-// HealthCheck verifica el estado de los workers (ACTUALIZADO)
+// HealthCheck verifica el estado de los workers (CORREGIDO)
 // @Summary Worker health check
 // @Description Check if workers are running and healthy
 // @Tags workers
@@ -455,31 +505,34 @@ func (h *WorkerHandler) ClearQueue(c *fiber.Ctx) error {
 // @Failure 500 {object} utils.ErrorResponse
 // @Router /api/v1/workers/health [get]
 func (h *WorkerHandler) HealthCheck(c *fiber.Ctx) error {
-	// Intentar obtener health status detallado primero
-	health, err := h.workerEngine.GetHealthStatus(c.Context())
-	if err == nil {
-		status := fiber.StatusOK
-		if !health.IsHealthy {
-			status = fiber.StatusServiceUnavailable
-		}
-		return utils.SuccessResponse(c, status, "Health check completed", health)
+	// CORREGIDO: Construir health check usando métodos disponibles
+	pool := h.workerEngine.GetPool()
+
+	if pool == nil {
+		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Worker pool not available", "")
 	}
 
-	// Fallback a health check básico
-	stats, err := h.workerEngine.GetStats(c.Context())
-	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Workers unhealthy", err.Error())
+	// Obtener estado de salud del pool
+	poolHealth := pool.GetHealthStatus()
+
+	status := fiber.StatusOK
+	if !poolHealth.IsHealthy {
+		status = fiber.StatusServiceUnavailable
 	}
 
-	isRunning, ok := stats["is_running"].(bool)
-	if !ok || !isRunning {
-		return utils.ErrorResponse(c, fiber.StatusInternalServerError, "Workers not running", "")
+	healthResponse := map[string]interface{}{
+		"status":       "healthy",
+		"is_running":   true,
+		"is_healthy":   poolHealth.IsHealthy,
+		"pool_health":  poolHealth,
+		"current_load": h.workerEngine.GetCurrentLoad(),
+		"uptime":       h.workerEngine.GetUptime().String(),
+		"version":      "2.0",
 	}
 
-	return utils.SuccessResponse(c, fiber.StatusOK, "Workers are healthy", map[string]interface{}{
-		"status":     "healthy",
-		"is_running": isRunning,
-		"stats":      stats,
-		"version":    "basic",
-	})
+	if !poolHealth.IsHealthy {
+		healthResponse["status"] = "unhealthy"
+	}
+
+	return utils.SuccessResponse(c, status, "Health check completed", healthResponse)
 }
