@@ -86,8 +86,14 @@ func main() {
 			appLogger.Fatal("Invalid cache configuration", "error", err)
 		}
 
-		// Crear cache manager
-		cacheManager = cache.NewCacheManager(redisClient, cacheConfig, zapLogger)
+		// ✅ CORRECCIÓN 1: Convertir SimpleCacheConfig a CacheConfig
+		fullCacheConfig := &cache.CacheConfig{
+			DefaultTTL:      cacheConfig.DefaultTTL,
+			CleanupInterval: cacheConfig.CleanupInterval,
+			MaxMemory:       cacheConfig.MaxMemory,
+			Serializer:      cacheConfig.Serializer,
+		}
+		cacheManager = cache.NewCacheManager(redisClient, fullCacheConfig, zapLogger)
 
 		// Verificar conectividad del caché
 		if err := cacheManager.Ping(context.Background()); err != nil {
@@ -146,12 +152,14 @@ func main() {
 	baseAuthService := services.NewAuthService(userRepo)
 	baseWorkflowService := services.NewWorkflowService(workflowRepo, userRepo)
 	baseLogService := services.NewLogService(logRepo, workflowRepo, userRepo)
+	// ✅ CORRECCIÓN 2: Agregar zapLogger como último parámetro
 	baseDashboardService := services.NewDashboardService(
 		metricsService,
 		workflowRepo,
 		logRepo,
 		userRepo,
 		queueRepo,
+		zapLogger,
 	)
 
 	// 🆕 CREAR SERVICIOS CON CACHÉ SI ESTÁ HABILITADO
@@ -218,12 +226,15 @@ func main() {
 		ProcessingTimeout: getEnvAsDuration("TASK_EXECUTION_TIMEOUT", 30*time.Minute),
 	}
 
+	// ✅ CORRECCIÓN 3: Agregar mongoClient y cfg.MongoDatabase
 	workerEngine := worker.NewWorkerEngine(
 		queueRepo,
 		workflowRepo,
 		logRepo,
 		userRepo,
 		logService,
+		mongoClient,
+		cfg.MongoDatabase,
 		zapLogger,
 		workerConfig,
 	)
@@ -370,8 +381,9 @@ func main() {
 		appLogger.Fatal("Failed to start worker engine", "error", err)
 	}
 
+	// ✅ CORRECCIÓN 4: Eliminar cfg.BackupAutoEnabled (no existe)
 	// Iniciar backups automatizados si está habilitado
-	if cfg.BackupEnabled && cfg.BackupAutoEnabled {
+	if cfg.BackupEnabled {
 		appLogger.Info("Starting automated backups...")
 		if err := backupService.StartAutomatedBackups(ctx); err != nil {
 			appLogger.Error("Failed to start automated backups", "error", err)
@@ -415,18 +427,19 @@ func main() {
 		}
 	}
 
+	// ✅ CORRECCIÓN 4 (continuación): Eliminar cfg.BackupAutoEnabled
 	// Parar backups automatizados
-	if cfg.BackupEnabled && cfg.BackupAutoEnabled {
+	if cfg.BackupEnabled {
 		appLogger.Info("Stopping automated backups...")
 		if err := backupService.StopAutomatedBackups(); err != nil {
 			appLogger.Error("Error stopping automated backups", "error", err)
 		}
 	}
 
+	// ✅ CORRECCIÓN 5: Stop() no retorna valor
 	// Shutdown Worker Engine
-	if err := workerEngine.Stop(); err != nil {
-		appLogger.Error("Error stopping worker engine", "error", err)
-	}
+	appLogger.Info("Stopping worker engine...")
+	workerEngine.Stop()
 
 	// Shutdown servidor HTTP
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -544,7 +557,8 @@ func setupAPIRoutes(app *fiber.App,
 	backups := protected.Group("/backups")
 	backups.Post("/", backupHandler.CreateBackup)
 	backups.Get("/", backupHandler.ListBackups)
-	backups.Get("/:id", backupHandler.GetBackup)
+	// ✅ CORRECCIÓN 6: Usar GetBackupInfo en lugar de GetBackup
+	backups.Get("/:id", backupHandler.GetBackupInfo)
 	backups.Delete("/:id", backupHandler.DeleteBackup)
 	backups.Post("/:id/restore", backupHandler.RestoreBackup)
 	backups.Post("/:id/validate", backupHandler.ValidateBackup)

@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.23.5-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Install git and curl (needed for go mod download and health check)
 RUN apk add --no-cache git curl
