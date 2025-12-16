@@ -599,6 +599,16 @@ func (r *MongoNotificationRepository) createIndexes() {
 			Keys:    bson.D{{Key: "template_name", Value: 1}},
 			Options: options.Index().SetName("template_name"),
 		},
+		// Índice compuesto para template_name + created_at (optimiza agregaciones por fecha)
+		{
+			Keys:    bson.D{{Key: "template_name", Value: 1}, {Key: "created_at", Value: -1}},
+			Options: options.Index().SetName("template_name_created_at"),
+		},
+		// Índice compuesto para template_name + status (optimiza conteos por estado)
+		{
+			Keys:    bson.D{{Key: "template_name", Value: 1}, {Key: "status", Value: 1}},
+			Options: options.Index().SetName("template_name_status"),
+		},
 		// TTL index para limpieza automática (opcional)
 		{
 			Keys: bson.D{{Key: "created_at", Value: 1}},

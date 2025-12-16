@@ -24,23 +24,30 @@ import (
 
 // MongoTemplateRepository implementación MongoDB del repositorio de templates
 type MongoTemplateRepository struct {
-	collection *mongo.Collection
-	logger     *zap.Logger
-	dbName     string
+	collection         *mongo.Collection
+	notificationCollection *mongo.Collection
+	logger             *zap.Logger
+	dbName             string
+	db                 *mongo.Database
 }
 
 // NewMongoTemplateRepository crea una nueva instancia del repositorio
 func NewMongoTemplateRepository(db *mongo.Database, logger *zap.Logger) TemplateRepository {
 	collection := db.Collection("email_templates")
+	notificationCollection := db.Collection("email_notifications")
 
 	repo := &MongoTemplateRepository{
-		collection: collection,
-		logger:     logger,
-		dbName:     db.Name(),
+		collection:            collection,
+		notificationCollection: notificationCollection,
+		logger:                logger,
+		dbName:                db.Name(),
+		db:                    db,
 	}
 
 	// Crear índices en background
 	go repo.createIndexes()
+	// Crear índices para notificaciones si no existen (para optimizar consultas de uso)
+	go repo.createNotificationIndexes()
 
 	return repo
 }
@@ -477,19 +484,169 @@ func (r *MongoTemplateRepository) ValidateTemplate(ctx context.Context, template
 
 // GetUsageStats obtiene estadísticas de uso de un template
 func (r *MongoTemplateRepository) GetUsageStats(ctx context.Context, templateName string, days int) (*TemplateUsageStats, error) {
-	// Esta función requiere acceso a la colección de notificaciones
-	// Por simplicidad, devolvemos una estructura básica
-	// En una implementación real, haríamos agregación cross-collection
-
 	stats := &TemplateUsageStats{
 		TemplateName: templateName,
 		UsageByDay:   make(map[string]int64),
 	}
 
-	// TODO: Implementar consulta real a la colección de notificaciones
-	r.logger.Info("Getting template usage stats",
+	// Calcular fecha de inicio
+	startDate := time.Now().AddDate(0, 0, -days)
+	
+	// Construir pipeline de agregación
+	pipeline := []bson.M{
+		// Match: filtrar por template_name y fecha
+		{
+			"$match": bson.M{
+				"template_name": templateName,
+				"created_at": bson.M{
+					"$gte": startDate,
+				},
+			},
+		},
+		// Group: agrupar por día y contar
+		{
+			"$group": bson.M{
+				"_id": bson.M{
+					"$dateToString": bson.M{
+						"format": "%Y-%m-%d",
+						"date":   "$created_at",
+					},
+				},
+				"count": bson.M{"$sum": 1},
+				"successful": bson.M{
+					"$sum": bson.M{
+						"$cond": []interface{}{
+							bson.M{"$eq": []interface{}{"$status", "sent"}},
+							1,
+							0,
+						},
+					},
+				},
+				"failed": bson.M{
+					"$sum": bson.M{
+						"$cond": []interface{}{
+							bson.M{"$eq": []interface{}{"$status", "failed"}},
+							1,
+							0,
+						},
+					},
+				},
+				"lastUsed": bson.M{"$max": "$created_at"},
+			},
+		},
+		// Sort: ordenar por fecha
+		{
+			"$sort": bson.M{"_id": 1},
+		},
+	}
+
+	// Ejecutar agregación
+	cursor, err := r.notificationCollection.Aggregate(ctx, pipeline)
+	if err != nil {
+		r.logger.Error("Failed to aggregate template usage stats",
+			zap.String("template", templateName),
+			zap.Error(err))
+		return stats, fmt.Errorf("failed to aggregate usage stats: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	// Procesar resultados
+	var totalUsage int64
+	var successfulSends int64
+	var failedSends int64
+	var lastUsed time.Time
+
+	for cursor.Next(ctx) {
+		var result struct {
+			ID         string    `bson:"_id"`
+			Count      int64     `bson:"count"`
+			Successful int64     `bson:"successful"`
+			Failed     int64     `bson:"failed"`
+			LastUsed   time.Time `bson:"lastUsed"`
+		}
+
+		if err := cursor.Decode(&result); err != nil {
+			r.logger.Warn("Failed to decode aggregation result", zap.Error(err))
+			continue
+		}
+
+		stats.UsageByDay[result.ID] = result.Count
+		totalUsage += result.Count
+		successfulSends += result.Successful
+		failedSends += result.Failed
+
+		if result.LastUsed.After(lastUsed) {
+			lastUsed = result.LastUsed
+		}
+	}
+
+	if err := cursor.Err(); err != nil {
+		r.logger.Error("Cursor error during aggregation", zap.Error(err))
+		return stats, fmt.Errorf("cursor error: %w", err)
+	}
+
+	// Obtener total y última fecha de uso si no hay resultados por día
+	if totalUsage == 0 {
+		// Consulta adicional para obtener última fecha de uso (sin filtro de días)
+		var lastNotification struct {
+			CreatedAt time.Time `bson:"created_at"`
+		}
+		
+		err := r.notificationCollection.FindOne(
+			ctx,
+			bson.M{"template_name": templateName},
+			options.FindOne().SetSort(bson.D{{Key: "created_at", Value: -1}}),
+		).Decode(&lastNotification)
+		
+		if err == nil {
+			lastUsed = lastNotification.CreatedAt
+		}
+	}
+
+	// Obtener conteo total si no hay resultados en el rango
+	if totalUsage == 0 {
+		totalCount, err := r.notificationCollection.CountDocuments(
+			ctx,
+			bson.M{"template_name": templateName},
+		)
+		if err == nil {
+			totalUsage = totalCount
+		}
+	}
+
+	// Obtener conteos de éxito y fallo si no hay resultados en el rango
+	if successfulSends == 0 && failedSends == 0 {
+		successfulCount, _ := r.notificationCollection.CountDocuments(
+			ctx,
+			bson.M{
+				"template_name": templateName,
+				"status":        "sent",
+			},
+		)
+		failedCount, _ := r.notificationCollection.CountDocuments(
+			ctx,
+			bson.M{
+				"template_name": templateName,
+				"status":        "failed",
+			},
+		)
+		successfulSends = successfulCount
+		failedSends = failedCount
+	}
+
+	// Actualizar estadísticas
+	stats.TotalUsage = totalUsage
+	stats.SuccessfulSends = successfulSends
+	stats.FailedSends = failedSends
+	stats.LastUsed = lastUsed
+
+	r.logger.Info("Template usage stats retrieved",
 		zap.String("template", templateName),
-		zap.Int("days", days))
+		zap.Int("days", days),
+		zap.Int64("total_usage", totalUsage),
+		zap.Int64("successful", successfulSends),
+		zap.Int64("failed", failedSends),
+		zap.Int("days_with_data", len(stats.UsageByDay)))
 
 	return stats, nil
 }
@@ -720,7 +877,50 @@ func (r *MongoTemplateRepository) createIndexes() {
 		r.logger.Info("Template repository indexes created successfully",
 			zap.String("collection", r.collection.Name()),
 			zap.String("database", r.dbName))
+}
+
+// createNotificationIndexes crea índices en la colección de notificaciones para optimizar consultas de uso
+func (r *MongoTemplateRepository) createNotificationIndexes() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Verificar si la colección existe
+	if r.notificationCollection == nil {
+		r.logger.Warn("Notification collection not available for indexing")
+		return
 	}
+
+	indexes := []mongo.IndexModel{
+		// Índice compuesto para template_name + created_at (optimiza GetUsageStats)
+		{
+			Keys: bson.D{
+				{Key: "template_name", Value: 1},
+				{Key: "created_at", Value: -1},
+			},
+			Options: options.Index().SetName("template_name_created_at"),
+		},
+		// Índice compuesto para template_name + status (optimiza conteos por estado)
+		{
+			Keys: bson.D{
+				{Key: "template_name", Value: 1},
+				{Key: "status", Value: 1},
+			},
+			Options: options.Index().SetName("template_name_status"),
+		},
+	}
+
+	_, err := r.notificationCollection.Indexes().CreateMany(ctx, indexes)
+	if err != nil {
+		// No es crítico si los índices ya existen
+		r.logger.Debug("Failed to create notification indexes (may already exist)",
+			zap.String("collection", r.notificationCollection.Name()),
+			zap.Error(err))
+	} else {
+		r.logger.Info("Notification indexes created successfully for template queries",
+			zap.String("collection", r.notificationCollection.Name()),
+			zap.String("database", r.dbName))
+	}
+}
 }
 
 // buildMongoFilter construye un filtro MongoDB desde filtros genéricos
