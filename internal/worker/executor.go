@@ -233,7 +233,6 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 		}
 		
 		var retryCount int
-		var lastError error
 		
 		for attempt := 0; attempt <= maxRetries; attempt++ {
 			retryCount = attempt
@@ -262,12 +261,11 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 				break
 			}
 			
-			lastError = err
-			
 			// Si no es el último intento, continuar
 			if attempt < maxRetries {
 				execCtx.Logger.Warn("Step execution failed, retrying",
 					zap.String("step_id", currentStep.ID),
+					zap.Int("attempt", attempt+1),
 					zap.Error(err))
 			}
 		}
@@ -579,7 +577,7 @@ func (e *WorkflowExecutor) createStepExecution(step *models.WorkflowStep, result
 		Duration:      &duration,
 		Input:         step.Config,
 		ErrorMessage:  errorMessage,
-		RetryCount:    0, // TODO: implementar reintentos por paso
+			RetryCount:    retryCount,
 		ExecutionTime: duration,
 	}
 
@@ -590,6 +588,37 @@ func (e *WorkflowExecutor) createStepExecution(step *models.WorkflowStep, result
 	}
 
 	return stepExec
+}
+
+// calculateRetryDelay calcula el delay para un reintento según la estrategia
+func (e *WorkflowExecutor) calculateRetryDelay(attempt int, baseDelay time.Duration, strategy string) time.Duration {
+	switch strategy {
+	case "linear":
+		// Linear backoff: delay = baseDelay * attempt
+		return baseDelay * time.Duration(attempt)
+	case "exponential":
+		// Exponential backoff: delay = baseDelay * 2^attempt
+		multiplier := 1 << attempt // 2^attempt
+		delay := baseDelay * time.Duration(multiplier)
+		// Limitar a máximo 5 minutos
+		maxDelay := 5 * time.Minute
+		if delay > maxDelay {
+			return maxDelay
+		}
+		return delay
+	case "fixed":
+		// Fixed delay: siempre el mismo
+		return baseDelay
+	default:
+		// Default: exponential
+		multiplier := 1 << attempt
+		delay := baseDelay * time.Duration(multiplier)
+		maxDelay := 5 * time.Minute
+		if delay > maxDelay {
+			return maxDelay
+		}
+		return delay
+	}
 }
 
 // getNextStepID determina el siguiente paso basado en la configuración
