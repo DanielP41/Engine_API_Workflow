@@ -184,19 +184,12 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 			execCtx.Logger.Info("Skipping disabled step", zap.String("step_id", currentStep.ID))
 
 			// Crear registro de paso omitido
-			stepExec := models.StepExecution{
-				StepID:        currentStep.ID,
-				StepName:      currentStep.Name,
-				ActionType:    models.ActionType(currentStep.Type),
-				Status:        models.WorkflowStatus("skipped"),
-				StartedAt:     time.Now(),
-				CompletedAt:   &[]time.Time{time.Now()}[0],
-				Duration:      &[]int64{0}[0],
-				Input:         currentStep.Config,
-				Output:        map[string]interface{}{"skipped": true},
-				RetryCount:    0,
-				ExecutionTime: 0,
-			}
+			stepExec := e.createStepExecution(currentStep, &StepResult{
+				Success: true,
+				Output:  map[string]interface{}{"skipped": true},
+			}, nil, 0)
+			stepExec.Status = models.WorkflowStatus("skipped")
+			stepExec.Output = map[string]interface{}{"skipped": true}
 
 			result.StepsExecuted = append(result.StepsExecuted, stepExec)
 
@@ -281,10 +274,10 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 
 		if err != nil {
 			result.Success = false
-			result.ErrorMessage = fmt.Sprintf("Step '%s' failed after %d attempts: %v", currentStep.ID, maxRetries+1, err)
+			result.ErrorMessage = fmt.Sprintf("Step '%s' failed after %d attempts: %v", currentStep.ID, retryCount+1, err)
 
 			// Registrar paso fallido
-			stepExec := e.createStepExecution(currentStep, stepResult, err)
+			stepExec := e.createStepExecution(currentStep, stepResult, err, retryCount)
 			result.StepsExecuted = append(result.StepsExecuted, stepExec)
 
 			// Agregar al log en tiempo real
@@ -296,7 +289,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 		}
 
 		// Crear registro de ejecución del paso
-		stepExec := e.createStepExecution(currentStep, stepResult, nil)
+		stepExec := e.createStepExecution(currentStep, stepResult, nil, retryCount)
 		result.StepsExecuted = append(result.StepsExecuted, stepExec)
 
 		// Agregar al log en tiempo real
@@ -560,7 +553,7 @@ func (e *WorkflowExecutor) executeNotificationAction(ctx context.Context, step *
 }
 
 // createStepExecution crea un registro de ejecución de paso
-func (e *WorkflowExecutor) createStepExecution(step *models.WorkflowStep, result *StepResult, err error) models.StepExecution {
+func (e *WorkflowExecutor) createStepExecution(step *models.WorkflowStep, result *StepResult, err error, retryCount int) models.StepExecution {
 	now := time.Now()
 	duration := int64(result.Duration.Milliseconds())
 
