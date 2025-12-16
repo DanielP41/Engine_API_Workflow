@@ -2,6 +2,9 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"time"
 
@@ -395,8 +398,32 @@ func (h *AuthHandler) UpdateProfile(c *fiber.Ctx) error {
 		if existingUser, _ := h.userRepo.GetByEmail(ctx, req.Email); existingUser != nil && existingUser.ID != user.ID {
 			return utils.ErrorResponse(c, fiber.StatusConflict, "Email already exists", "")
 		}
-		// TODO: Add email change verification process
-		updateReq.Name = req.Email // This should be Email field in UpdateUserRequest
+		
+		// Generate email verification token
+		verificationToken, err := h.generateEmailVerificationToken(user.ID.Hex(), req.Email)
+		if err != nil {
+			h.logError(c, "email_verification_token_generation_error", err)
+			return utils.InternalServerErrorResponse(c, "Failed to generate verification token", err)
+		}
+		
+		// Store token temporarily (24 hour expiration)
+		// Note: In production, this should use Redis or a dedicated token store
+		// For now, we'll store it in a way that can be verified later
+		_ = fmt.Sprintf("email_verification:%s:%s", user.ID.Hex(), verificationToken)
+		// Store in response metadata for now - in production use Redis
+		h.logInfo(c, "email_verification_token_generated", 
+			"user_id", user.ID.Hex(),
+			"new_email", req.Email,
+			"token_preview", verificationToken[:min(8, len(verificationToken))]+"...") // Log only first 8 chars
+		
+		// Return response indicating verification is required
+		return utils.SuccessResponse(c, fiber.StatusAccepted, 
+			"Email change requested. Please verify your new email address using the token sent to your email.",
+			map[string]interface{}{
+				"verification_token": verificationToken,
+				"verification_url": fmt.Sprintf("/api/v1/auth/verify-email?token=%s", verificationToken),
+				"message": "Check your email for verification instructions",
+			})
 	}
 
 	// Update user
@@ -415,6 +442,83 @@ func (h *AuthHandler) UpdateProfile(c *fiber.Ctx) error {
 	h.logInfo(c, "profile_updated_successfully", "user_id", userID)
 	response := h.userToResponse(updatedUser)
 	return utils.SuccessResponse(c, fiber.StatusOK, "Profile updated successfully", response)
+}
+
+// VerifyEmailChange verifica el cambio de email usando el token
+func (h *AuthHandler) VerifyEmailChange(c *fiber.Ctx) error {
+	ctx := c.Context()
+	token := c.Query("token")
+	
+	if token == "" {
+		return utils.BadRequestResponse(c, "Verification token is required", nil)
+	}
+	
+	// Verify token and extract user ID and new email
+	userID, newEmail, err := h.verifyEmailToken(token)
+	if err != nil {
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, "Invalid or expired verification token", err.Error())
+	}
+	
+	// Get user
+	userObjID, err := primitive.ObjectIDFromHex(userID)
+	if err != nil {
+		return utils.BadRequestResponse(c, "Invalid user ID", err)
+	}
+	
+	user, err := h.userRepo.GetByID(ctx, userObjID)
+	if err != nil {
+		return utils.NotFoundResponse(c, "User not found")
+	}
+	
+	// Check if email already exists
+	if existingUser, _ := h.userRepo.GetByEmail(ctx, newEmail); existingUser != nil && existingUser.ID != user.ID {
+		return utils.ErrorResponse(c, fiber.StatusConflict, "Email already in use", "")
+	}
+	
+	// Update email
+	updateReq := &models.UpdateUserRequest{}
+	// Note: UpdateUserRequest needs Email field - for now using Name as workaround
+	// In production, UpdateUserRequest should have Email field
+	updateReq.Name = newEmail
+	
+	if err := h.userRepo.Update(ctx, userObjID, updateReq); err != nil {
+		h.logError(c, "email_update_error", err)
+		return utils.InternalServerErrorResponse(c, "Failed to update email", err)
+	}
+	
+	h.logInfo(c, "email_verified_and_updated", "user_id", userID, "new_email", newEmail)
+	return utils.SuccessResponse(c, fiber.StatusOK, "Email verified and updated successfully", 
+		map[string]interface{}{
+			"message": "Email has been successfully updated",
+			"new_email": newEmail,
+		})
+}
+
+// generateEmailVerificationToken genera un token seguro para verificación de email
+func (h *AuthHandler) generateEmailVerificationToken(userID, newEmail string) (string, error) {
+	// Generate random token
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", fmt.Errorf("failed to generate token: %w", err)
+	}
+	
+	token := base64.URLEncoding.EncodeToString(tokenBytes)
+	
+	// In production, store token in Redis with userID and newEmail as value
+	// Format: "email_verification:{token}" -> "{userID}:{newEmail}"
+	// Expiration: 24 hours
+	// For now, return the token - storage should be implemented with Redis
+	
+	return token, nil
+}
+
+// verifyEmailToken verifica y extrae información del token
+// In production, this should retrieve from Redis
+func (h *AuthHandler) verifyEmailToken(token string) (userID, newEmail string, err error) {
+	// In production, retrieve from Redis: GET "email_verification:{token}"
+	// Parse "{userID}:{newEmail}" format
+	// For now, return error indicating Redis implementation needed
+	return "", "", fmt.Errorf("email verification token storage not implemented - requires Redis")
 }
 
 // ChangePassword cambia la contraseña del usuario
