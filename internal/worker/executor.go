@@ -207,17 +207,17 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 		// Ejecutar el paso con reintentos
 		var stepResult *StepResult
 		var err error
-		
+
 		maxRetries := workflow.RetryAttempts
 		if maxRetries < 0 {
 			maxRetries = 0
 		}
-		
+
 		// Obtener configuración de reintentos del paso si está disponible
 		if stepRetries, ok := currentStep.Config["max_retries"].(float64); ok {
 			maxRetries = int(stepRetries)
 		}
-		
+
 		retryDelay := time.Duration(workflow.RetryDelayMs) * time.Millisecond
 		if stepDelay, ok := currentStep.Config["retry_delay_ms"].(float64); ok {
 			retryDelay = time.Duration(stepDelay) * time.Millisecond
@@ -225,42 +225,42 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 		if retryDelay <= 0 {
 			retryDelay = 5 * time.Second
 		}
-		
+
 		// Obtener estrategia de backoff del paso
 		backoffStrategy := "exponential" // default
 		if strategy, ok := currentStep.Config["retry_backoff"].(string); ok {
 			backoffStrategy = strategy
 		}
-		
+
 		var retryCount int
-		
+
 		for attempt := 0; attempt <= maxRetries; attempt++ {
 			retryCount = attempt
-			
+
 			if attempt > 0 {
 				// Calcular delay con estrategia de backoff
 				actualDelay := e.calculateRetryDelay(attempt, retryDelay, backoffStrategy)
-				
+
 				execCtx.Logger.Info("Retrying step",
 					zap.String("step_id", currentStep.ID),
 					zap.Int("attempt", attempt+1),
 					zap.Int("max_retries", maxRetries),
 					zap.Duration("delay", actualDelay),
 					zap.String("backoff_strategy", backoffStrategy))
-				
+
 				select {
 				case <-ctx.Done():
 					break
 				case <-time.After(actualDelay):
 				}
 			}
-			
+
 			stepResult, err = e.executeStep(ctx, currentStep, execCtx)
 			if err == nil && stepResult.Success {
 				// Éxito, salir del loop
 				break
 			}
-			
+
 			// Si no es el último intento, continuar
 			if attempt < maxRetries {
 				execCtx.Logger.Warn("Step execution failed, retrying",
@@ -577,7 +577,7 @@ func (e *WorkflowExecutor) createStepExecution(step *models.WorkflowStep, result
 		Duration:      &duration,
 		Input:         step.Config,
 		ErrorMessage:  errorMessage,
-			RetryCount:    retryCount,
+		RetryCount:    retryCount,
 		ExecutionTime: duration,
 	}
 
