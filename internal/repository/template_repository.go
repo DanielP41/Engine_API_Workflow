@@ -921,7 +921,6 @@ func (r *MongoTemplateRepository) createNotificationIndexes() {
 			zap.String("database", r.dbName))
 	}
 }
-}
 
 // buildMongoFilter construye un filtro MongoDB desde filtros genéricos
 func (r *MongoTemplateRepository) buildMongoFilter(filters map[string]interface{}) bson.M {
