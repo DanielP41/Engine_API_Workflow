@@ -34,6 +34,9 @@ WORKDIR /root/
 # Copy the binary from builder stage
 COPY --from=builder /app/main .
 
+# Copy web assets
+COPY --from=builder /app/web ./web
+
 # Copy .env file (optional, can be overridden by environment variables)
 COPY .env.example .env
 

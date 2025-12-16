@@ -551,13 +551,20 @@ func (r *MongoTemplateRepository) ExportTemplate(ctx context.Context, templateNa
 		return nil, err
 	}
 
+	// Contar versiones reales
+	versionCount, err := r.collection.CountDocuments(ctx, bson.M{"name": templateName})
+	if err != nil {
+		r.logger.Warn("Failed to count template versions", zap.Error(err))
+		versionCount = 1
+	}
+
 	export := &TemplateExport{
 		Template:   template,
 		Version:    "1.0",
 		ExportedAt: time.Now(),
 		Metadata: map[string]interface{}{
 			"exported_by":    "system",
-			"total_versions": 1, // TODO: Contar versiones reales
+			"total_versions": versionCount,
 		},
 	}
 

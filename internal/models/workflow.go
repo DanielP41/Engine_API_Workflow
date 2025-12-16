@@ -10,7 +10,7 @@ import (
 type WorkflowStep struct {
 	ID          string                 `json:"id" bson:"id" validate:"required"`
 	Name        string                 `json:"name" bson:"name" validate:"required,min=3,max=100"`
-	Type        string                 `json:"type" bson:"type" validate:"required,oneof=action condition integration webhook"`
+	Type        string                 `json:"type" bson:"type" validate:"required,oneof=action condition integration webhook http email slack database delay transform notification"`
 	Config      map[string]interface{} `json:"config" bson:"config"`
 	NextStepID  *string                `json:"next_step_id,omitempty" bson:"next_step_id,omitempty"`
 	Conditions  []WorkflowCondition    `json:"conditions,omitempty" bson:"conditions,omitempty"`

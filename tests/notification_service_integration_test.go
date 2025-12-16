@@ -35,7 +35,7 @@ type NotificationServiceIntegrationTestSuite struct {
 	templateRepo     repository.TemplateRepository
 
 	// Servicios
-	emailService        email.Service
+	emailService        email.EmailService
 	notificationService *services.NotificationService
 
 	// Configuración
@@ -64,11 +64,17 @@ func (suite *NotificationServiceIntegrationTestSuite) SetupSuite() {
 
 	// Configurar servicio de email (mock para tests)
 	emailConfig := &email.Config{
-		Enabled:   false, // Deshabilitado para tests
-		Host:      "localhost",
-		Port:      587,
-		FromEmail: "test@example.com",
-		FromName:  "Test System",
+		Development: email.DevelopmentConfig{
+			MockMode: true,
+		},
+		SMTP: email.SMTPConfig{
+			Host: "localhost",
+			Port: 587,
+			DefaultFrom: email.SenderConfig{
+				Email: "test@example.com",
+				Name:  "Test System",
+			},
+		},
 	}
 	suite.emailService = email.NewSMTPService(emailConfig)
 
@@ -201,7 +207,7 @@ func (suite *NotificationServiceIntegrationTestSuite) TestSendTemplatedEmail() {
 	// Verificar que la notificación se creó
 	notifications, _, err := suite.notificationService.GetNotifications(ctx, map[string]interface{}{
 		"template_name": "welcome-template",
-	}, &repository.PaginationOptions{Limit: 10})
+	}, &repository.PaginationOptions{PageSize: 10})
 
 	assert.NoError(suite.T(), err)
 	assert.Len(suite.T(), notifications, 1)
@@ -491,7 +497,7 @@ func (suite *NotificationServiceIntegrationTestSuite) TestSystemAlert() {
 	// Verificar que se creó la notificación
 	notifications, _, err := suite.notificationService.GetNotifications(ctx, map[string]interface{}{
 		"type": models.NotificationTypeSystemAlert,
-	}, &repository.PaginationOptions{Limit: 10})
+	}, &repository.PaginationOptions{PageSize: 10})
 
 	assert.NoError(suite.T(), err)
 	assert.Len(suite.T(), notifications, 1)

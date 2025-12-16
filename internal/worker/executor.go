@@ -211,11 +211,50 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *models
 			zap.String("step_name", currentStep.Name),
 			zap.String("step_type", currentStep.Type))
 
-		// Ejecutar el paso
-		stepResult, err := e.executeStep(ctx, currentStep, execCtx)
+		// Ejecutar el paso con reintentos
+		var stepResult *StepResult
+		var err error
+		
+		maxRetries := workflow.RetryAttempts
+		if maxRetries < 0 {
+			maxRetries = 0
+		}
+		
+		retryDelay := time.Duration(workflow.RetryDelayMs) * time.Millisecond
+		if retryDelay <= 0 {
+			retryDelay = 5 * time.Second
+		}
+		
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			if attempt > 0 {
+				execCtx.Logger.Info("Retrying step",
+					zap.String("step_id", currentStep.ID),
+					zap.Int("attempt", attempt+1),
+					zap.Duration("delay", retryDelay))
+				
+				select {
+				case <-ctx.Done():
+					break
+				case <-time.After(retryDelay):
+				}
+			}
+			
+			stepResult, err = e.executeStep(ctx, currentStep, execCtx)
+			if err == nil && stepResult.Success {
+				break
+			}
+			
+			// Si no es el último intento, continuar
+			if attempt < maxRetries {
+				execCtx.Logger.Warn("Step execution failed, retrying",
+					zap.String("step_id", currentStep.ID),
+					zap.Error(err))
+			}
+		}
+
 		if err != nil {
 			result.Success = false
-			result.ErrorMessage = fmt.Sprintf("Step '%s' failed: %v", currentStep.ID, err)
+			result.ErrorMessage = fmt.Sprintf("Step '%s' failed after %d attempts: %v", currentStep.ID, maxRetries+1, err)
 
 			// Registrar paso fallido
 			stepExec := e.createStepExecution(currentStep, stepResult, err)
@@ -345,7 +384,11 @@ func (e *WorkflowExecutor) executeStep(ctx context.Context, step *models.Workflo
 	case models.ActionTypeDelay:
 		err = e.executeDelayAction(stepCtx, step, stepResult, execCtx)
 	case models.ActionTypeDatabase:
-		err = e.executeDatabaseAction(stepCtx, step, stepResult, execCtx)
+		if e.databaseExecutor != nil {
+			stepResult, err = e.databaseExecutor.Execute(stepCtx, step, execCtx)
+		} else {
+			err = e.executeDatabaseActionSimulated(stepCtx, step, stepResult, execCtx)
+		}
 	case models.ActionTypeIntegration:
 		err = e.executeIntegrationAction(stepCtx, step, stepResult, execCtx)
 	case models.ActionTypeNotification:
@@ -463,11 +506,13 @@ func (e *WorkflowExecutor) executeDelayAction(ctx context.Context, step *models.
 }
 
 // Los otros métodos permanecen igual por ahora (Database, Integration, Notification)
-func (e *WorkflowExecutor) executeDatabaseAction(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
-	e.logger.Info("Executing Database action", zap.String("step_id", step.ID))
+// 🆕 MÉTODO SIMULADO FALLBACK para Database
+func (e *WorkflowExecutor) executeDatabaseActionSimulated(ctx context.Context, step *models.WorkflowStep, result *StepResult, execCtx *ExecutionContext) error {
+	e.logger.Info("Executing Database action (simulated)", zap.String("step_id", step.ID))
 	time.Sleep(200 * time.Millisecond)
 	result.Output["database_operation"] = "completed"
 	result.Output["message"] = "Database action simulated successfully"
+	result.Output["mode"] = "simulated"
 	return nil
 }
 
@@ -623,7 +668,11 @@ func (e *WorkflowExecutor) GetExecutorModes() map[string]string {
 	// Siempre simulados (por ahora)
 	modes["condition"] = "native"
 	modes["delay"] = "native"
-	modes["database"] = "simulated"
+	if e.databaseExecutor != nil {
+		modes["database"] = "real"
+	} else {
+		modes["database"] = "simulated"
+	}
 	modes["integration"] = "simulated"
 	modes["notification"] = "simulated"
 

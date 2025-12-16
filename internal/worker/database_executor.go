@@ -53,7 +53,7 @@ func NewDatabaseActionExecutor(mongoClient *mongo.Client, databaseName string, l
 }
 
 // Execute ejecuta una acción de base de datos basada en la configuración del paso
-func (e *DatabaseActionExecutor) Execute(ctx context.Context, step *models.WorkflowStep, execCtx *ExecutionContext) (*DatabaseResult, error) {
+func (e *DatabaseActionExecutor) Execute(ctx context.Context, step *models.WorkflowStep, execCtx *ExecutionContext) (*StepResult, error) {
 	startTime := time.Now()
 
 	e.logger.Info("Executing database action",
@@ -63,21 +63,24 @@ func (e *DatabaseActionExecutor) Execute(ctx context.Context, step *models.Workf
 	// Extraer operación de la configuración del paso
 	operation, err := e.parseOperation(step.Config)
 	if err != nil {
-		return &DatabaseResult{
-			Success:       false,
-			ErrorMessage:  fmt.Sprintf("Failed to parse operation: %v", err),
-			ExecutionTime: time.Since(startTime),
+		return &StepResult{
+			Success:      false,
+			ErrorMessage: fmt.Sprintf("Failed to parse operation: %v", err),
+			Duration:     time.Since(startTime),
+			Output:       make(map[string]interface{}),
 		}, err
 	}
 
 	// Validar operación
 	if err := e.validateOperation(operation); err != nil {
-		return &DatabaseResult{
-			Success:       false,
-			Operation:     operation.Type,
-			Collection:    operation.Collection,
-			ErrorMessage:  fmt.Sprintf("Invalid operation: %v", err),
-			ExecutionTime: time.Since(startTime),
+		return &StepResult{
+			Success:      false,
+			ErrorMessage: fmt.Sprintf("Invalid operation: %v", err),
+			Duration:     time.Since(startTime),
+			Output: map[string]interface{}{
+				"operation":  operation.Type,
+				"collection": operation.Collection,
+			},
 		}, err
 	}
 
@@ -86,43 +89,70 @@ func (e *DatabaseActionExecutor) Execute(ctx context.Context, step *models.Workf
 	collection := database.Collection(operation.Collection)
 
 	// Ejecutar operación según el tipo
-	var result *DatabaseResult
+	var dbResult *DatabaseResult
 
 	switch operation.Type {
 	case "insert":
-		result, err = e.executeInsert(ctx, collection, operation)
+		dbResult, err = e.executeInsert(ctx, collection, operation)
 	case "update":
-		result, err = e.executeUpdate(ctx, collection, operation)
+		dbResult, err = e.executeUpdate(ctx, collection, operation)
 	case "delete":
-		result, err = e.executeDelete(ctx, collection, operation)
+		dbResult, err = e.executeDelete(ctx, collection, operation)
 	case "find":
-		result, err = e.executeFind(ctx, collection, operation)
+		dbResult, err = e.executeFind(ctx, collection, operation)
 	case "aggregate":
-		result, err = e.executeAggregate(ctx, collection, operation)
+		dbResult, err = e.executeAggregate(ctx, collection, operation)
 	default:
 		err = fmt.Errorf("unsupported operation type: %s", operation.Type)
-		result = &DatabaseResult{
+		dbResult = &DatabaseResult{
 			Success:      false,
-			Operation:    operation.Type,
-			Collection:   operation.Collection,
 			ErrorMessage: err.Error(),
 		}
 	}
 
-	// Agregar metadatos de tiempo y operación
-	if result != nil {
-		result.ExecutionTime = time.Since(startTime)
-		result.Operation = operation.Type
-		result.Collection = operation.Collection
+	// Convertir DatabaseResult a StepResult
+	stepResult := &StepResult{
+		Success:  dbResult != nil && dbResult.Success,
+		Duration: time.Since(startTime),
+		Output: map[string]interface{}{
+			"operation":      operation.Type,
+			"collection":     operation.Collection,
+			"execution_time": time.Since(startTime).String(),
+		},
+	}
+
+	if dbResult != nil {
+		if dbResult.ErrorMessage != "" {
+			stepResult.ErrorMessage = dbResult.ErrorMessage
+		}
+		if dbResult.AffectedRows > 0 {
+			stepResult.Output["affected_rows"] = dbResult.AffectedRows
+		}
+		if dbResult.InsertedID != nil {
+			stepResult.Output["inserted_id"] = dbResult.InsertedID
+		}
+		if dbResult.Documents != nil {
+			stepResult.Output["documents"] = dbResult.Documents
+		}
+		if dbResult.Metadata != nil {
+			for k, v := range dbResult.Metadata {
+				stepResult.Output[k] = v
+			}
+		}
+	}
+
+	if err != nil {
+		stepResult.Success = false
+		stepResult.ErrorMessage = err.Error()
 	}
 
 	e.logger.Info("Database action completed",
 		zap.String("operation", operation.Type),
 		zap.String("collection", operation.Collection),
-		zap.Bool("success", result != nil && result.Success),
-		zap.Duration("duration", time.Since(startTime)))
+		zap.Bool("success", stepResult.Success),
+		zap.Duration("duration", stepResult.Duration))
 
-	return result, err
+	return stepResult, err
 }
 
 // parseOperation extrae la operación de la configuración del paso

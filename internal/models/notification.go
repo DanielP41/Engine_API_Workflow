@@ -484,6 +484,21 @@ func (n *EmailNotification) CalculateNextRetry() time.Time {
 	return time.Now().Add(delay + jitter)
 }
 
+// IsDelivered verifica si la notificación fue entregada
+func (n *EmailNotification) IsDelivered() bool {
+	return n.Status == NotificationStatusSent
+}
+
+// HasHTMLVersion verifica si el template tiene versión HTML
+func (t *EmailTemplate) HasHTMLVersion() bool {
+	return t.BodyHTML != ""
+}
+
+// GetFullName obtiene el nombre completo con versión
+func (t *EmailTemplate) GetFullName() string {
+	return fmt.Sprintf("%s_v%d", t.Name, t.Version)
+}
+
 // ToEmailNotification convierte SendEmailRequest a EmailNotification
 func (req *SendEmailRequest) ToEmailNotification() *EmailNotification {
 	notification := &EmailNotification{

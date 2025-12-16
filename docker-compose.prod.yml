@@ -1,0 +1,110 @@
+services:
+  # MongoDB - Production (No external ports, persistent volume)
+  mongodb:
+    image: mongo:7.0
+    container_name: workflow_mongodb_prod
+    restart: always
+    # Ports removed for security in production (only accessible within network)
+    # ports:
+    #   - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-securepassword123}
+      MONGO_INITDB_DATABASE: engine_workflow
+    volumes:
+      - mongodb_data_prod:/data/db
+    networks:
+      - workflow_network_prod
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # Redis - Production
+  redis:
+    image: redis:7.2-alpine
+    container_name: workflow_redis_prod
+    restart: always
+    # Ports removed for security
+    # ports:
+    #   - "6379:6379"
+    command: redis-server --requirepass ${REDIS_PASSWORD:-secureredispassword}
+    volumes:
+      - redis_data_prod:/data
+    networks:
+      - workflow_network_prod
+    healthcheck:
+      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-secureredispassword}", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # API - Production
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: workflow_api_prod
+    restart: always
+    ports:
+      - "${PORT:-8081}:8081"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - workflow_network_prod
+    environment:
+      # Server
+      PORT: 8081
+      ENV: production
+      LOG_LEVEL: info
+
+      # Database
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-securepassword123}@mongodb:27017/engine_workflow?authSource=admin
+      MONGODB_DATABASE: engine_workflow
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-secureredispassword}
+      REDIS_DB: 0
+
+      # JWT Security
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_THIS_SECRET_IN_PRODUCTION_TO_SOMETHING_SAFE_AND_LONG}
+      JWT_ISSUER: engine-api-workflow
+      JWT_AUDIENCE: engine-api
+      JWT_ACCESS_TTL: 15m
+      JWT_REFRESH_TTL: 168h
+
+      # Security Features
+      ENABLE_TOKEN_BLACKLIST: true
+      ENABLE_RATE_LIMIT: true
+      ENABLE_CORS: true
+
+      # CORS (Restrict in production)
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://yourdomain.com}
+      TRUSTED_PROXIES: 127.0.0.1,::1
+
+      # Rate Limiting
+      RATE_LIMIT_REQUESTS: 100
+      RATE_LIMIT_WINDOW: 1m
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8081/api/v1/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  mongodb_data_prod:
+  redis_data_prod:
+
+
+networks:
+  workflow_network_prod:
+    driver: bridge
