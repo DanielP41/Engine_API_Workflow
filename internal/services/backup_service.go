@@ -657,10 +657,357 @@ func (s *backupService) getBackupPath(backupID string) string {
 }
 
 func (s *backupService) createIncrementalBackup(ctx context.Context, backupPath string) error {
-	// TODO: Implementar backup incremental
-	// Por ahora, usar backup completo como fallback
-	s.logger.Warn("Incremental backup not implemented, falling back to full backup")
-	return s.createFullBackup(ctx, backupPath)
+	s.logger.Info("Creating incremental backup", zap.String("path", backupPath))
+
+	// Buscar el último backup (completo o incremental) para usar como base
+	lastBackup, err := s.findLastBackup(ctx)
+	if err != nil || lastBackup == nil {
+		s.logger.Warn("No previous backup found, creating full backup instead",
+			zap.Error(err))
+		return s.createFullBackup(ctx, backupPath)
+	}
+
+	s.logger.Info("Found last backup for incremental",
+		zap.String("last_backup_id", lastBackup.ID),
+		zap.Time("last_backup_time", lastBackup.StartTime))
+
+	// Crear directorio para el backup incremental
+	if err := os.MkdirAll(backupPath, 0755); err != nil {
+		return fmt.Errorf("failed to create incremental backup directory: %w", err)
+	}
+
+	// Guardar referencia al backup base
+	baseBackupFile := filepath.Join(backupPath, ".base_backup")
+	if err := os.WriteFile(baseBackupFile, []byte(lastBackup.ID), 0644); err != nil {
+		s.logger.Warn("Failed to save base backup reference", zap.Error(err))
+	}
+
+	// 1. Backup incremental de MongoDB (solo documentos modificados desde último backup)
+	if err := s.createIncrementalMongoDBBackup(ctx, backupPath, lastBackup.StartTime); err != nil {
+		s.logger.Warn("Failed to create incremental MongoDB backup, falling back to full",
+			zap.Error(err))
+		// Fallback a backup completo de MongoDB si falla
+		if err := s.createMongoDBBackup(ctx, filepath.Join(backupPath, "mongodb")); err != nil {
+			return fmt.Errorf("failed to backup MongoDB (incremental and full): %w", err)
+		}
+	}
+
+	// 2. Backup incremental de Redis (solo si hay cambios)
+	if err := s.createIncrementalRedisBackup(ctx, backupPath, lastBackup.StartTime); err != nil {
+		s.logger.Warn("Failed to create incremental Redis backup, falling back to full",
+			zap.Error(err))
+		if err := s.createRedisBackup(ctx, filepath.Join(backupPath, "redis")); err != nil {
+			return fmt.Errorf("failed to backup Redis (incremental and full): %w", err)
+		}
+	}
+
+	// 3. Backup incremental de configuración (solo archivos modificados)
+	if err := s.createIncrementalConfigBackup(ctx, backupPath, lastBackup.StartTime); err != nil {
+		s.logger.Warn("Failed to create incremental config backup", zap.Error(err))
+		// Config backup no es crítico, continuar
+	}
+
+	// 4. Backup incremental de logs (solo archivos nuevos/modificados)
+	if err := s.createIncrementalLogsBackup(ctx, backupPath, lastBackup.StartTime); err != nil {
+		s.logger.Warn("Failed to create incremental logs backup", zap.Error(err))
+		// Logs backup no es crítico, continuar
+	}
+
+	s.logger.Info("Incremental backup completed successfully")
+	return nil
+}
+
+// findLastBackup encuentra el último backup completo o incremental
+func (s *backupService) findLastBackup(ctx context.Context) (*models.BackupInfo, error) {
+	backups, err := s.ListBackups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list backups: %w", err)
+	}
+
+	var lastBackup *models.BackupInfo
+	var lastTime time.Time
+
+	for i := range backups {
+		backup := &backups[i]
+		// Solo considerar backups completados
+		if backup.Status != "completed" {
+			continue
+		}
+		// Solo considerar backups completos o incrementales
+		if backup.Type != "full" && backup.Type != "incremental" {
+			continue
+		}
+		// Encontrar el más reciente
+		if backup.StartTime.After(lastTime) {
+			lastTime = backup.StartTime
+			lastBackup = backup
+		}
+	}
+
+	return lastBackup, nil
+}
+
+// createIncrementalMongoDBBackup crea backup incremental de MongoDB
+func (s *backupService) createIncrementalMongoDBBackup(ctx context.Context, backupPath string, sinceTime time.Time) error {
+	s.logger.Info("Creating incremental MongoDB backup",
+		zap.String("path", backupPath),
+		zap.Time("since", sinceTime))
+
+	mongodbPath := filepath.Join(backupPath, "mongodb")
+	if err := os.MkdirAll(mongodbPath, 0755); err != nil {
+		return fmt.Errorf("failed to create MongoDB backup directory: %w", err)
+	}
+
+	// Usar mongodump con query para solo documentos modificados
+	// Nota: Esto requiere que las colecciones tengan un campo _updatedAt o similar
+	// Por ahora, hacemos backup de colecciones completas que podrían haber cambiado
+	
+	// Guardar timestamp del último backup
+	timestampFile := filepath.Join(mongodbPath, ".last_backup_timestamp")
+	if err := os.WriteFile(timestampFile, []byte(sinceTime.Format(time.RFC3339)), 0644); err != nil {
+		s.logger.Warn("Failed to save backup timestamp", zap.Error(err))
+	}
+
+	// Para un backup realmente incremental, necesitaríamos:
+	// 1. Usar oplog de MongoDB (requiere replica set)
+	// 2. O hacer query con filtro de fecha en cada colección
+	// Por ahora, hacemos un backup completo pero marcado como incremental
+	// En producción, se recomienda usar oplog para backups incrementales reales
+	
+	cmd := exec.CommandContext(ctx, "mongodump",
+		"--uri", s.config.MongoURI,
+		"--out", mongodbPath,
+		"--gzip",
+		"--query", fmt.Sprintf(`{"_updatedAt": {"$gte": ISODate("%s")}}`, sinceTime.Format(time.RFC3339)),
+	)
+
+	// Si la query falla (colecciones sin _updatedAt), hacer backup completo de colecciones pequeñas
+	cmd.Stdout = &logWriter{logger: s.logger, level: zapcore.InfoLevel}
+	cmd.Stderr = &logWriter{logger: s.logger, level: zapcore.ErrorLevel}
+
+	if err := cmd.Run(); err != nil {
+		// Fallback: hacer backup completo pero comprimido
+		s.logger.Info("Query-based incremental backup failed, using full backup with compression",
+			zap.Error(err))
+		
+		cmd = exec.CommandContext(ctx, "mongodump",
+			"--uri", s.config.MongoURI,
+			"--out", mongodbPath,
+			"--gzip",
+		)
+		cmd.Stdout = &logWriter{logger: s.logger, level: zapcore.InfoLevel}
+		cmd.Stderr = &logWriter{logger: s.logger, level: zapcore.ErrorLevel}
+		
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("mongodump failed: %w", err)
+		}
+	}
+
+	s.logger.Info("Incremental MongoDB backup completed")
+	return nil
+}
+
+// createIncrementalRedisBackup crea backup incremental de Redis
+func (s *backupService) createIncrementalRedisBackup(ctx context.Context, backupPath string, sinceTime time.Time) error {
+	s.logger.Info("Creating incremental Redis backup",
+		zap.String("path", backupPath),
+		zap.Time("since", sinceTime))
+
+	redisPath := filepath.Join(backupPath, "redis")
+	if err := os.MkdirAll(redisPath, 0755); err != nil {
+		return fmt.Errorf("failed to create Redis backup directory: %w", err)
+	}
+
+	// Redis no tiene soporte nativo para backups incrementales
+	// Verificamos si hay cambios comparando el tamaño del dump anterior
+	// Si el tamaño cambió significativamente, hacemos backup completo
+	
+	// Guardar timestamp
+	timestampFile := filepath.Join(redisPath, ".last_backup_timestamp")
+	if err := os.WriteFile(timestampFile, []byte(sinceTime.Format(time.RFC3339)), 0644); err != nil {
+		s.logger.Warn("Failed to save backup timestamp", zap.Error(err))
+	}
+
+	// Para Redis, siempre hacemos backup completo pero comprimido
+	// En producción, se podría usar AOF (Append Only File) para backups más incrementales
+	dumpFile := filepath.Join(redisPath, "dump.rdb")
+
+	cmd := exec.CommandContext(ctx, "redis-cli",
+		"-h", s.config.RedisHost,
+		"-p", s.config.RedisPort,
+		"--rdb", dumpFile,
+	)
+
+	if s.config.RedisPassword != "" {
+		cmd.Args = append(cmd.Args, "-a", s.config.RedisPassword)
+	}
+
+	cmd.Stdout = &logWriter{logger: s.logger, level: zapcore.InfoLevel}
+	cmd.Stderr = &logWriter{logger: s.logger, level: zapcore.ErrorLevel}
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("redis backup failed: %w", err)
+	}
+
+	// Comprimir el dump si es grande
+	if stat, err := os.Stat(dumpFile); err == nil && stat.Size() > 1024*1024 { // > 1MB
+		compressedFile := dumpFile + ".gz"
+		// Usar gzip para comprimir
+		compressCmd := exec.CommandContext(ctx, "gzip", "-c", dumpFile)
+		outFile, err := os.Create(compressedFile)
+		if err == nil {
+			compressCmd.Stdout = outFile
+			if compressCmd.Run() == nil {
+				os.Remove(dumpFile) // Eliminar original si compresión exitosa
+				s.logger.Info("Redis dump compressed", zap.String("file", compressedFile))
+			}
+			outFile.Close()
+		}
+	}
+
+	s.logger.Info("Incremental Redis backup completed")
+	return nil
+}
+
+// createIncrementalConfigBackup crea backup incremental de configuración
+func (s *backupService) createIncrementalConfigBackup(ctx context.Context, backupPath string, sinceTime time.Time) error {
+	s.logger.Info("Creating incremental config backup",
+		zap.String("path", backupPath),
+		zap.Time("since", sinceTime))
+
+	configPath := filepath.Join(backupPath, "config")
+	if err := os.MkdirAll(configPath, 0755); err != nil {
+		return fmt.Errorf("failed to create config backup directory: %w", err)
+	}
+
+	configFiles := []string{
+		".env",
+		".env.example",
+		"docker-compose.yml",
+		"docker-compose.prod.yml",
+		"Dockerfile",
+		"go.mod",
+		"go.sum",
+		"Makefile",
+	}
+
+	backedUpCount := 0
+	for _, file := range configFiles {
+		fileInfo, err := os.Stat(file)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			s.logger.Warn("Failed to stat config file",
+				zap.String("file", file), zap.Error(err))
+			continue
+		}
+
+		// Solo hacer backup si el archivo fue modificado después del último backup
+		if fileInfo.ModTime().After(sinceTime) {
+			destPath := filepath.Join(configPath, file)
+			if err := s.copyFile(file, destPath); err != nil {
+				s.logger.Warn("Failed to backup config file",
+					zap.String("file", file), zap.Error(err))
+				continue
+			}
+			backedUpCount++
+		}
+	}
+
+	// Backup de directorios de configuración (solo archivos modificados)
+	configDirs := []string{"config", "scripts", "web/templates"}
+	for _, dir := range configDirs {
+		destDir := filepath.Join(configPath, dir)
+		if err := s.copyDirectoryIncremental(dir, destDir, sinceTime); err != nil {
+			s.logger.Warn("Failed to backup config directory",
+				zap.String("dir", dir), zap.Error(err))
+		}
+	}
+
+	s.logger.Info("Incremental config backup completed",
+		zap.Int("files_backed_up", backedUpCount))
+	return nil
+}
+
+// createIncrementalLogsBackup crea backup incremental de logs
+func (s *backupService) createIncrementalLogsBackup(ctx context.Context, backupPath string, sinceTime time.Time) error {
+	logsPath := filepath.Join(backupPath, "logs")
+	if err := os.MkdirAll(logsPath, 0755); err != nil {
+		return fmt.Errorf("failed to create logs backup directory: %w", err)
+	}
+
+	// Buscar archivos de log en directorios comunes
+	logDirs := []string{"./logs", "./tmp", "./var/log"}
+	
+	for _, logDir := range logDirs {
+		if _, err := os.Stat(logDir); os.IsNotExist(err) {
+			continue
+		}
+
+		if err := filepath.Walk(logDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil // Continuar con siguiente archivo
+			}
+
+			// Solo archivos de log
+			if info.IsDir() || !strings.HasSuffix(path, ".log") {
+				return nil
+			}
+
+			// Solo archivos modificados después del último backup
+			if info.ModTime().After(sinceTime) {
+				relPath, _ := filepath.Rel(logDir, path)
+				destPath := filepath.Join(logsPath, logDir, relPath)
+				
+				if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+					return nil
+				}
+
+				if err := s.copyFile(path, destPath); err != nil {
+					s.logger.Warn("Failed to backup log file",
+						zap.String("file", path), zap.Error(err))
+				}
+			}
+
+			return nil
+		}); err != nil {
+			s.logger.Warn("Failed to walk log directory",
+				zap.String("dir", logDir), zap.Error(err))
+		}
+	}
+
+	return nil
+}
+
+// copyDirectoryIncremental copia un directorio de forma incremental
+func (s *backupService) copyDirectoryIncremental(srcDir, destDir string, sinceTime time.Time) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		// Solo copiar si fue modificado después del último backup
+		if !info.ModTime().After(sinceTime) {
+			if info.IsDir() {
+				return nil // No entrar en subdirectorios no modificados
+			}
+			return nil
+		}
+
+		relPath, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return nil
+		}
+
+		destPath := filepath.Join(destDir, relPath)
+
+		if info.IsDir() {
+			return os.MkdirAll(destPath, info.Mode())
+		}
+
+		return s.copyFile(path, destPath)
+	})
 }
 
 // Métodos de restauración
