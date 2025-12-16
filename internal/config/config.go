@@ -98,6 +98,12 @@ type Config struct {
 	// External Services
 	SlackWebhookURL string
 	SlackBotToken   string
+	
+	// Webhook Configuration
+	WebhookTimeout      time.Duration
+	WebhookMaxRetries   int
+	WebhookRetryBackoff time.Duration
+	WebhookInsecureSSL  bool
 
 	// Feature flags
 	EnableTokenBlacklist bool
@@ -321,6 +327,12 @@ func Load() *Config {
 	// Configuración de servicios externos
 	cfg.SlackWebhookURL = getEnv("SLACK_WEBHOOK_URL", "")
 	cfg.SlackBotToken = getEnv("SLACK_BOT_TOKEN", "")
+	
+	// Configuración de webhooks
+	cfg.WebhookTimeout = parseDuration("WEBHOOK_TIMEOUT", "30s")
+	cfg.WebhookMaxRetries = getEnvAsInt("WEBHOOK_MAX_RETRIES", 3)
+	cfg.WebhookRetryBackoff = parseDuration("WEBHOOK_RETRY_BACKOFF", "1s")
+	cfg.WebhookInsecureSSL = getEnvAsBool("WEBHOOK_INSECURE_SSL", false)
 
 	// Validar configuración antes de continuar
 	if err := cfg.Validate(); err != nil {

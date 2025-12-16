@@ -14,6 +14,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/gofiber/template/html/v2"
 	"go.uber.org/zap"
 
 	"Engine_API_Workflow/internal/api/handlers"
@@ -22,6 +23,7 @@ import (
 	"Engine_API_Workflow/internal/repository/mongodb"
 	"Engine_API_Workflow/internal/repository/redis"
 	"Engine_API_Workflow/internal/services"
+	"Engine_API_Workflow/internal/services/integration"
 	"Engine_API_Workflow/internal/utils"
 	"Engine_API_Workflow/internal/worker"
 	"Engine_API_Workflow/pkg/cache"
@@ -264,6 +266,33 @@ func main() {
 	// Crear BackupHandler
 	backupHandler := handlers.NewBackupHandler(backupService, zapLogger)
 
+	// 🆕 INICIALIZAR SERVICIOS DE INTEGRACIÓN
+	appLogger.Info("Initializing integration services...")
+	
+	// Inicializar Webhook Service
+	webhookConfig := integration.WebhookConfig{
+		Timeout:         cfg.WebhookTimeout,
+		MaxRetries:      cfg.WebhookMaxRetries,
+		RetryBackoff:    cfg.WebhookRetryBackoff,
+		InsecureSSL:     cfg.WebhookInsecureSSL,
+		FollowRedirects: true,
+		MaxRedirects:    5,
+		UserAgent:       "Engine-API-Workflow/2.0",
+	}
+	webhookService := integration.NewWebhookService(webhookConfig, zapLogger)
+	appLogger.Info("Webhook service initialized")
+	
+	// Inicializar Slack Service
+	slackConfig := integration.SlackConfig{
+		BotToken:     cfg.SlackBotToken,
+		WebhookURL:   cfg.SlackWebhookURL,
+		Timeout:      10 * time.Second,
+		MaxRetries:   3,
+		RetryBackoff: 1 * time.Second,
+	}
+	slackService := integration.NewSlackService(slackConfig, zapLogger)
+	appLogger.Info("Slack service initialized")
+
 	// 🆕 CREAR CACHE HANDLER SI ESTÁ HABILITADO
 	var cacheHandler *handlers.CacheHandler
 	if cfg.IsCacheEnabled() && cacheManager != nil {
@@ -280,8 +309,61 @@ func main() {
 		jwtService,
 	)
 
+	// Inicializar motor de plantillas
+	engine := html.New("./web/templates", ".html")
+
+	// Funciones personalizadas para playtillas
+	engine.AddFunc("title", strings.Title)
+	engine.AddFunc("truncate", func(l int, s string) string {
+		if len(s) <= l {
+			return s
+		}
+		return s[:l] + "..."
+	})
+	engine.AddFunc("mul", func(a, b float64) float64 {
+		return a * b
+	})
+	engine.AddFunc("div", func(a, b float64) float64 {
+		if b == 0 {
+			return 0
+		}
+		return a / b
+	})
+	engine.AddFunc("sub", func(a, b int) int {
+		return a - b
+	})
+	engine.AddFunc("add", func(a, b int) int {
+		return a + b
+	})
+	engine.AddFunc("seq", func(start, end int) []int {
+		var res []int
+		for i := start; i <= end; i++ {
+			res = append(res, i)
+		}
+		return res
+	})
+	engine.AddFunc("formatDuration", func(d time.Duration) string {
+		return d.String()
+	})
+	engine.AddFunc("pagination", func(current, total int) []int {
+		var res []int
+		// Simple pagination logic: show all for now or window
+		// If total > 10, show window? Let's keep it simple: all
+		// Actually, logs.html handles dots? No, just loop.
+		// Let's implement full range.
+		for i := 1; i <= total; i++ {
+			res = append(res, i)
+		}
+		return res
+	})
+
+	if cfg.IsDevelopment() {
+		engine.Reload(true)
+	}
+
 	// Inicializar Fiber
 	app := fiber.New(fiber.Config{
+		Views:        engine,
 		ServerHeader: "Engine-API-Workflow",
 		AppName:      "Engine API Workflow v2.0.0",
 		ErrorHandler: customErrorHandler(zapLogger),
@@ -733,9 +815,9 @@ func setupWebHandlerRoutes(app *fiber.App, webHandler *handlers.WebHandler, auth
 	app.Post("/login", webHandler.HandleLogin)
 
 	// Rutas protegidas (requieren autenticación)
-	protected := app.Group("/")
-	protected.Use(authMiddleware.RequireAuth())
-	protected.Get("/dashboard", func(c *fiber.Ctx) error {
+	// Rutas protegidas (requieren autenticación)
+	// Solo aplicar middleware a /dashboard, no usar grupo "/" porque afecta a todo el app
+	app.Get("/dashboard", authMiddleware.RequireAuth(), func(c *fiber.Ctx) error {
 		return c.SendFile("./web/templates/dashboard.html")
 	})
 }
