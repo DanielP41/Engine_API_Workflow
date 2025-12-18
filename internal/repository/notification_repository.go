@@ -653,6 +653,104 @@ func (r *MongoNotificationRepository) findNotifications(ctx context.Context, fil
 	return notifications, cursor.Err()
 }
 
+// Search realiza una búsqueda avanzada de notificaciones con texto completo y filtros
+func (r *MongoNotificationRepository) Search(ctx context.Context, query string, filters map[string]interface{}, opts *PaginationOptions) ([]*models.EmailNotification, int64, error) {
+	// Construir filtro base
+	mongoFilter := r.buildMongoFilter(filters)
+
+	// Agregar búsqueda de texto si se proporciona
+	if query != "" {
+		// Búsqueda de texto en subject y body
+		textFilter := bson.M{
+			"$or": []bson.M{
+				{"subject": bson.M{"$regex": query, "$options": "i"}},
+				{"body": bson.M{"$regex": query, "$options": "i"}},
+				{"to": bson.M{"$regex": query, "$options": "i"}},
+				{"cc": bson.M{"$regex": query, "$options": "i"}},
+			},
+		}
+
+		// Combinar con filtros existentes
+		if len(mongoFilter) > 0 {
+			mongoFilter = bson.M{
+				"$and": []bson.M{
+					mongoFilter,
+					textFilter,
+				},
+			}
+		} else {
+			mongoFilter = textFilter
+		}
+	}
+
+	// Configurar opciones de paginación
+	findOpts := options.Find()
+	if opts != nil {
+		if opts.PageSize > 0 {
+			findOpts.SetLimit(int64(opts.PageSize))
+		}
+		if opts.Page > 1 {
+			skip := (opts.Page - 1) * opts.PageSize
+			findOpts.SetSkip(int64(skip))
+		}
+
+		// Configurar ordenamiento
+		if opts.SortBy != "" {
+			sortOrder := 1
+			if opts.SortDesc {
+				sortOrder = -1
+			}
+			findOpts.SetSort(bson.D{{Key: opts.SortBy, Value: sortOrder}})
+		} else {
+			// Ordenamiento por defecto: más recientes primero
+			findOpts.SetSort(bson.D{{Key: "created_at", Value: -1}})
+		}
+	} else {
+		// Configuración por defecto
+		findOpts.SetLimit(50).SetSort(bson.D{{Key: "created_at", Value: -1}})
+	}
+
+	// Ejecutar consulta
+	cursor, err := r.collection.Find(ctx, mongoFilter, findOpts)
+	if err != nil {
+		r.logger.Error("Failed to search notifications",
+			zap.String("query", query),
+			zap.Any("filters", filters),
+			zap.Error(err))
+		return nil, 0, fmt.Errorf("failed to search notifications: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	// Decodificar resultados
+	var notifications []*models.EmailNotification
+	for cursor.Next(ctx) {
+		var notification models.EmailNotification
+		if err := cursor.Decode(&notification); err != nil {
+			r.logger.Error("Failed to decode notification", zap.Error(err))
+			continue
+		}
+		notifications = append(notifications, &notification)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, 0, fmt.Errorf("cursor error: %w", err)
+	}
+
+	// Contar total de documentos
+	total, err := r.collection.CountDocuments(ctx, mongoFilter)
+	if err != nil {
+		r.logger.Error("Failed to count search results", zap.Error(err))
+		return notifications, 0, nil // Devolver resultados sin total
+	}
+
+	r.logger.Debug("Search completed",
+		zap.String("query", query),
+		zap.Int("count", len(notifications)),
+		zap.Int64("total", total))
+
+	return notifications, total, nil
+}
+
 // buildMongoFilter construye un filtro MongoDB a partir de filtros genéricos
 func (r *MongoNotificationRepository) buildMongoFilter(filters map[string]interface{}) bson.M {
 	mongoFilter := bson.M{}

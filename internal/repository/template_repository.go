@@ -24,11 +24,11 @@ import (
 
 // MongoTemplateRepository implementación MongoDB del repositorio de templates
 type MongoTemplateRepository struct {
-	collection         *mongo.Collection
+	collection             *mongo.Collection
 	notificationCollection *mongo.Collection
-	logger             *zap.Logger
-	dbName             string
-	db                 *mongo.Database
+	logger                 *zap.Logger
+	dbName                 string
+	db                     *mongo.Database
 }
 
 // NewMongoTemplateRepository crea una nueva instancia del repositorio
@@ -37,11 +37,11 @@ func NewMongoTemplateRepository(db *mongo.Database, logger *zap.Logger) Template
 	notificationCollection := db.Collection("email_notifications")
 
 	repo := &MongoTemplateRepository{
-		collection:            collection,
+		collection:             collection,
 		notificationCollection: notificationCollection,
-		logger:                logger,
-		dbName:                db.Name(),
-		db:                    db,
+		logger:                 logger,
+		dbName:                 db.Name(),
+		db:                     db,
 	}
 
 	// Crear índices en background
@@ -491,7 +491,7 @@ func (r *MongoTemplateRepository) GetUsageStats(ctx context.Context, templateNam
 
 	// Calcular fecha de inicio
 	startDate := time.Now().AddDate(0, 0, -days)
-	
+
 	// Construir pipeline de agregación
 	pipeline := []bson.M{
 		// Match: filtrar por template_name y fecha
@@ -591,13 +591,13 @@ func (r *MongoTemplateRepository) GetUsageStats(ctx context.Context, templateNam
 		var lastNotification struct {
 			CreatedAt time.Time `bson:"created_at"`
 		}
-		
+
 		err := r.notificationCollection.FindOne(
 			ctx,
 			bson.M{"template_name": templateName},
 			options.FindOne().SetSort(bson.D{{Key: "created_at", Value: -1}}),
 		).Decode(&lastNotification)
-		
+
 		if err == nil {
 			lastUsed = lastNotification.CreatedAt
 		}
@@ -877,6 +877,7 @@ func (r *MongoTemplateRepository) createIndexes() {
 		r.logger.Info("Template repository indexes created successfully",
 			zap.String("collection", r.collection.Name()),
 			zap.String("database", r.dbName))
+	}
 }
 
 // createNotificationIndexes crea índices en la colección de notificaciones para optimizar consultas de uso

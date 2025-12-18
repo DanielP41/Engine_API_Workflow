@@ -102,7 +102,16 @@ func (h *TriggerHandler) TriggerWorkflow(c *fiber.Ctx) error {
 	}
 
 	// Convert workflow ID to ObjectID
-	workflowObjID, err := primitive.ObjectIDFromHex(req.WorkflowID)
+	workflowID := req.WorkflowID
+	if workflowID == "" {
+		workflowID = c.Params("id")
+	}
+
+	if workflowID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.NewErrorResponse("Workflow ID is required", "Please provide workflow_id in body or id in URL"))
+	}
+
+	workflowObjID, err := primitive.ObjectIDFromHex(workflowID)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(utils.NewErrorResponse("Invalid workflow ID format", ""))
 	}

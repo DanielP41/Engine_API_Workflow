@@ -268,7 +268,7 @@ func main() {
 
 	// 🆕 INICIALIZAR SERVICIOS DE INTEGRACIÓN
 	appLogger.Info("Initializing integration services...")
-	
+
 	// Inicializar Webhook Service
 	webhookConfig := integration.WebhookConfig{
 		Timeout:         cfg.WebhookTimeout,
@@ -279,9 +279,10 @@ func main() {
 		MaxRedirects:    5,
 		UserAgent:       "Engine-API-Workflow/2.0",
 	}
+	// Inicializar servicios de integración
 	webhookService := integration.NewWebhookService(webhookConfig, zapLogger)
 	appLogger.Info("Webhook service initialized")
-	
+
 	// Inicializar Slack Service
 	slackConfig := integration.SlackConfig{
 		BotToken:     cfg.SlackBotToken,
@@ -292,6 +293,11 @@ func main() {
 	}
 	slackService := integration.NewSlackService(slackConfig, zapLogger)
 	appLogger.Info("Slack service initialized")
+
+	// Nota: webhookService y slackService están disponibles para uso futuro
+	// cuando se implementen handlers específicos para estas integraciones
+	_ = webhookService // Evitar warning de variable no usada
+	_ = slackService   // Evitar warning de variable no usada
 
 	// 🆕 CREAR CACHE HANDLER SI ESTÁ HABILITADO
 	var cacheHandler *handlers.CacheHandler
@@ -583,29 +589,25 @@ func setupAPIRoutes(app *fiber.App,
 	// Workflows
 	workflows := protected.Group("/workflows")
 	workflows.Post("/", workflowHandler.CreateWorkflow)
-	workflows.Get("/", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"message": "List workflows - coming soon"})
-	})
+	workflows.Get("/", workflowHandler.GetWorkflows)
 	workflows.Get("/:id", workflowHandler.GetWorkflow)
 	workflows.Put("/:id", workflowHandler.UpdateWorkflow)
 	workflows.Delete("/:id", workflowHandler.DeleteWorkflow)
 	workflows.Post("/:id/clone", workflowHandler.CloneWorkflow)
-	workflows.Post("/:id/execute", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"message": "Execute workflow - coming soon"})
-	})
+	workflows.Post("/:id/execute", triggerHandler.TriggerWorkflow)
 
 	// Dashboard
 	dashboard := protected.Group("/dashboard")
 	dashboard.Get("/", dashboardHandler.GetDashboard)
-	dashboard.Get("/stats", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"message": "Dashboard stats - coming soon"})
-	})
-	dashboard.Get("/summary", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"message": "Dashboard summary - coming soon"})
-	})
-	dashboard.Get("/health", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"status": "healthy", "timestamp": time.Now()})
-	})
+	dashboard.Get("/stats", dashboardHandler.GetQuickStats)
+	dashboard.Get("/summary", dashboardHandler.GetDashboardSummary)
+	dashboard.Get("/health", dashboardHandler.GetSystemHealth)
+	dashboard.Get("/queue", dashboardHandler.GetQueueStatus)
+	dashboard.Get("/performance", dashboardHandler.GetPerformanceData)
+	dashboard.Get("/alerts", dashboardHandler.GetActiveAlerts)
+	dashboard.Get("/workflows/:id/health", dashboardHandler.GetWorkflowHealth)
+	dashboard.Get("/metrics", dashboardHandler.GetMetrics)
+	dashboard.Post("/refresh", dashboardHandler.RefreshDashboard)
 	dashboard.Get("/recent-activity", dashboardHandler.GetRecentActivity)
 
 	// Workers
@@ -673,20 +675,13 @@ func setupAPIRoutes(app *fiber.App,
 
 	// Triggers (públicos para webhooks)
 	triggers := api.Group("/triggers")
-	triggers.Post("/webhook/:webhook_id", func(c *fiber.Ctx) error {
-		webhookID := c.Params("webhook_id")
-		return c.JSON(fiber.Map{
-			"message":    "Webhook received",
-			"webhook_id": webhookID,
-			"timestamp":  time.Now(),
-		})
-	})
+	triggers.Post("/webhook/:webhook_id", triggerHandler.TriggerWebhook)
 
 	// Triggers protegidos
 	protectedTriggers := protected.Group("/triggers")
-	protectedTriggers.Post("/manual", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"message": "Manual trigger - coming soon"})
-	})
+	protectedTriggers.Post("/manual", triggerHandler.TriggerWorkflow)
+	protectedTriggers.Get("/status/:log_id", triggerHandler.GetTriggerStatus)
+	protectedTriggers.Post("/cancel/:log_id", triggerHandler.CancelTrigger)
 
 	logger.Info("API routes configured with cache endpoints")
 }
