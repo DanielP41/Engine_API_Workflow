@@ -1,6 +1,6 @@
 # Engine API Workflow
 
- **API backend empresarial para automatización de flujos de trabajo**
+ **API para automatización de flujos de trabajo empresarial**
 
 Una solución robusta y escalable que permite a empresas configurar y automatizar procesos internos, desde aprobaciones hasta notificaciones automáticas.
 
