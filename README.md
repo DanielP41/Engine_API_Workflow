@@ -7,9 +7,9 @@ Una solución robusta y escalable que permite a empresas configurar y automatiza
 ## Características Principales
 
 - **Flujos Configurables**: Crea workflows personalizados por empresa
-- **Procesamiento Asíncrono**: Manejo eficiente con Redis y goroutines
+- **Procesamiento Asíncrono**: Manejo con Redis y goroutines
 - **Integraciones**: Slack, webhooks, APIs externas
-- **Autenticación JWT**: Seguridad empresarial con RBAC
+- **Autenticación JWT**: Seguridad con RBAC
 - **Monitoreo**: Logs detallados y métricas de rendimiento
 
 ## Stack Tecnológico
