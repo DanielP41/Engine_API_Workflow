@@ -291,16 +291,7 @@ func (h *AuthHandler) RefreshToken(c *fiber.Ctx) error {
 		return utils.UnauthorizedResponse(c, "Invalid token type")
 	}
 
-	// Check blacklist if enabled
-	if h.tokenBlacklist != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		if h.tokenBlacklist.IsBlacklisted(ctx, req.RefreshToken) {
-			h.logWarn(c, "refresh_token_blacklisted", "user_id", claims.UserID)
-			return utils.UnauthorizedResponse(c, "Refresh token has been revoked")
-		}
-	}
+	// Nota: La verificación de blacklist ya se hace en ValidateToken del JWT service
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -317,15 +308,10 @@ func (h *AuthHandler) RefreshToken(c *fiber.Ctx) error {
 		return utils.UnauthorizedResponse(c, "Account deactivated")
 	}
 
-	// Blacklist old refresh token if blacklist is enabled
-	if h.tokenBlacklist != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := h.tokenBlacklist.BlacklistTokenWithReason(ctx, req.RefreshToken, "token_refresh"); err != nil {
-			h.logWarn(c, "refresh_blacklist_old_token_error", "error", err.Error())
-			// Continue anyway - not critical
-		}
+	// 🆕 Revocar el refresh token anterior usando el JWT service
+	if err := h.jwtService.RevokeToken(req.RefreshToken); err != nil {
+		h.logWarn(c, "refresh_revoke_old_token_error", "error", err.Error())
+		// Continue anyway - not critical, token will expire naturally
 	}
 
 	// Generate new tokens
@@ -564,13 +550,12 @@ func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
 		return utils.InternalServerErrorResponse(c, "Failed to update password", err)
 	}
 
-	// Revoke all user tokens if blacklist is enabled (security measure)
-	if h.tokenBlacklist != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := h.tokenBlacklist.BlacklistAllUserTokens(ctx, userID, "password_changed"); err != nil {
-			h.logWarn(c, "change_password_revoke_tokens_error", "error", err.Error())
+	// Revocar el token actual para forzar re-login
+	authHeader := c.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		if err := h.jwtService.RevokeToken(token); err != nil {
+			h.logWarn(c, "change_password_revoke_token_error", "error", err.Error())
 		}
 	}
 
@@ -580,47 +565,56 @@ func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
 	})
 }
 
-// Logout maneja el cierre de sesión con blacklist
+// Logout maneja el cierre de sesión con revocación de token
 func (h *AuthHandler) Logout(c *fiber.Ctx) error {
-	// Si blacklist está deshabilitado, logout simple
-	if h.tokenBlacklist == nil {
+	// Extraer token del header
+	authHeader := c.Get("Authorization")
+	if authHeader == "" {
+		// No hay token, considerar logout exitoso
 		return utils.SuccessResponse(c, fiber.StatusOK, "Logout successful", fiber.Map{
 			"message": "Please remove the access and refresh tokens from your client",
 		})
 	}
 
-	// Extraer token del header---DAR AVISO
-	authHeader := c.Get("Authorization")
-	if authHeader == "" {
-		// No hay token, considerar logout exitoso
-		return utils.SuccessResponse(c, fiber.StatusOK, "Logout successful", nil)
-	}
-
 	// Extraer token
 	const bearerPrefix = "Bearer "
 	if !strings.HasPrefix(authHeader, bearerPrefix) {
-		return utils.SuccessResponse(c, fiber.StatusOK, "Logout successful", nil)
+		return utils.SuccessResponse(c, fiber.StatusOK, "Logout successful", fiber.Map{
+			"message": "Please remove the access and refresh tokens from your client",
+		})
 	}
 
 	token := strings.TrimPrefix(authHeader, bearerPrefix)
 	if token == "" {
-		return utils.SuccessResponse(c, fiber.StatusOK, "Logout successful", nil)
+		return utils.SuccessResponse(c, fiber.StatusOK, "Logout successful", fiber.Map{
+			"message": "Please remove the access and refresh tokens from your client",
+		})
 	}
 
-	// Agregar token a blacklist
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// 🆕 Revocar token usando el JWT service (que maneja el blacklist internamente)
+	if err := h.jwtService.RevokeToken(token); err != nil {
+		h.logWarn(c, "logout_revoke_token_warning", "error", err.Error())
+		// No fallar el logout si la revocación falla (el token expirará eventualmente)
+		return utils.SuccessResponse(c, fiber.StatusOK, "Logout successful", fiber.Map{
+			"message": "Token revocation failed but logout completed. Token will expire naturally.",
+		})
+	}
 
-	if err := h.tokenBlacklist.BlacklistTokenWithReason(ctx, token, "user_logout"); err != nil {
-		h.logError(c, "logout_blacklist_error", err)
-		return utils.InternalServerErrorResponse(c, "Logout failed", err)
+	// 🆕 También intentar revocar el refresh token si se proporciona en el body
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := c.BodyParser(&req); err == nil && req.RefreshToken != "" {
+		if err := h.jwtService.RevokeToken(req.RefreshToken); err != nil {
+			h.logWarn(c, "logout_revoke_refresh_token_warning", "error", err.Error())
+		}
 	}
 
 	userID := c.Locals("userID")
 	h.logInfo(c, "user_logged_out_successfully", "user_id", userID)
 
 	return utils.SuccessResponse(c, fiber.StatusOK, "Logout successful", fiber.Map{
-		"message": "Token has been revoked successfully",
+		"message": "Tokens have been revoked successfully",
 	})
 }
 

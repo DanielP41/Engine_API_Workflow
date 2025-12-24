@@ -25,10 +25,7 @@ type AuthServiceImpl struct {
 }
 
 // NewAuthService crea una nueva instancia del servicio de autenticación
-func NewAuthService(userRepo repository.UserRepository) AuthService {
-	// Crear un servicio JWT con configuración por defecto
-	jwtService := jwt.NewService("your-super-secret-jwt-key-change-this-in-production", "engine-api-workflow")
-
+func NewAuthService(userRepo repository.UserRepository, jwtService jwt.JWTService) AuthService {
 	return &AuthServiceImpl{
 		jwtService: jwtService,
 		userRepo:   userRepo,

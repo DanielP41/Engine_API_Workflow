@@ -130,17 +130,13 @@ func main() {
 		Issuer:          jwtConfig.Issuer,
 		Audience:        jwtConfig.Audience,
 	}
-	jwtService := jwt.NewJWTService(jwtServiceConfig)
 
-	// Inicializar TokenBlacklist si está habilitado
-	var tokenBlacklist *jwt.TokenBlacklist
-	if cfg.EnableTokenBlacklist {
-		blacklistConfig := jwt.BlacklistConfig{
-			RedisClient: redisClient,
-			KeyPrefix:   "jwt_blacklist:",
-		}
-		tokenBlacklist = jwt.NewTokenBlacklist(blacklistConfig)
-	}
+	// 🆕 Inicializar JWT Service con Redis para blacklist
+	jwtService := jwt.NewJWTServiceWithRedis(jwtServiceConfig, redisClient)
+	appLogger.Info("JWT service initialized with Redis blacklist support")
+
+	// Nota: TokenBlacklist ya no es necesario porque el JWTService maneja el blacklist internamente
+	var tokenBlacklist *jwt.TokenBlacklist = nil
 
 	// Inicializar MetricsService primero
 	metricsService := services.NewMetricsService(
@@ -151,7 +147,7 @@ func main() {
 	)
 
 	// 🆕 INICIALIZAR SERVICIOS BASE (SIN CACHÉ)
-	baseAuthService := services.NewAuthService(userRepo)
+	baseAuthService := services.NewAuthService(userRepo, jwtService)
 	baseWorkflowService := services.NewWorkflowService(workflowRepo, userRepo)
 	baseLogService := services.NewLogService(logRepo, workflowRepo, userRepo)
 	// ✅ CORRECCIÓN 2: Agregar zapLogger como último parámetro

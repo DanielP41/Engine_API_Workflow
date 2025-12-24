@@ -15,7 +15,7 @@ services:
     networks:
       - workflow_network
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -33,7 +33,7 @@ services:
     networks:
       - workflow_network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -41,7 +41,7 @@ services:
 
   # API
   api:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     container_name: workflow_api
@@ -56,40 +56,40 @@ services:
     environment:
       # Server
       PORT: 8081
-      ENV: development
+      ENVIRONMENT: development
       LOG_LEVEL: debug
-      
+
       # Database
       MONGODB_URI: mongodb://admin:password123@mongodb:27017/engine_workflow?authSource=admin
       MONGODB_DATABASE: engine_workflow
-      
+
       # Redis
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ""
       REDIS_DB: 0
-      
+
       # JWT Security
       JWT_SECRET: DOCKER_TEST_SECRET_KEY_32_CHARS_MINIMUM_LENGTH_REQUIRED_2024
       JWT_ISSUER: engine-api-workflow
       JWT_AUDIENCE: engine-api
       JWT_ACCESS_TTL: 15m
       JWT_REFRESH_TTL: 168h
-      
+
       # Security Features
       ENABLE_TOKEN_BLACKLIST: true
       ENABLE_RATE_LIMIT: true
       ENABLE_CORS: true
-      
+
       # CORS
       CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:3001
       TRUSTED_PROXIES: 127.0.0.1,::1
-      
+
       # Rate Limiting
       RATE_LIMIT_REQUESTS: 100
       RATE_LIMIT_WINDOW: 1m
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8081/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -98,6 +98,7 @@ services:
 volumes:
   mongodb_data:
   redis_data:
+
 
 networks:
   workflow_network:

@@ -206,7 +206,8 @@ func (h *TriggerHandler) TriggerWebhook(c *fiber.Ctx) error {
 	var payload map[string]interface{}
 	if err := c.BodyParser(&payload); err != nil {
 		h.logger.Error("Failed to parse webhook payload", zap.Error(err))
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewErrorResponse("Invalid payload", err.Error()))
+		// Allow empty payload for webhooks
+		payload = make(map[string]interface{})
 	}
 
 	// Get request headers
@@ -215,14 +216,105 @@ func (h *TriggerHandler) TriggerWebhook(c *fiber.Ctx) error {
 		headers[string(key)] = string(value)
 	})
 
-	// For now, return a placeholder response since workflow search needs to be implemented properly
+	h.logger.Info("Webhook trigger received",
+		zap.String("webhook_id", webhookID),
+		zap.Any("payload", payload))
+
+	// Find workflows with this webhook_id
+	workflows, err := h.workflowRepo.FindByWebhookID(c.Context(), webhookID)
+	if err != nil {
+		h.logger.Error("Failed to find workflows by webhook_id",
+			zap.Error(err),
+			zap.String("webhook_id", webhookID))
+		return c.Status(fiber.StatusInternalServerError).JSON(
+			utils.NewErrorResponse("Failed to find workflow", ""))
+	}
+
+	if len(workflows) == 0 {
+		h.logger.Warn("No workflows found for webhook_id",
+			zap.String("webhook_id", webhookID))
+		return c.Status(fiber.StatusNotFound).JSON(
+			utils.NewErrorResponse("No workflow found for this webhook", ""))
+	}
+
+	// Use the first matching workflow
+	workflow := workflows[0]
+
+	// Verify workflow is active
+	if !workflow.IsActive() {
+		h.logger.Warn("Workflow is not active",
+			zap.String("workflow_id", workflow.ID.Hex()),
+			zap.String("webhook_id", webhookID))
+		return c.Status(fiber.StatusBadRequest).JSON(
+			utils.NewErrorResponse("Workflow is not active", ""))
+	}
+
+	// Create execution log
+	logEntry := &models.WorkflowLog{
+		ID:         primitive.NewObjectID(),
+		WorkflowID: workflow.ID,
+		UserID:     workflow.UserID,
+		Status:     models.WorkflowStatusActive,
+		TriggerData: map[string]interface{}{
+			"webhook_id": webhookID,
+			"payload":    payload,
+			"headers":    headers,
+			"source":     "webhook",
+		},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	// Save log entry
+	if err := h.logRepo.Create(c.Context(), logEntry); err != nil {
+		h.logger.Error("Failed to create log entry", zap.Error(err))
+		return c.Status(fiber.StatusInternalServerError).JSON(
+			utils.NewErrorResponse("Failed to create execution log", ""))
+	}
+
+	// Enqueue workflow execution
+	triggerData := map[string]interface{}{
+		"log_id":     logEntry.ID.Hex(),
+		"workflow":   workflow,
+		"trigger_by": "webhook",
+		"data":       payload,
+		"metadata": map[string]interface{}{
+			"webhook_id":   webhookID,
+			"headers":      headers,
+			"triggered_at": time.Now(),
+		},
+		"user_id": workflow.UserID.Hex(),
+	}
+
+	if err := h.queueService.EnqueueWorkflowExecution(c.Context(), workflow.ID.Hex(), triggerData); err != nil {
+		// Update log status to failed
+		updateData := map[string]interface{}{
+			"status":     "failed",
+			"error":      err.Error(),
+			"updated_at": time.Now(),
+		}
+		h.logRepo.Update(c.Context(), logEntry.ID, updateData)
+
+		h.logger.Error("Failed to enqueue webhook execution", zap.Error(err))
+		return c.Status(fiber.StatusInternalServerError).JSON(
+			utils.NewErrorResponse("Failed to enqueue workflow execution", ""))
+	}
+
+	h.logger.Info("Webhook workflow triggered successfully",
+		zap.String("webhook_id", webhookID),
+		zap.String("workflow_id", workflow.ID.Hex()),
+		zap.String("log_id", logEntry.ID.Hex()))
+
 	return c.Status(fiber.StatusAccepted).JSON(utils.Response{
 		Success:   true,
-		Message:   "Webhook trigger received - Implementation pending",
+		Message:   "Webhook workflow triggered successfully",
 		Timestamp: time.Now(),
 		Data: map[string]interface{}{
-			"webhook_id": webhookID,
-			"status":     "received",
+			"log_id":        logEntry.ID.Hex(),
+			"workflow_id":   workflow.ID.Hex(),
+			"workflow_name": workflow.Name,
+			"status":        "pending",
+			"created_at":    logEntry.CreatedAt,
 		},
 	})
 }

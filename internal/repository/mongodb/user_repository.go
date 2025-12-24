@@ -13,7 +13,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // userRepository implements the UserRepository interface
@@ -74,14 +73,7 @@ func (r *userRepository) Create(ctx context.Context, user *models.User) (*models
 		return nil, errors.New("user cannot be nil")
 	}
 
-	// Hash password before saving
-	if user.Password != "" {
-		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
-		if err != nil {
-			return nil, fmt.Errorf("failed to hash password: %w", err)
-		}
-		user.Password = string(hashedPassword)
-	}
+	// Note: Password should be hashed by the caller/service layer before being passed here
 
 	// Set timestamps and defaults
 	user.BeforeCreate()

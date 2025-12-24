@@ -61,7 +61,7 @@ services:
     environment:
       # Server
       PORT: 8081
-      ENV: production
+      ENVIRONMENT: production
       LOG_LEVEL: info
 
       # Database

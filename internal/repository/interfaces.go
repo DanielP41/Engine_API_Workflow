@@ -84,6 +84,9 @@ type WorkflowRepository interface {
 	// Validation
 	NameExistsForUser(ctx context.Context, name string, userID primitive.ObjectID) (bool, error)
 	NameExistsForUserExcludeID(ctx context.Context, name string, userID primitive.ObjectID, excludeID primitive.ObjectID) (bool, error)
+
+	// Webhook operations
+	FindByWebhookID(ctx context.Context, webhookID string) ([]*models.Workflow, error)
 }
 
 // LogRepository defines the contract for log data operations

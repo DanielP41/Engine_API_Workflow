@@ -713,3 +713,37 @@ func (r *workflowRepository) NameExistsForUserExcludeID(ctx context.Context, nam
 	count, err := r.collection.CountDocuments(ctx, filter)
 	return count > 0, err
 }
+
+// FindByWebhookID busca workflows que tengan un webhook_id específico en sus triggers
+func (r *workflowRepository) FindByWebhookID(ctx context.Context, webhookID string) ([]*models.Workflow, error) {
+	if webhookID == "" {
+		return nil, fmt.Errorf("webhook_id cannot be empty")
+	}
+
+	// Buscar workflows que tengan un trigger con el webhook_id en su configuración
+	filter := bson.M{
+		"triggers": bson.M{
+			"$elemMatch": bson.M{
+				"$or": []bson.M{
+					{"config.webhook_id": webhookID},
+					{"config.id": webhookID},
+				},
+			},
+		},
+		"is_active":  true,
+		"deleted_at": nil,
+	}
+
+	cursor, err := r.collection.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find workflows by webhook_id: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var workflows []*models.Workflow
+	if err = cursor.All(ctx, &workflows); err != nil {
+		return nil, fmt.Errorf("failed to decode workflows: %w", err)
+	}
+
+	return workflows, nil
+}

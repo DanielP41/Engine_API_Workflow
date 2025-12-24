@@ -111,7 +111,7 @@ func (h *HTTPActionExecutor) Execute(ctx context.Context, step *models.WorkflowS
 
 	if !result.Success {
 		result.ErrorMessage = fmt.Sprintf("HTTP request failed with status %d", resp.StatusCode)
-		return result, fmt.Errorf(result.ErrorMessage)
+		return result, fmt.Errorf("%s", result.ErrorMessage)
 	}
 
 	return result, nil
@@ -541,7 +541,7 @@ func (s *SlackActionExecutor) Execute(ctx context.Context, step *models.Workflow
 	if !result.Success {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		result.ErrorMessage = fmt.Sprintf("Slack API returned status %d: %s", resp.StatusCode, string(bodyBytes))
-		return result, fmt.Errorf(result.ErrorMessage)
+		return result, fmt.Errorf("%s", result.ErrorMessage)
 	}
 
 	return result, nil

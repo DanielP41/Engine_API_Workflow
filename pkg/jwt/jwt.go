@@ -1,12 +1,14 @@
 package jwt
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -28,6 +30,7 @@ type jwtService struct {
 	refreshTokenTTL time.Duration
 	issuer          string
 	audience        string
+	redisClient     *redis.Client // Para blacklist de tokens
 }
 
 // TokenPair par de tokens (access y refresh)
@@ -94,6 +97,36 @@ func NewJWTService(config Config) JWTService {
 		refreshTokenTTL: config.RefreshTokenTTL,
 		issuer:          config.Issuer,
 		audience:        config.Audience,
+		redisClient:     nil, // Se configurará después si está disponible
+	}
+}
+
+// NewJWTServiceWithRedis crea una nueva instancia del servicio JWT con Redis para blacklist
+func NewJWTServiceWithRedis(config Config, redisClient *redis.Client) JWTService {
+	// Validar configuración
+	if len(config.SecretKey) < 32 {
+		panic("JWT secret key must be at least 32 characters")
+	}
+	if config.AccessTokenTTL == 0 {
+		config.AccessTokenTTL = 15 * time.Minute
+	}
+	if config.RefreshTokenTTL == 0 {
+		config.RefreshTokenTTL = 7 * 24 * time.Hour
+	}
+	if config.Issuer == "" {
+		config.Issuer = "engine-api-workflow"
+	}
+	if config.Audience == "" {
+		config.Audience = "engine-api"
+	}
+
+	return &jwtService{
+		secretKey:       []byte(config.SecretKey),
+		accessTokenTTL:  config.AccessTokenTTL,
+		refreshTokenTTL: config.RefreshTokenTTL,
+		issuer:          config.Issuer,
+		audience:        config.Audience,
+		redisClient:     redisClient,
 	}
 }
 
@@ -205,6 +238,11 @@ func (s *jwtService) ValidateToken(tokenString string) (*Claims, error) {
 		return nil, err
 	}
 
+	// Verificar si el token está en la blacklist
+	if s.IsTokenRevoked(claims.ID) {
+		return nil, ErrTokenRevoked
+	}
+
 	return claims, nil
 }
 
@@ -258,17 +296,61 @@ func (s *jwtService) RefreshToken(refreshTokenString string) (*TokenPair, error)
 	return s.GenerateTokens(userID, claims.Email, claims.Role)
 }
 
-// RevokeToken revoca un token (implementación básica)
+// RevokeToken revoca un token agregándolo a la blacklist en Redis
 func (s *jwtService) RevokeToken(tokenString string) error {
-	// En una implementación real, agregarías el token a una blacklist
-	// Por ahora, solo validamos que el token sea válido
-	_, err := s.ValidateToken(tokenString)
+	// Validar que el token sea válido antes de revocarlo
+	claims, err := s.GetTokenClaims(tokenString)
 	if err != nil {
 		return fmt.Errorf("cannot revoke invalid token: %w", err)
 	}
 
-	// TODO: Implementar blacklist en Redis
+	// Si no hay Redis configurado, solo validar el token
+	if s.redisClient == nil {
+		return fmt.Errorf("token blacklist not available: Redis not configured")
+	}
+
+	// Calcular TTL basado en la expiración del token
+	var ttl time.Duration
+	if claims.ExpiresAt != nil {
+		ttl = time.Until(claims.ExpiresAt.Time)
+		if ttl <= 0 {
+			// Token ya expirado, no necesita revocación
+			return nil
+		}
+	} else {
+		// Si no tiene expiración, usar un TTL por defecto
+		ttl = 24 * time.Hour
+	}
+
+	// Guardar JTI en Redis con TTL
+	ctx := context.Background()
+	key := fmt.Sprintf("blacklist:token:%s", claims.ID)
+
+	err = s.redisClient.Set(ctx, key, "revoked", ttl).Err()
+	if err != nil {
+		return fmt.Errorf("failed to add token to blacklist: %w", err)
+	}
+
 	return nil
+}
+
+// IsTokenRevoked verifica si un token está en la blacklist
+func (s *jwtService) IsTokenRevoked(jti string) bool {
+	// Si no hay Redis, no hay blacklist
+	if s.redisClient == nil {
+		return false
+	}
+
+	ctx := context.Background()
+	key := fmt.Sprintf("blacklist:token:%s", jti)
+
+	exists, err := s.redisClient.Exists(ctx, key).Result()
+	if err != nil {
+		// En caso de error, asumir que no está revocado para no bloquear usuarios
+		return false
+	}
+
+	return exists > 0
 }
 
 // validateClaims valida claims específicos del negocio
