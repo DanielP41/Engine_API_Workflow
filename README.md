@@ -1,6 +1,6 @@
 # Engine API Workflow
 
-https://github.com/user-attachments/assets/5ecd5392-b37e-45e5-bb7b-94f260cb5e1f
+https://github.com/user-attachments/assets/fa0c9a6b-c726-471f-8e13-95c28bc22e0c
 
  **API para automatización de flujos de trabajo empresarial**
 
